@@ -200,6 +200,10 @@ const guarded = [
   // a page that is already signed in.
   ['GET', '/api/speak/silence'],
   ['POST', '/api/client-error'],
+  // Says whether a project could be installed on the device that tried. Nothing
+  // secret in a report, but an open one would let a stranger write lines into this
+  // box's journal, which is where the answer to "why will it not install" is read.
+  ['POST', '/api/install-report'],
   // The operations surface. `/admin` is the reason this list matters most: it
   // enumerates every process on the box and can signal three of them, so an
   // unauthenticated hit here would be a remote inventory *and* a remote kill.

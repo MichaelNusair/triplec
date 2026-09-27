@@ -53,7 +53,7 @@
    *
    * Bump it when this file changes in a way anyone would look for.
    */
-  const OVERLAY_BUILD = '2026-09-27.2';
+  const OVERLAY_BUILD = '2026-09-27.3';
 
   // -------------------------------------------- survive a browser refresh
   /*
@@ -1362,17 +1362,139 @@
    */
   let installPrompt = null;
   let offerWaiters = [];
+
+  /*
+   * A one-tap install on the bar, put there exactly when the browser offers one.
+   *
+   * The install button in the switcher is two taps deep, behind a sheet that has to
+   * fetch a project list first — and what a phone's owner reaches for instead is the
+   * browser's own menu, which on Android is the one route that cannot do this: with
+   * any app from this origin installed, Chrome calls every page on the host "already
+   * installed" and then fails to open one (see addToHomeScreen). Three reports of
+   * this feature being broken are three reports of that menu. So the route that works
+   * has to be the visible one.
+   *
+   * It exists only while a live offer is in hand, so it never offers what the browser
+   * would refuse, and it goes straight from the tap to `prompt()`: opening the
+   * switcher first would spend the transient activation `prompt()` needs on a round
+   * trip to /api/projects.
+   */
+  const addBtn = document.createElement('button');
+  addBtn.id = 'cmo-add';
+  addBtn.type = 'button';
+  addBtn.className = 'cmo-btn cmo-secondary';
+  addBtn.innerHTML = '&#8962;'; // the same mark the switcher's own install row carries
+  addBtn.addEventListener('click', async () => {
+    const offer = installPrompt;
+    // One shot per page load either way: the event cannot be prompted twice, and a
+    // button that looks live after it is spent is the dead button this replaced.
+    installPrompt = null;
+    addBtn.remove();
+    if (!offer) return;
+    try {
+      await offer.prompt();
+      const choice = await offer.userChoice;
+      reportInstall(`prompted-${choice?.outcome || 'unknown'}`);
+    } catch (err) {
+      reportInstall(`prompt-failed-${err.name || 'Error'}`);
+    }
+  });
+
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     installPrompt = event;
     const waiting = offerWaiters;
     offerWaiters = [];
     waiting.forEach((resolve) => resolve(event));
+    /*
+     * And the offer becomes something on screen rather than something to be found,
+     * plus one line in the box's journal saying it arrived. That line is the fact this
+     * has been missing: nginx logs every project page a phone opens, so a page load
+     * with no "offered" beside it is Chrome refusing, and a page load with one is
+     * Chrome willing and the button being missed. Guessing between those two is what
+     * three rounds of this went on.
+     */
+    const project = thisWindowsProject();
+    if (!project) return;
+    addBtn.setAttribute('aria-label', `Install ${project}`);
+    addBtn.title = `Install ${project}`;
+    if (!addBtn.isConnected) fab.insertBefore(addBtn, fab.querySelector('#cmo-mic'));
+    reportInstall('offered');
   });
 
   /** Whether this browser has the event at all — no iOS browser does. */
   function browserOffersInstalls() {
     return 'onbeforeinstallprompt' in window;
+  }
+
+  /**
+   * The facts an install turns on, gathered on the device that has them.
+   *
+   * Every explanation left for "it says this app is already installed" is something
+   * only that phone knows: which manifest it was handed, whether the page is inside
+   * that manifest's scope, whether the browser ever offered, and which of our apps
+   * Android already holds. explainInstall puts all of it on screen, which is no use
+   * when the screen is being listened to rather than read, and none of it reaches
+   * anywhere a session can look. So the same facts go to /api/install-report, where
+   * they land in `journalctl -u claude-chat` next to the request that fetched the
+   * manifest.
+   *
+   * Nothing here is anyone's content: an address this browser is already sending on
+   * every request, a manifest served to anyone signed in, and what the browser says
+   * about its own installed apps.
+   */
+  async function installFacts() {
+    const link = document.querySelector('link[rel="manifest"]');
+    const facts = {
+      build: OVERLAY_BUILD,
+      page: location.pathname,
+      manifest: link?.getAttribute('href') || 'none',
+      offer: installPrompt ? 'held' : 'none',
+      offerable: browserOffersInstalls() ? 'yes' : 'no',
+      standalone: window.matchMedia?.('(display-mode: standalone)')?.matches ? 'yes' : 'no',
+    };
+    if (link) {
+      try {
+        const res = await fetch(link.href);
+        facts.served = res.status;
+        if (res.ok) {
+          const manifest = await res.json();
+          facts.id = manifest.id;
+          facts.scope = manifest.scope;
+          // The one comparison a browser makes silently and never reports.
+          facts.inScope = manifest.scope && location.pathname.startsWith(manifest.scope) ? 'yes' : 'no';
+        }
+      } catch (err) {
+        facts.served = `unreachable-${err.name || 'Error'}`;
+      }
+    }
+    try {
+      const apps = (await navigator.getInstalledRelatedApps?.()) || [];
+      facts.related = apps.map((app) => app.id || app.url || app.platform).join('|') || 'none';
+    } catch (err) {
+      facts.related = `refused-${err.name || 'Error'}`;
+    }
+    return facts;
+  }
+
+  /**
+   * Send one such line, and never be the reason anything else fails.
+   *
+   * `sendBeacon` first because the taps this reports on navigate — accepting an
+   * install is exactly that — and a `fetch` in flight across a navigation is dropped
+   * by the browser. `keepalive` where there is no beacon, and silence where there is
+   * neither: a diagnostic that throws is worse than no diagnostic.
+   */
+  function reportInstall(reason) {
+    installFacts()
+      .then((facts) => {
+        const line = `${reason} ${Object.entries(facts)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(' ')} ua=${navigator.userAgent}`;
+        if (navigator.sendBeacon?.('/api/install-report', line)) return;
+        fetch('/api/install-report', { method: 'POST', body: line, keepalive: true }).catch(() => {});
+      })
+      .catch(() => {});
   }
 
   /**
@@ -1454,6 +1576,9 @@
               `included, and its Open does nothing. This button is not affected.`,
           );
           armLateOffer(project);
+          // And say so where it can be read later: this is the refusal the whole
+          // feature is reported on, and the tap that hit it is the only witness.
+          reportInstall('no-offer');
           return;
         }
       } else {
@@ -1589,6 +1714,9 @@
     }
 
     say(lines.join(' '));
+    // The same answer, where it can be read by whoever is asked to fix it rather than
+    // only by whoever is holding the phone.
+    reportInstall('checked');
   }
 
   // --------------------------------------------------------- project switcher

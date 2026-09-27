@@ -2495,6 +2495,13 @@ const answers = {
  * out-of-scope case.
  */
 let fakeManifest = { id: '/p/demo/', short_name: 'demo', scope: '/p/demo/' };
+
+/*
+ * What the overlay told the server about an install, which is the only view anyone
+ * debugging this gets: the device it fails on is a phone, and Android's refusal is
+ * silent. chat-service/server.js prints these to the journal.
+ */
+const installReports = [];
 const priorFetch = w.fetch;
 w.fetch = (url, options = {}) => {
   const target = String(url);
@@ -2516,6 +2523,10 @@ w.fetch = (url, options = {}) => {
     acts.push('test');
     posted.test = JSON.parse(options.body || '{}');
     return jsonReply(answers.test.length > 1 ? answers.test.shift() : answers.test[0]);
+  }
+  if (target.includes('/api/install-report')) {
+    installReports.push(String(options.body || ''));
+    return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve({}) });
   }
   if (target.includes('manifest.webmanifest')) {
     return jsonReply(fakeManifest);
@@ -2814,6 +2825,43 @@ ok(
   'the install check blames the installed app without saying that the refusal is per ' +
     'origin — the one fact that stops someone reinstalling the chat icon to no effect',
   /per origin/.test(why),
+);
+
+/*
+ * And the same answer leaves the phone.
+ *
+ * Everything above is text on a screen held by whoever has the problem — which on
+ * this deployment is read aloud as often as read, and is not anywhere a later session
+ * can look. Three rounds of this bug were spent inferring what the phone would have
+ * said if asked. So the check posts what it found, and the box's journal keeps it.
+ */
+await settle(40);
+const checked = installReports.find((line) => line.startsWith('checked'));
+ok(
+  `the install check told nobody but the screen: ${JSON.stringify(installReports)}`,
+  checked,
+);
+ok(
+  `the report names neither the build nor the page: ${JSON.stringify(checked)}`,
+  checked?.includes(`build=${buildStamp}`) && checked?.includes(`page=${w.location.pathname}`),
+);
+ok(
+  'the report does not say whether the browser had offered, which is the question',
+  /offer=none/.test(checked || ''),
+);
+ok(
+  'the report does not carry the identity and scope the server served, so it cannot ' +
+    'be told from a stale manifest',
+  /id=\/p\/demo\//.test(checked || '') && /scope=\/p\/demo\//.test(checked || ''),
+);
+ok(
+  'the report does not say this page is outside that scope, which is the difference ' +
+    'between a refusal and a page that could never be installed from',
+  /inScope=no/.test(checked || ''),
+);
+ok(
+  'the report does not name the installed app Android already holds',
+  /related=Claude/.test(checked || ''),
 );
 
 /*
@@ -5101,7 +5149,21 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
     });
     const win = dom2.window;
     win.addEventListener('error', (e) => fail(`uncaught in the install boot: ${e.message}`));
-    win.fetch = (target) => {
+    const reports = [];
+    win.fetch = (target, options = {}) => {
+      // The install report, which is how a refusal on a phone reaches a log.
+      if (String(target).includes('/api/install-report')) {
+        reports.push(String(options.body || ''));
+        return Promise.resolve({ ok: true, status: 204, json: () => Promise.resolve({}) });
+      }
+      // The project's own manifest, as the gated route serves it to a signed-in page.
+      if (String(target).includes('manifest.webmanifest')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({ id: '/p/demo/', scope: '/p/demo/', short_name: 'demo' }),
+        });
+      }
       if (String(target).includes('/api/projects')) {
         return Promise.resolve({
           ok: true,
@@ -5120,7 +5182,7 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
       return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
     };
     win.eval(overlayJs);
-    return { win, doc: win.document };
+    return { win, doc: win.document, reports };
   }
   const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const manifestsIn = (doc) =>
@@ -5262,7 +5324,7 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
    * that finds no app for /p/<name>/. Pointing someone at it is what the report was.
    */
   {
-    const { win, doc } = bootAt('https://claude.example.com/p/demo/');
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
     win.onbeforeinstallprompt = null; // what Chrome looks like before the offer lands
     doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
     await settle(20);
@@ -5292,6 +5354,105 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
     ok(
       'a late offer changed nothing on screen, so the wait it announced never ends',
       /again/i.test(doc.getElementById('cmo-install-status')?.textContent ?? ''),
+    );
+
+    /*
+     * And the refusal that tap ran into is on the record. This is the exact moment the
+     * report is about — a project's own window, a browser that installs, and no offer —
+     * and it is the moment nobody can see from anywhere but the phone.
+     */
+    await settle(40);
+    const refused = reports.find((line) => line.startsWith('no-offer'));
+    ok(
+      `a tap that found no offer told nobody: ${JSON.stringify(reports)}`,
+      refused && /page=\/p\/demo\//.test(refused) && /offerable=yes/.test(refused),
+    );
+  }
+
+  /*
+   * The offer, on the bar, where it cannot be missed.
+   *
+   * This is the half that three reports of "it says it's already installed" turn on.
+   * The install button lives in the switcher, two taps and a fetch deep, so what a
+   * phone's owner does instead is open the browser's own menu — and on Android that
+   * menu is the one route that cannot install a second app from one origin: Chrome's
+   * isAppInstalledForUrl is hasAtLeastOneWebApkForOrigin, so with any app from this
+   * host installed it answers "already installed" for every page here and the open it
+   * offers instead finds no app for /p/<name>/ and fails with a toast. That is the
+   * report, word for word. The page's own offer is not subject to that check, so the
+   * fix is for the offer to be visible the moment it exists.
+   */
+  {
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
+    ok(
+      'an install sits on the bar before any browser has offered one, so the one ' +
+        'control that means "this will work" also appears when it will not',
+      !doc.getElementById('cmo-add'),
+    );
+    let prompts = 0;
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => {
+      prompts += 1;
+      return Promise.resolve();
+    };
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    const bar = doc.getElementById('cmo-add');
+    ok(
+      'the browser offered to install this project and nothing on screen said so — the ' +
+        'switcher is two taps deep and the menu people reach for instead cannot do it',
+      bar && doc.getElementById('cmo-fab')?.contains(bar),
+    );
+    ok(
+      `the bar's install does not name the project it adds: ${JSON.stringify(bar?.getAttribute('aria-label'))}`,
+      /demo/.test(bar?.getAttribute('aria-label') || ''),
+    );
+    bar?.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(40);
+    ok(`one tap on the bar prompted ${prompts} times, not once`, prompts === 1);
+    ok(
+      'the spent offer left a live-looking button behind: the event cannot be prompted ' +
+        'twice, so the second tap is the dead button this exists to replace',
+      !doc.getElementById('cmo-add'),
+    );
+    /*
+     * And both halves reach the journal: that the offer arrived at all, which is the
+     * fact that separates "Chrome refused" from "the button was never found", and what
+     * came of the tap.
+     */
+    ok(
+      `the offer went unreported: ${JSON.stringify(reports)}`,
+      reports.some(
+        (line) =>
+          line.startsWith('offered') &&
+          /page=\/p\/demo\//.test(line) &&
+          /scope=\/p\/demo\//.test(line) &&
+          /inScope=yes/.test(line),
+      ),
+    );
+    ok(
+      `the outcome of the install went unreported: ${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('prompted-accepted')),
+    );
+  }
+
+  /*
+   * And no such button on a page that belongs to no project: the offer there is for
+   * whatever the page links, which at /editor/ is an identity every project collides
+   * with, and putting it on the bar would be inviting the collision by hand.
+   */
+  {
+    const { win, doc } = bootAt('https://claude.example.com/editor/');
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => Promise.resolve();
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    ok(
+      'a window with no project put an install on the bar, and what it installs is not ' +
+        'a project',
+      !doc.getElementById('cmo-add'),
     );
   }
 

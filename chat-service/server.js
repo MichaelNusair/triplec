@@ -477,6 +477,34 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    /*
+     * Whether a project could be installed, answered by the phone that could not
+     * install it.
+     *
+     * This is the one failure in the app that leaves no trace a log can reach.
+     * Whether a browser offers to install a project depends on what is already on
+     * that home screen; Android refuses silently — no request, no status, no console
+     * anyone else can open — and the device it happens on is a phone in someone's
+     * hand. It has been reported three times and answered from inference every time.
+     * So the overlay sends what it saw, and this box's own journal holds it beside
+     * the request that fetched the manifest:
+     *
+     *   journalctl -u claude-chat | grep INSTALL
+     *
+     * console.log rather than console.error, because an install that worked reports
+     * too and a line saying so is not an error. installFacts in
+     * pwa/mobile-overlay.js is the other end, and names the fields.
+     */
+    if (pathname === '/api/install-report' && req.method === 'POST') {
+      const body = (await readBody(req, 4 * 1024)).toString();
+      // One line: journalctl folds a multi-line entry into something grep answers
+      // with half of.
+      console.log('INSTALL:', body.replace(/\s+/g, ' ').slice(0, 600));
+      res.writeHead(204);
+      res.end();
+      return;
+    }
+
     if (pathname === '/api/voice-status' && req.method === 'GET') {
       // ?refresh=1 re-reads the secret, so a rotated key or a newly created
       // deployment takes effect without restarting the service.
