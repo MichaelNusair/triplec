@@ -1208,6 +1208,26 @@ if [ -f /opt/claude-web/chat-service/server.js ]; then
   systemctl enable --now claude-chat
 fi
 systemctl enable --now nginx
-nginx -t && systemctl reload nginx
+
+# A reload rather than a restart, for the same reason as the units above. The
+# guard in the middle is about nginx's pid file, which is shared mutable state on
+# a box where more than one person runs `nginx -t`: run that while
+# /run/nginx.pid is absent and nginx recreates the file *empty* — the unit's own
+# comment cites the same bug — and the next `systemctl reload` reads no pid,
+# answers `invalid PID number ""` and fails. That failed a deploy here on
+# 2026-09-27 whose config was valid and whose nginx was healthy, and it reports
+# as a deploy failure, which is the expensive part: the box keeps serving the
+# previous config and nothing says which of the two the config was to blame for.
+# So if the pid file does not name the master systemd is already tracking, write
+# the master's pid back before asking for the reload.
+nginx -t
+nginx_master="$(systemctl show -p MainPID --value nginx 2>/dev/null || echo 0)"
+if [ "${nginx_master:-0}" -gt 0 ] \
+   && ps -p "$nginx_master" -o args= 2>/dev/null | grep -q 'master process' \
+   && [ "$(cat /run/nginx.pid 2>/dev/null)" != "$nginx_master" ]; then
+  echo "/run/nginx.pid does not name running nginx master $nginx_master; restoring it"
+  printf '%s\n' "$nginx_master" > /run/nginx.pid
+fi
+systemctl reload nginx
 
 echo "bootstrap complete for https://$DOMAIN_NAME"
