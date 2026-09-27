@@ -53,7 +53,7 @@
    *
    * Bump it when this file changes in a way anyone would look for.
    */
-  const OVERLAY_BUILD = '2026-09-27.1';
+  const OVERLAY_BUILD = '2026-09-27.2';
 
   // -------------------------------------------- survive a browser refresh
   /*
@@ -1274,6 +1274,21 @@
     return !!project && location.pathname.startsWith(projectWindowPath(project));
   }
 
+  /**
+   * The project this window is in, by whichever half of the address still says so.
+   *
+   * The path first, because it is the half that decides which app the page belongs to
+   * and the half that survives code-server's login round trip. `?folder=` second,
+   * because /editor/?folder=… is a project's window in every sense except the one
+   * that matters to an install. Everything that offers or explains the install reads
+   * this, so /p/<name>/ with no query is not mistaken for an empty window — that page
+   * used to render no install button at all, which is the state a phone lands in
+   * after signing in to code-server again and the state the report came from.
+   */
+  function thisWindowsProject() {
+    return projectFromWindow() || projectOf(folder());
+  }
+
   /*
    * A home-screen icon for this project, which on Android is the only way to give
    * a project a window of its own.
@@ -1314,12 +1329,24 @@
      * a browser never sees it even before this script runs; this is the half that
      * does not depend on a string in someone else's HTML staying put.
      */
-    document.querySelectorAll('link[rel="manifest"]').forEach((el) => el.remove());
-    const project = projectFromWindow() || projectOf(folder());
+    const project = thisWindowsProject();
+    const wanted = project ? `/chat/manifest.webmanifest?project=${encodeURIComponent(project)}` : '';
+    /*
+     * nginx rewrites the tag in the response now, so on /p/<name>/ the link is
+     * already the right one before this runs. Left alone in that case, deliberately:
+     * removing a manifest link and appending an identical one restarts Chrome's
+     * installability check, and the offer this whole feature waits for is the thing
+     * that restart delays. Anything else goes, whether or not this page names a
+     * project.
+     */
+    document.querySelectorAll('link[rel="manifest"]').forEach((el) => {
+      if (el.getAttribute('href') !== wanted) el.remove();
+    });
     if (!project) return; // an empty window belongs to no project
+    if (document.querySelector(`link[rel="manifest"][href="${wanted}"]`)) return;
     const link = document.createElement('link');
     link.rel = 'manifest';
-    link.href = `/chat/manifest.webmanifest?project=${encodeURIComponent(project)}`;
+    link.href = wanted;
     link.crossOrigin = 'use-credentials';
     document.head.appendChild(link);
   }
@@ -1334,10 +1361,47 @@
    * so its absence is the signal to fall back to the browser's menu.
    */
   let installPrompt = null;
+  let offerWaiters = [];
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
     installPrompt = event;
+    const waiting = offerWaiters;
+    offerWaiters = [];
+    waiting.forEach((resolve) => resolve(event));
   });
+
+  /** Whether this browser has the event at all — no iOS browser does. */
+  function browserOffersInstalls() {
+    return 'onbeforeinstallprompt' in window;
+  }
+
+  /**
+   * The offer, if it turns up within `ms`, else null.
+   *
+   * It is worth waiting for because it is late rather than absent: Chrome fires it
+   * once it has fetched and checked the manifest and its icons, and this page is the
+   * workbench — about 24M of JavaScript on a cold load — so a phone can easily open
+   * the switcher and tap before the offer exists. Short, because `prompt()` needs the
+   * user activation from the tap that started this and transient activation does not
+   * outlive a few seconds; a longer wait would trade a working install for a
+   * NotAllowedError. What the wait cannot cover, armLateOffer does.
+   */
+  function waitForOffer(ms) {
+    if (installPrompt) return Promise.resolve(installPrompt);
+    return new Promise((resolve) => {
+      offerWaiters.push(resolve);
+      setTimeout(() => resolve(null), ms);
+    });
+  }
+
+  /** Say so when a late offer arrives, because the next tap is all it needs. */
+  function armLateOffer(project) {
+    waitForOffer(120000).then((offer) => {
+      const el = panel.querySelector('#cmo-install-status');
+      if (!offer || !el) return;
+      el.textContent = `Chrome is ready now: tap “Give ${project} its own window” again.`;
+    });
+  }
 
   linkProjectManifest();
 
@@ -1346,29 +1410,59 @@
     const say = (text) => {
       if (status) status.textContent = text;
     };
+    const project = thisWindowsProject();
     if (!installPrompt) {
       /*
-       * The common reason, and the one worth doing something about: this page is not
-       * the project's own window, so it is outside the scope of the manifest it
-       * links and no browser will offer to install it. That is the whole of the
-       * "it says it's already installed" report — nothing is installed, the offer
-       * simply cannot be made from here.
-       *
-       * So go where it can. One tap lands on /p/<name>/ and the offer is waiting
-       * there; the alternative was a status line telling someone to navigate
+       * One reason is worth acting on rather than explaining: this page is not the
+       * project's own window, so it is outside the scope of the manifest it links and
+       * no browser will offer to install it. One tap lands on /p/<name>/, where the
+       * offer exists; the alternative was a status line telling someone to navigate
        * themselves, which is the same two taps with a paragraph to read first.
        */
-      const project = projectOf(folder());
       if (project && !inProjectWindow(project)) {
         say(`Opening ${project} in its own window — ask again there.`);
         location.href = projectHref(folder());
         return;
       }
-      // Otherwise it is already installed, or this browser does not offer the event
-      // (every iOS browser, for one). The manifest is linked either way, so the
-      // browser's own menu installs the same thing.
-      say('Use the browser menu → “Add to Home screen”. It picks up this project.');
-      return;
+      /*
+       * Otherwise wait for it, and say what is true if it does not come — but never
+       * send anyone to the browser's own menu, which is where this feature was
+       * reported broken from.
+       *
+       * On Android that menu cannot install a second app from one origin, and this is
+       * not a manifest problem: Chrome decides which of "Install app" and "App
+       * already installed" to show from WebappRegistry.isAppInstalledForUrl, which is
+       * hasAtLeastOneWebApkForOrigin — *any* installed web app whose scope shares this
+       * origin, whatever its id or scope. Install the chat app and every page on the
+       * host reports as installed, projects included; the row's action becomes "open"
+       * and the open finds no app that handles /p/<name>/, so it fails with a toast.
+       * That is "it says it's already installed, and it will not open" exactly.
+       *
+       * What is not subject to that check is the page's own offer:
+       * DoesNewWebAppConflictWithExistingInstallation asks whether an installed WebAPK
+       * handles this manifest's start_url, which is scope-accurate, so
+       * `beforeinstallprompt` still fires for a project beside the chat app. So the
+       * button is the route, and waiting for it is the advice.
+       */
+      if (project && browserOffersInstalls()) {
+        say('Waiting for the browser’s install offer…');
+        if (!(await waitForOffer(1200))) {
+          say(
+            `No offer yet — the editor is still loading, and this will say so when it ` +
+              `arrives. Don’t use Chrome’s own menu: once any app from this address is ` +
+              `installed it calls every page here “already installed”, project windows ` +
+              `included, and its Open does nothing. This button is not affected.`,
+          );
+          armLateOffer(project);
+          return;
+        }
+      } else {
+        // No such event in this browser — every iOS one, for a start. Safari's own
+        // menu has no per-origin opinion, and the manifest is linked, so it installs
+        // this project.
+        say('Use the browser menu → “Add to Home screen”. It picks up this project.');
+        return;
+      }
     }
     try {
       await installPrompt.prompt();
@@ -1377,8 +1471,8 @@
       installPrompt = null;
       say(
         choice?.outcome === 'accepted'
-          ? `${projectOf(folder())} is on your home screen. It opens in its own window.`
-          : 'Not added. The browser menu can still do it later.',
+          ? `${project} is on your home screen. It opens in its own window.`
+          : 'Not added. This button can offer again after a reload.',
       );
     } catch (err) {
       say(`Could not add it: ${err.message}`);
@@ -1460,19 +1554,32 @@
     lines.push(
       installPrompt
         ? 'Chrome has offered to install this project: the button above will do it.'
-        : 'Chrome has not offered to install this page. It stays silent for a page outside ' +
-          'the scope of the manifest it links, and for an app it considers already ' +
-          'installed — the two lines above say which of those this is.',
+        : 'Chrome has not offered to install this page yet. It stays silent for a page ' +
+          'outside the scope of the manifest it links, for an app already installed at ' +
+          'this exact identity, and for the seconds before it has finished reading the ' +
+          'manifest and its icons — the lines above say which. The button waits for it.',
     );
 
     if (navigator.getInstalledRelatedApps) {
       try {
         const apps = await navigator.getInstalledRelatedApps();
+        /*
+         * Read this precisely: the answer is about the apps *this manifest declares as
+         * related*, which is the chat app and nothing else (manifest.js). A non-empty
+         * answer means the chat app is installed on this phone — not that it claims
+         * this page. It is still the useful fact, because it is the condition under
+         * which Chrome's own menu stops offering installs for this whole origin:
+         * isAppInstalledForUrl is hasAtLeastOneWebApkForOrigin, so one installed app
+         * makes every page on the host report as installed, and the "open" that menu
+         * offers instead finds nothing that handles /p/<name>/ and fails. The
+         * button above uses the page's own offer, which is checked against this
+         * manifest's start_url and so is not affected.
+         */
         lines.push(
           apps.length
-            ? `Chrome reports ${apps.length} installed app claiming this page: ` +
-              `${apps.map((a) => a.id || a.url || a.platform).join(', ')}. The chat app no longer claims anything outside /chat/, so an icon added before that change is holding the old scope: remove it from the home screen, add it again, and this project will install on its own.`
-            : 'Chrome reports no installed app claiming this page.',
+            ? `Chrome reports this phone has ${apps.length} of this manifest’s related apps installed: ` +
+              `${apps.map((a) => a.id || a.url || a.platform).join(', ')} — the chat app. That is why Chrome’s own menu calls every page on this address “already installed” and then fails to open one: that check is per origin, not per app. It does not stop this project installing from the button above.`
+            : 'Chrome reports none of this manifest’s related apps installed, so nothing of ours is in the way.',
         );
       } catch (err) {
         lines.push(`Chrome would not say what is installed: ${err.message}`);
@@ -1521,6 +1628,10 @@
     // Which folder this window already has, so tapping it can do nothing instead
     // of reloading the workbench to arrive where it already is.
     const current = folder();
+    // And which project it is, which is not the same question: /p/<name>/ with no
+    // ?folder= is this project's window and used to render no install button at all,
+    // on exactly the page the install has to come from. See thisWindowsProject.
+    const installProject = thisWindowsProject();
 
     /*
      * A project is a link, not a button, and that is the whole point.
@@ -1564,9 +1675,9 @@
         <button class="cmo-action cmo-alt" id="cmo-close-projects">Close</button>
       </div>
       ${
-        projectOf(current)
+        installProject
           ? `<div class="cmo-row">
-        <button class="cmo-action cmo-alt" id="cmo-install">&#8962; Give ${projectOf(current)} its own window</button>
+        <button class="cmo-action cmo-alt" id="cmo-install">&#8962; Give ${installProject} its own window</button>
         <button class="cmo-action cmo-alt" id="cmo-install-why">&#9906; Check this install</button>
       </div>
       <p class="cmo-status" id="cmo-install-status"></p>`

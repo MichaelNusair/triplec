@@ -2798,9 +2798,22 @@ ok(
     'to, which is the whole reason it exists',
   /Claude/.test(why),
 );
+/*
+ * And says what to do about it, which changed once Chrome's rule was read rather than
+ * inferred. The advice used to be "remove the chat icon and add it again", on the
+ * theory that the icon held a stale scope. It does not help: `isAppInstalledForUrl` is
+ * `hasAtLeastOneWebApkForOrigin`, so *any* installed app on this origin turns Chrome's
+ * own menu into "already installed" for every page here, freshly installed or not.
+ * What works is the page's own offer, so that is what the report has to point at.
+ */
 ok(
   'the install check names the app in the way but not what to do about it',
-  /home screen/.test(why),
+  /button above/.test(why),
+);
+ok(
+  'the install check blames the installed app without saying that the refusal is per ' +
+    'origin — the one fact that stops someone reinstalling the chat icon to no effect',
+  /per origin/.test(why),
 );
 
 /*
@@ -5174,9 +5187,9 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
   /*
    * And in the project's own window it does not bounce you anywhere: there is nothing
    * to navigate to, and a button that reloaded the workbench to arrive where it
-   * already was would be the switcher's old bug in a new place. With no
-   * `beforeinstallprompt` to prompt — jsdom fires none — what is left is the browser's
-   * own menu, which from here really does install this project.
+   * already was would be the switcher's old bug in a new place. jsdom has no
+   * `onbeforeinstallprompt`, which is what every iOS browser looks like, and there the
+   * browser's own menu is the honest answer: Safari's has no per-origin opinion.
    */
   {
     const { win, doc } = bootAt(
@@ -5191,6 +5204,111 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
       `in the project's own window the install button said ${JSON.stringify(said)} — it is ` +
         'sending a window that can already install somewhere else',
       /browser menu/.test(said),
+    );
+  }
+
+  /*
+   * The button has to be *there*, which is where this regressed.
+   *
+   * The switcher drew the install row only when `?folder=` named a project, and
+   * /p/<name>/ with no query is the page a phone lands on after signing in to
+   * code-server again — the one page whose scope an install can be offered from. No
+   * query, no button; and the only route left is Chrome's own menu, which for a second
+   * app on one origin answers "already installed" and then fails to open anything.
+   */
+  {
+    const { win, doc } = bootAt('https://claude.example.com/p/demo/');
+    doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    ok(
+      'a project window with no ?folder= offered no install button, on the one page the ' +
+        'install can come from',
+      /demo/.test(doc.getElementById('cmo-install')?.textContent ?? ''),
+    );
+  }
+
+  /*
+   * And from there an offer is used, rather than the project being named from a query
+   * that is not there.
+   */
+  {
+    const { win, doc } = bootAt('https://claude.example.com/p/demo/');
+    let prompts = 0;
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => {
+      prompts += 1;
+      return Promise.resolve();
+    };
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    doc.getElementById('cmo-install').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    const said = doc.getElementById('cmo-install-status')?.textContent || '';
+    ok(
+      `an offer in a query-less project window prompted ${prompts} times and said ` +
+        `${JSON.stringify(said)}`,
+      prompts === 1 && /demo/.test(said) && /home screen/i.test(said),
+    );
+  }
+
+  /*
+   * A browser that has the event but has not fired it yet — Chrome on a cold workbench
+   * load, which is every first tap on a phone. The old answer named the browser's menu,
+   * and on Android that menu is the one place this cannot be done: Chrome's
+   * isAppInstalledForUrl is hasAtLeastOneWebApkForOrigin, so with the chat app
+   * installed it calls every page on the host "already installed" and offers an open
+   * that finds no app for /p/<name>/. Pointing someone at it is what the report was.
+   */
+  {
+    const { win, doc } = bootAt('https://claude.example.com/p/demo/');
+    win.onbeforeinstallprompt = null; // what Chrome looks like before the offer lands
+    doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    doc.getElementById('cmo-install').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(60);
+    ok(
+      'the wait for an offer was not visible, so the button looks dead for the seconds ' +
+        'Chrome spends reading the manifest',
+      /Waiting/i.test(doc.getElementById('cmo-install-status')?.textContent ?? ''),
+    );
+    await settle(1400);
+    const said = doc.getElementById('cmo-install-status')?.textContent || '';
+    ok(
+      `with no offer this browser was told ${JSON.stringify(said)} — naming the browser ` +
+        'menu here is naming the one route that answers "already installed"',
+      !/browser menu/i.test(said) && /already installed/i.test(said),
+    );
+
+    // And when it does arrive, the next tap is all that is needed — said here rather
+    // than prompted, because `prompt()` needs the activation of a tap and the tap that
+    // started this is long expired.
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => Promise.resolve();
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    ok(
+      'a late offer changed nothing on screen, so the wait it announced never ends',
+      /again/i.test(doc.getElementById('cmo-install-status')?.textContent ?? ''),
+    );
+  }
+
+  /*
+   * And the link nginx already got right is left where it is. Removing it to append an
+   * identical one restarts Chrome's installability check, which is exactly the offer
+   * the button is waiting for.
+   */
+  {
+    const { doc } = bootAt(
+      'https://claude.example.com/p/demo/',
+      '<link id="from-nginx" rel="manifest" href="/chat/manifest.webmanifest?project=demo">',
+    );
+    ok(
+      'the correct manifest link was replaced with a copy of itself, restarting the ' +
+        'install check for nothing',
+      manifestsIn(doc).length === 1 && !!doc.getElementById('from-nginx'),
     );
   }
 }
