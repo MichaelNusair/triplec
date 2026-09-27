@@ -618,17 +618,20 @@ ok(
 );
 
 /*
- * With no `beforeinstallprompt` in hand there is nothing to prompt with — the app
- * is already installed, or this is a browser that never fires it (every one on
- * iOS). The manifest is linked either way, so the browser's own menu installs the
- * same thing, and saying so is the whole job of the button in that state.
+ * With no `beforeinstallprompt` in hand there is nothing to prompt with, and this
+ * window — /editor/?folder=… , see the URL this file boots at — is the reason there
+ * is none. A project's manifest is scoped to /p/<name>/ and a browser only offers to
+ * install the app a page links while the page is inside that app's scope, so from
+ * here no browser will ever offer, and its own menu cannot either. The button says
+ * where it is going and goes; the section at the bottom of this file has the case
+ * where it stays put and names the menu instead.
  */
 doc.getElementById('cmo-install').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 await new Promise((resolve) => setTimeout(resolve, 10));
 ok(
   'a browser with no install event was told nothing, so the button looks broken on ' +
     'every iPhone',
-  /Home screen/i.test(doc.getElementById('cmo-install-status')?.textContent ?? ''),
+  /demo/.test(doc.getElementById('cmo-install-status')?.textContent ?? ''),
 );
 
 // Chrome's event, as far as this feature can tell one from the real thing.
@@ -5045,6 +5048,150 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
     b.tap('cmo-talk-end');
     await settle(40);
     ok('and that path leaked a microphone', b.allStopped());
+  }
+}
+
+// ------------------------------------- which app a project window belongs to
+/*
+ * The address decides, not the query — and the pages that could not tell used to
+ * hand a project's identity to code-server.
+ *
+ * code-server links a manifest of its own in every page it serves, and that file
+ * names no `id` and no `scope`, so a browser defaults both to the directory the link
+ * resolves in. On /p/<name>/ that is precisely the identity this project's own
+ * manifest asks for, under the name "code-server": accept that install once and the
+ * project is unreachable from an installer forever after, because the icon on the
+ * home screen already holds its name. So the overlay's job is to make sure nothing
+ * else is ever the manifest on the page, and to be right about which project it is.
+ *
+ * `?folder=` was the only thing it read, and `?folder=` goes missing. code-server
+ * answers a request with no password cookie of its own with `./login?folder=…&to=`,
+ * and `to` comes back empty — so a phone whose editor session has lapsed lands back
+ * on the project's path carrying no query at all. That window used to name no
+ * project, remove nothing, and leave code-server's link in place: the one state where
+ * the wrong install is on offer is the state a phone reaches by waiting a week.
+ *
+ * Its own documents, because the URL is the input and this window's location cannot
+ * be changed after `w.eval`.
+ */
+{
+  function bootAt(url, head = '<link rel="manifest" href="./manifest.json">') {
+    const quiet = new VirtualConsole();
+    // The install button navigates, which jsdom reports as an unimplemented
+    // navigation rather than doing it. That is the thing under test, not a failure.
+    quiet.on('jsdomError', () => {});
+    quiet.on('error', (m) => fail(`console error in the install boot: ${m}`));
+    const dom2 = new JSDOM(`<!doctype html><html><head>${head}</head><body></body></html>`, {
+      runScripts: 'outside-only',
+      url,
+      virtualConsole: quiet,
+    });
+    const win = dom2.window;
+    win.addEventListener('error', (e) => fail(`uncaught in the install boot: ${e.message}`));
+    win.fetch = (target) => {
+      if (String(target).includes('/api/projects')) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () =>
+            Promise.resolve({
+              projects: [
+                { name: 'demo', path: '/workspace/projects/demo' },
+                { name: 'other', path: '/workspace/projects/other' },
+              ],
+            }),
+        });
+      }
+      // Everything else a fresh page asks for is refused, which is what a lapsed
+      // chat-service session answers and the state this section is about.
+      return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+    };
+    win.eval(overlayJs);
+    return { win, doc: win.document };
+  }
+  const settle = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const manifestsIn = (doc) =>
+    [...doc.head.querySelectorAll('link[rel="manifest"]')].map((el) => el.getAttribute('href'));
+
+  {
+    const { doc } = bootAt('https://claude.example.com/p/demo/');
+    ok(
+      `a project window with no ?folder= links ${JSON.stringify(manifestsIn(doc))}, so the ` +
+        'install on offer there is code-server’s own app wearing this project’s identity',
+      manifestsIn(doc).length === 1 &&
+        manifestsIn(doc)[0] === '/chat/manifest.webmanifest?project=demo',
+    );
+  }
+
+  /*
+   * And a page that belongs to no project takes code-server's link away with it
+   * rather than leaving it to be installed. /editor/ is the case that matters: the
+   * identity there is /editor/, which is the same for every project, so the first
+   * project installed from it takes the identity and every project after collides
+   * with it — "I installed the main app and now nothing else will install".
+   *
+   * nginx rewrites the tag as well (infra/userdata/bootstrap.sh, checked in
+   * chat-service/manifest-test.js). Both, deliberately: the proxy's rule is a literal
+   * string from someone else's HTML, and this is a script that cannot run before it
+   * loads. Either alone has a hole the other covers.
+   */
+  {
+    const { doc } = bootAt('https://claude.example.com/editor/');
+    ok(
+      `a window with no project left ${JSON.stringify(manifestsIn(doc))} linked, and an ` +
+        'app installed from it holds an identity every project then collides with',
+      manifestsIn(doc).length === 0,
+    );
+  }
+
+  /*
+   * The install offer itself, from the address it cannot be made at.
+   *
+   * A project's scope is /p/<name>/ and a browser only offers to install the app a
+   * page links while the page is inside that app's scope, so at /editor/?folder=…
+   * Chrome says nothing — which reads exactly like "already installed" and was
+   * reported as it. The button now goes where the offer can be made instead of
+   * naming a browser menu that cannot make it either.
+   *
+   * jsdom cannot navigate, so the observable is what the button says it is doing.
+   */
+  {
+    const { win, doc } = bootAt(
+      'https://claude.example.com/editor/?folder=%2Fworkspace%2Fprojects%2Fdemo',
+    );
+    doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    doc.getElementById('cmo-install').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    const said = doc.getElementById('cmo-install-status')?.textContent || '';
+    ok(
+      `outside the project's window the install button said ${JSON.stringify(said)} instead ` +
+        'of opening the one address the offer can come from',
+      /demo/.test(said) && /own window/.test(said),
+    );
+  }
+
+  /*
+   * And in the project's own window it does not bounce you anywhere: there is nothing
+   * to navigate to, and a button that reloaded the workbench to arrive where it
+   * already was would be the switcher's old bug in a new place. With no
+   * `beforeinstallprompt` to prompt — jsdom fires none — what is left is the browser's
+   * own menu, which from here really does install this project.
+   */
+  {
+    const { win, doc } = bootAt(
+      'https://claude.example.com/p/demo/?folder=%2Fworkspace%2Fprojects%2Fdemo',
+    );
+    doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    doc.getElementById('cmo-install').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    const said = doc.getElementById('cmo-install-status')?.textContent || '';
+    ok(
+      `in the project's own window the install button said ${JSON.stringify(said)} — it is ` +
+        'sending a window that can already install somewhere else',
+      /browser menu/.test(said),
+    );
   }
 }
 

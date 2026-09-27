@@ -53,7 +53,7 @@
    *
    * Bump it when this file changes in a way anyone would look for.
    */
-  const OVERLAY_BUILD = '2026-09-24.2';
+  const OVERLAY_BUILD = '2026-09-27.1';
 
   // -------------------------------------------- survive a browser refresh
   /*
@@ -1231,8 +1231,47 @@
    * and in chat-service/manifest.js — which is also where the reasoning is written
    * down. The route is in infra/userdata/bootstrap.sh.
    */
+  function projectWindowPath(project) {
+    return `/p/${encodeURIComponent(project)}/`;
+  }
+
   function projectHref(path) {
-    return `/p/${encodeURIComponent(projectOf(path))}/?folder=${encodeURIComponent(path)}`;
+    return `${projectWindowPath(projectOf(path))}?folder=${encodeURIComponent(path)}`;
+  }
+
+  /**
+   * The project this window's *path* names, or '' for a page that is not one.
+   *
+   * The path is the authority on which app this page belongs to, and `?folder=` is
+   * not: an install is decided by scope, scope is a path prefix, and the query can go
+   * missing without the window changing. It does go missing — code-server answers a
+   * request it has no password cookie for with `./login?folder=…&to=`, and `to` comes
+   * back empty, so what survives that round trip is the project's path and no query.
+   * A window in that state is still the project's window, and reading only `?folder=`
+   * made it look like no project at all — which is how it came to link code-server's
+   * own manifest instead of this project's. See linkProjectManifest.
+   */
+  function projectFromWindow() {
+    const match = /^\/p\/([^/]+)\//.exec(location.pathname);
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]);
+    } catch {
+      return match[1]; // not valid percent-encoding, so not a name the server will take
+    }
+  }
+
+  /**
+   * Whether an install can be offered here at all.
+   *
+   * A project's manifest is scoped to /p/<name>/, and a browser only offers to install
+   * the app a page links while the page is *inside* that app's scope. So the editor's
+   * other addresses — /editor/?folder=…, or the catch-all — can link a project's
+   * manifest and still get silence, which from the outside is indistinguishable from
+   * "already installed". addToHomeScreen walks out of that rather than explaining it.
+   */
+  function inProjectWindow(project) {
+    return !!project && location.pathname.startsWith(projectWindowPath(project));
   }
 
   /*
@@ -1255,11 +1294,29 @@
    * route serving it is behind the session gate like everything else.
    */
   function linkProjectManifest() {
-    const project = projectOf(folder());
-    if (!project) return; // an empty window belongs to no project
-    // Replace rather than append: a browser installs the first manifest it finds,
-    // so leaving a foreign one in front of this would silently install the wrong app.
+    /*
+     * Removed first, and whether or not this page turns out to name a project.
+     *
+     * code-server links a manifest of its own —
+     * `<link rel="manifest" href="./manifest.json">` — and that file has no `id` and
+     * no `scope`, so both default to the directory the link resolves in. On
+     * /p/<name>/ that is *this project's identity*, under the name "code-server": an
+     * install accepted while it is linked takes the identity this project's own
+     * manifest asks for, and every attempt afterwards is answered "already
+     * installed", for good, until the icon is removed. On /editor/ it is worse than
+     * that — the identity is /editor/, which is the same for every project, so the
+     * first project installs and all the others collide with it.
+     *
+     * Which is why this is not conditional on knowing the project. The old early
+     * return left that link in place on exactly the pages that could not name one,
+     * and those are the pages a phone arrives on after a lapsed code-server session.
+     * nginx now rewrites the tag as it passes (see infra/userdata/bootstrap.sh), so
+     * a browser never sees it even before this script runs; this is the half that
+     * does not depend on a string in someone else's HTML staying put.
+     */
     document.querySelectorAll('link[rel="manifest"]').forEach((el) => el.remove());
+    const project = projectFromWindow() || projectOf(folder());
+    if (!project) return; // an empty window belongs to no project
     const link = document.createElement('link');
     link.rel = 'manifest';
     link.href = `/chat/manifest.webmanifest?project=${encodeURIComponent(project)}`;
@@ -1290,7 +1347,24 @@
       if (status) status.textContent = text;
     };
     if (!installPrompt) {
-      // Either it is already installed, or this browser does not offer the event
+      /*
+       * The common reason, and the one worth doing something about: this page is not
+       * the project's own window, so it is outside the scope of the manifest it
+       * links and no browser will offer to install it. That is the whole of the
+       * "it says it's already installed" report — nothing is installed, the offer
+       * simply cannot be made from here.
+       *
+       * So go where it can. One tap lands on /p/<name>/ and the offer is waiting
+       * there; the alternative was a status line telling someone to navigate
+       * themselves, which is the same two taps with a paragraph to read first.
+       */
+      const project = projectOf(folder());
+      if (project && !inProjectWindow(project)) {
+        say(`Opening ${project} in its own window — ask again there.`);
+        location.href = projectHref(folder());
+        return;
+      }
+      // Otherwise it is already installed, or this browser does not offer the event
       // (every iOS browser, for one). The manifest is linked either way, so the
       // browser's own menu installs the same thing.
       say('Use the browser menu → “Add to Home screen”. It picks up this project.');
@@ -1386,7 +1460,9 @@
     lines.push(
       installPrompt
         ? 'Chrome has offered to install this project: the button above will do it.'
-        : 'Chrome has not offered to install this page. It stays silent when it considers the app already installed.',
+        : 'Chrome has not offered to install this page. It stays silent for a page outside ' +
+          'the scope of the manifest it links, and for an app it considers already ' +
+          'installed — the two lines above say which of those this is.',
     );
 
     if (navigator.getInstalledRelatedApps) {

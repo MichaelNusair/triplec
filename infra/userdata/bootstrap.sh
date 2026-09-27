@@ -941,6 +941,15 @@ server {
         proxy_redirect / /editor/;
         proxy_set_header Accept-Encoding "";
         sub_filter '</head>' '\${cmo_head}</head>';
+        # And code-server's own manifest link is defused, because this address is not
+        # an app. Its identity here is /editor/ — the same for every project, since the
+        # query is not part of a scope — so the first project installed from this page
+        # takes it and every project after that is refused as "already installed". That
+        # is the report this exists for. A project installs from its own window,
+        # /p/<name>/, which is the route below; \`rel\` is what changes because an
+        # unknown relation is ignored by every browser and still greppable in a view-
+        # source when someone is working out where a manifest went.
+        sub_filter 'rel="manifest" href="./manifest.json"' 'rel="cw-no-manifest" href="./manifest.json"';
         sub_filter_once on;
         sub_filter_types text/html;
         proxy_http_version 1.1;
@@ -1003,6 +1012,19 @@ server {
         proxy_redirect / /p/\$cwproj/;
         proxy_set_header Accept-Encoding "";
         sub_filter '</head>' '\${cmo_head}</head>';
+        # And the manifest this page links becomes this project's, here, rather than
+        # in JavaScript after the fact.
+        #
+        # code-server links one of its own: <link rel="manifest" href="./manifest.json">.
+        # That file names no \`id\` and no \`scope\`, so a browser defaults both to the
+        # directory the link resolves in — which under this route is /p/<name>/, the
+        # exact identity chat-service/manifest.js mints for this project, wearing the
+        # name "code-server". Install it once and the project's own manifest is
+        # "already installed" from then on, permanently, because the icon on the home
+        # screen holds the identity the install asks for. The overlay does replace the
+        # link, but that is a script racing a browser's install check, and it cannot
+        # run at all before it loads.
+        sub_filter 'rel="manifest" href="./manifest.json"' 'rel="manifest" href="/chat/manifest.webmanifest?project=\$cwproj"';
         sub_filter_once on;
         sub_filter_types text/html;
         proxy_http_version 1.1;
@@ -1029,6 +1051,10 @@ server {
         # stylesheet: CSS that touches \`.part.*\` desynchronises the workbench's
         # JS-computed absolute layout and renders as a blank gray screen.
         sub_filter '</head>' '\${cmo_head}</head>';
+        # Defused here too, for the same reason as at /editor/: no path that falls
+        # through to here belongs to one project, so any app installed from one claims
+        # a scope that is not a project's and collides with the ones that are.
+        sub_filter 'rel="manifest" href="./manifest.json"' 'rel="cw-no-manifest" href="./manifest.json"';
         sub_filter_once on;
         sub_filter_types text/html;
         # sub_filter cannot rewrite compressed bytes.

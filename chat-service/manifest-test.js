@@ -651,6 +651,103 @@ ok(
     'and no way back',
 );
 
+section('And no page serves code-server’s own manifest in a project’s place:');
+/*
+ * The bug this exists for, and the one the report "it says it's already installed"
+ * turned out to be.
+ *
+ * code-server links a manifest of its own in the head of every page it serves. That
+ * file names no `id` and no `scope` — see the route in its own source, which builds
+ * it from `start_url: "."` and nothing else — so a browser defaults both to the
+ * directory the link resolves in. Which means the identity it describes is decided by
+ * the address it is read at, and it is read at the addresses this feature uses:
+ *
+ *   - on /p/<name>/ it is *this project's* identity, under the name "code-server". An
+ *     install accepted there takes the identity the project's own manifest asks for,
+ *     so the project can never be installed again — the icon on the home screen is
+ *     holding its name, and Android answers every later attempt "already installed"
+ *     until it is removed.
+ *   - on /editor/ the identity is /editor/, which is the same for every project,
+ *     because a scope is a path prefix and the ?folder= that tells them apart is not
+ *     part of one. So the first project installed from the editor's own address takes
+ *     it and every project after that collides with it. That is the whole of "I
+ *     installed the main app and now nothing else will install".
+ *
+ * The overlay does replace the link (pwa/mobile-overlay.js, linkProjectManifest), and
+ * that is not enough on its own: it is a script racing the browser's install check,
+ * and it cannot run at all before it loads. So the tag is rewritten in the proxy, and
+ * this reads the rule out of the config and applies it to the real HTML rather than
+ * trusting that a directive spelled somewhere near the right place matches anything.
+ *
+ * The literal below is what code-server 4.x emits — from
+ * lib/vscode/out/vs/code/browser/workbench/workbench.html, confirmed against the
+ * build on the box by fetching a project window through nginx. If a code-server
+ * upgrade changes it, this check fails rather than the feature silently regressing.
+ */
+const codeServerManifestLink =
+  '<link rel="manifest" href="./manifest.json" crossorigin="use-credentials" />';
+/** The sub_filter rules of a location block, in order, as [search, replace] pairs. */
+const subFiltersOf = (block) =>
+  [...block.matchAll(/\n\s*sub_filter\s+'([^']*)'\s+'([^']*)'\s*;/g)].map((m) => [
+    unescapeConf(m[1]),
+    unescapeConf(m[2]),
+  ]);
+/*
+ * `sub_filter_once on` everywhere, so each rule replaces its first match and no more.
+ * The location's own captures are filled in from the route regex itself — naming
+ * `demo` twice would let the config and the pattern disagree about which group holds
+ * the project.
+ */
+const routeCaptures = matcher.exec(projectWindowPath('demo'))?.groups ?? {};
+const applySubFilters = (block, html) =>
+  subFiltersOf(block).reduce(
+    (text, [search, replace]) =>
+      text.replace(
+        search,
+        replace.replace(/\$\{?(\w+)\}?/g, (whole, name) => routeCaptures[name] ?? whole),
+      ),
+    html,
+  );
+for (const [name, block] of [
+  ['the project route', body],
+  ['/editor/', blockFor('/editor/')?.[2] ?? ''],
+  ['the catch-all', blockFor('/')?.[2] ?? ''],
+]) {
+  ok(
+    applySubFilters(block, codeServerManifestLink) !== codeServerManifestLink,
+    `${name} passes code-server’s own manifest link through untouched, so a phone can ` +
+      'install an app that holds a project’s identity under code-server’s name',
+  );
+}
+const projectLink = applySubFilters(body, codeServerManifestLink);
+ok(
+  /rel="manifest"/.test(projectLink),
+  'the project route strips the manifest link instead of pointing it at the project, ' +
+    'so a project window has nothing to install',
+);
+ok(
+  /href="([^"]*)"/.exec(projectLink)?.[1] === '/chat/manifest.webmanifest?project=demo',
+  'the project route points the manifest link somewhere other than this project’s ' +
+    'manifest — the route serving it is in chat-service/server.js and the same URL is ' +
+    'built in pwa/mobile-overlay.js',
+);
+ok(
+  /crossorigin="use-credentials"/.test(projectLink),
+  'the rewritten link lost use-credentials, so the manifest is fetched without the ' +
+    'session cookie and the server answers 401 to the one request that decides ' +
+    'whether this is installable',
+);
+for (const [name, block] of [
+  ['/editor/', blockFor('/editor/')?.[2] ?? ''],
+  ['the catch-all', blockFor('/')?.[2] ?? ''],
+]) {
+  ok(
+    !/rel="manifest"/.test(applySubFilters(block, codeServerManifestLink)),
+    `${name} still offers an installable app, and it is not a project’s: every project ` +
+      'reached through it shares one identity, so only the first of them installs',
+  );
+}
+
 section('And the two addresses the chat app’s move depends on:');
 /*
  * Moving the chat app to /chat/ left the bare domain with nothing to serve, and a
