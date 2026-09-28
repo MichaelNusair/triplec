@@ -5613,9 +5613,7 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
   }
 
   /*
-   * And once it is installed, every control that offered it goes — including on a page
-   * that was not the one prompted from, because Android fires this at the window that
-   * happens to be open.
+   * And once *this* page's install lands, every control that offered it goes.
    */
   {
     const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
@@ -5624,6 +5622,10 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
     offer.userChoice = Promise.resolve({ outcome: 'accepted' });
     win.dispatchEvent(offer);
     await settle(20);
+    doc
+      .getElementById('cmo-offer-go')
+      .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(40);
     win.dispatchEvent(new win.Event('appinstalled'));
     await settle(40);
     ok(
@@ -5635,7 +5637,59 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
     );
     ok(
       `an install that finally worked left no line saying so: ${JSON.stringify(reports)}`,
-      reports.some((line) => line.startsWith('installed')),
+      // The space matters: `installed-elsewhere` starts with the same word.
+      reports.some((line) => line.startsWith('installed ')),
+    );
+  }
+
+  /*
+   * But an install nobody on this page asked for leaves this page's offer alone — which
+   * is the whole of the sixth report of this bug, and the one thing the fifth round got
+   * backwards.
+   *
+   * `appinstalled` has no payload and Chrome fires it at the tab rather than at the app:
+   * a WebAPK takes a few seconds to mint, and the event lands on whatever document is
+   * open by then. So installing project A and walking straight on to project B means
+   * B's page sees an `appinstalled` that is A's, one second after it loads. Taking the
+   * offer down there — and marking it dismissed, so it could not come back — is exactly
+   * "it installs one app and then never offers again". The phone's journal has the
+   * sequence: `prompted-accepted-via-banner page=/editor/` at 18:31:57, then
+   * `installed page=/p/aws-managment/login` at 18:32:02 with no prompt in between.
+   */
+  {
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/aws-managment/');
+    let prompts = 0;
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => {
+      prompts += 1;
+      return Promise.resolve();
+    };
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    // The previous project's WebAPK, finishing behind this page.
+    win.dispatchEvent(new win.Event('appinstalled'));
+    await settle(40);
+    ok(
+      'another project finishing its install took this project\'s offer off the screen, ' +
+        'which is how installing one app came to mean never being offered a second',
+      doc.querySelector('#cmo-offer.cmo-open') &&
+        doc.getElementById('cmo-add') &&
+        doc.body.classList.contains('cmo-offering'),
+    );
+    ok(
+      `this page reported an install it never asked for as its own: ${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('installed-elsewhere')) &&
+        !reports.some((line) => line.startsWith('installed ')),
+    );
+    // And the offer it kept is still live, rather than a button over a spent prompt.
+    doc
+      .getElementById('cmo-offer-go')
+      .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(40);
+    ok(
+      `the offer survived on screen but no longer prompts: ${prompts} prompts`,
+      prompts === 1 && reports.some((line) => line.startsWith('prompted-accepted-via-banner')),
     );
   }
 

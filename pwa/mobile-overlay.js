@@ -53,7 +53,7 @@
    *
    * Bump it when this file changes in a way anyone would look for.
    */
-  const OVERLAY_BUILD = '2026-09-28.1';
+  const OVERLAY_BUILD = '2026-09-28.2';
 
   // -------------------------------------------- survive a browser refresh
   /*
@@ -1511,6 +1511,26 @@
 
   /** Set by the × only: an offer this page load was declined, so stop showing it. */
   let offerDismissed = false;
+  /*
+   * Whether the install that is finishing is one this page asked for.
+   *
+   * `appinstalled` carries no payload, and Chrome fires it at a *tab*, not at an app:
+   * AppBannerManager lives on the WebContents, so a WebAPK that takes a few seconds to
+   * mint fires its event at whichever document is open when it lands. The phone's own
+   * journal caught precisely that — `prompted-accepted-via-banner page=/editor/` at
+   * 18:31:57, then `installed page=/p/aws-managment/login` five seconds later, one
+   * second after *that* page loaded and with no prompt of its own anywhere in between.
+   *
+   * Acting on the event regardless is what made the second project impossible to
+   * install: the new project's offer was taken down, and marked dismissed so it would
+   * not return, by the previous project's install completing behind it. Which from the
+   * outside is "it installs one app and then stops offering" — the report this is
+   * being fixed for. An earlier version of the test beside this asserted that
+   * behaviour on purpose, reasoning that an event for the window must be about the
+   * window. It is the opposite: an event that arrives at whatever page is open is an
+   * event no page may assume is its own.
+   */
+  let promptedHere = false;
 
   /**
    * Put the banner away, leaving the offer itself alone.
@@ -1558,6 +1578,7 @@
       return null;
     }
     try {
+      promptedHere = true;
       await offer.prompt();
       const choice = await offer.userChoice;
       const outcome = choice?.outcome || 'unknown';
@@ -1604,6 +1625,16 @@
    * whichever control was tapped.
    */
   window.addEventListener('appinstalled', () => {
+    if (!promptedHere) {
+      /*
+       * Another project's install, finishing in this tab. Reported rather than dropped
+       * silently, because it is the only trace there is of an install that began on a
+       * page the phone has already left — and otherwise ignored, because this page's
+       * offer is still this page's to take.
+       */
+      reportInstall('installed-elsewhere');
+      return;
+    }
     installPrompt = null;
     offerDismissed = true;
     hideOffer();
