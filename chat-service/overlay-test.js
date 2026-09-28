@@ -5294,7 +5294,7 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
    * that is not there.
    */
   {
-    const { win, doc } = bootAt('https://claude.example.com/p/demo/');
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
     let prompts = 0;
     const offer = new win.Event('beforeinstallprompt', { cancelable: true });
     offer.prompt = () => {
@@ -5305,6 +5305,17 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
     win.dispatchEvent(offer);
     doc.getElementById('cmo-projects').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
     await settle(20);
+    /*
+     * And the loud offer is a different element from this row, which is not a detail:
+     * they were both #cmo-install for one revision, and an id shared with something
+     * styled `display: none` until it opens is a row that is simply never there.
+     * #cmo-status has the same story in this file.
+     */
+    ok(
+      'the switcher\'s install row and the install offer share an id, so the offer\'s ' +
+        'own display rule decides whether the row exists',
+      doc.querySelectorAll('[id="cmo-install"]').length === 1 && doc.getElementById('cmo-offer'),
+    );
     doc.getElementById('cmo-install').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
     await settle(20);
     const said = doc.getElementById('cmo-install-status')?.textContent || '';
@@ -5312,6 +5323,22 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
       `an offer in a query-less project window prompted ${prompts} times and said ` +
         `${JSON.stringify(said)}`,
       prompts === 1 && /demo/.test(said) && /home screen/i.test(said),
+    );
+    /*
+     * The offer is spent, so nothing anywhere may still be offering it. This row used
+     * to clear the event and leave the bar button and the banner up — two controls
+     * that could then only disappoint, which is the failure the bar button was added
+     * to remove.
+     */
+    ok(
+      'installing from the switcher left the other two offers on screen, and the event ' +
+        'cannot be prompted twice',
+      !doc.querySelector('#cmo-offer.cmo-open') && !doc.getElementById('cmo-add'),
+    );
+    ok(
+      `the switcher's install said nothing in the journal, so a tap there looks exactly ` +
+        `like no tap at all: ${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('prompted-accepted-via-switcher')),
     );
   }
 
@@ -5438,6 +5465,181 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
   }
 
   /*
+   * And the offer in words, which is the half that was missing.
+   *
+   * The phone settled what three rounds of reading Chromium's source could not:
+   * `INSTALL: offered … offer=held … inScope=yes` against two different projects,
+   * and no `prompted-` line behind either of them. Chrome was willing, the button
+   * was on the bar, and it was never tapped — because the bar is five 40px glyphs at
+   * 45% opacity on the left edge, and the browser menu beside it says "already
+   * installed" with total confidence. So the offer has to name what it installs.
+   */
+  {
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
+    ok(
+      'an install offer is on screen before any browser has made one',
+      !doc.querySelector('#cmo-offer.cmo-open'),
+    );
+    let prompts = 0;
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => {
+      prompts += 1;
+      return Promise.resolve();
+    };
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    const banner = doc.querySelector('#cmo-offer.cmo-open');
+    ok(
+      'the browser held an offer to install this project and nothing on screen said so ' +
+        'in words — which is the state the phone was in when it reported this broken',
+      banner,
+    );
+    ok(
+      `the offer does not name what it installs: ${JSON.stringify(banner?.textContent)}`,
+      /Install demo/.test(banner?.textContent || ''),
+    );
+    ok(
+      'nothing in the offer is labelled Install, so which part to tap is a guess',
+      /^install$/i.test(doc.getElementById('cmo-offer-go')?.textContent?.trim() || ''),
+    );
+    ok(
+      'an open offer covers the status chip instead of moving it down',
+      doc.body.classList.contains('cmo-offering'),
+    );
+    /*
+     * And it is laid out without help from the stylesheet, because on one of the two
+     * pages it appears on there is no stylesheet to help.
+     *
+     * code-server's login page sends `style-src 'self'` with no 'unsafe-inline', which
+     * blocks the <style> element the overlay injects — measured in a real Chrome
+     * against the real login HTML: `position: static` for this element there, `fixed`
+     * on the workbench, which sends no CSP at all. The phone's reports put Chrome's
+     * offer on the login page too (`page=/p/<name>/login … offer=held`), so an offer
+     * that only the stylesheet positions is an unstyled pile of text exactly half the
+     * time it is shown. CSP does not police property writes, so these are properties.
+     */
+    ok(
+      'the offer is positioned by the stylesheet, which the login page\'s CSP throws ' +
+        `away: ${JSON.stringify(banner?.getAttribute('style'))}`,
+      banner?.style.position === 'fixed' &&
+        banner?.style.display === 'flex' &&
+        banner?.style.top !== '' &&
+        banner?.style.zIndex !== '' &&
+        // A width, not a max-width: see the note beside it. Half a phone's width of
+        // wrapped text is not the offer anyone designed.
+        banner?.style.width !== '',
+    );
+    ok(
+      'the Install button is styled by the stylesheet alone, so under the login page ' +
+        'CSP it is an unstyled word rather than a button',
+      doc.getElementById('cmo-offer-go')?.style.background !== '',
+    );
+    const spentBar = doc.getElementById('cmo-add');
+    doc
+      .getElementById('cmo-offer-go')
+      .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(40);
+    ok(`one tap on the offer prompted ${prompts} times, not once`, prompts === 1);
+    ok(
+      'a spent offer is still on screen with its button live, so the next tap is a dead ' +
+        'one — the exact failure the bar button was added to stop',
+      !doc.querySelector('#cmo-offer.cmo-open') &&
+        !doc.getElementById('cmo-add') &&
+        !doc.body.classList.contains('cmo-offering'),
+    );
+    ok(
+      `the journal cannot say which control took the offer: ${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('prompted-accepted-via-banner')),
+    );
+    /*
+     * And a tap that found no offer says so. Four rounds of this were spent unable to
+     * tell "Chrome refused" from "nobody tapped", and a tap that reports nothing is
+     * that same ambiguity one level in.
+     */
+    spentBar?.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(40);
+    ok(
+      `a tap on a control with no offer behind it is silent, which reads as no tap: ` +
+        `${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('no-offer-in-hand')),
+    );
+  }
+
+  /*
+   * Declining is allowed, and it costs nothing.
+   *
+   * The x means "not now", not "throw it away". A dismissal that also took the bar
+   * button would spend the one offer the browser is going to make on this page load
+   * and leave the person who tapped it with the menu that cannot install — which is
+   * where this whole report started.
+   */
+  {
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
+    let prompts = 0;
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => {
+      prompts += 1;
+      return Promise.resolve();
+    };
+    offer.userChoice = Promise.resolve({ outcome: 'dismissed' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    doc
+      .getElementById('cmo-offer-no')
+      .dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(20);
+    ok(
+      'the x did not put the offer away, so it cannot be got rid of',
+      !doc.querySelector('#cmo-offer.cmo-open') &&
+        !doc.body.classList.contains('cmo-offering'),
+    );
+    ok(
+      'dismissing the banner took the bar button with it, so declining the loud offer ' +
+        'throws away the quiet one as well',
+      doc.getElementById('cmo-add'),
+    );
+    doc.getElementById('cmo-add').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+    await settle(40);
+    ok(
+      `the offer was gone after a dismissal: the bar prompted ${prompts} times`,
+      prompts === 1,
+    );
+    ok(
+      `a dismissal is invisible in the journal, so a phone that declined looks like a ` +
+        `phone that was never offered: ${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('dismissed')),
+    );
+  }
+
+  /*
+   * And once it is installed, every control that offered it goes — including on a page
+   * that was not the one prompted from, because Android fires this at the window that
+   * happens to be open.
+   */
+  {
+    const { win, doc, reports } = bootAt('https://claude.example.com/p/demo/');
+    const offer = new win.Event('beforeinstallprompt', { cancelable: true });
+    offer.prompt = () => Promise.resolve();
+    offer.userChoice = Promise.resolve({ outcome: 'accepted' });
+    win.dispatchEvent(offer);
+    await settle(20);
+    win.dispatchEvent(new win.Event('appinstalled'));
+    await settle(40);
+    ok(
+      'the project was installed and it is still being offered, which reads as the ' +
+        'install having failed',
+      !doc.querySelector('#cmo-offer.cmo-open') &&
+        !doc.getElementById('cmo-add') &&
+        !doc.body.classList.contains('cmo-offering'),
+    );
+    ok(
+      `an install that finally worked left no line saying so: ${JSON.stringify(reports)}`,
+      reports.some((line) => line.startsWith('installed')),
+    );
+  }
+
+  /*
    * And no such button on a page that belongs to no project: the offer there is for
    * whatever the page links, which at /editor/ is an identity every project collides
    * with, and putting it on the bar would be inviting the collision by hand.
@@ -5453,6 +5655,11 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
       'a window with no project put an install on the bar, and what it installs is not ' +
         'a project',
       !doc.getElementById('cmo-add'),
+    );
+    ok(
+      'a window with no project offered an install in words, naming an app whose scope ' +
+        'every project collides with',
+      !doc.querySelector('#cmo-offer.cmo-open'),
     );
   }
 

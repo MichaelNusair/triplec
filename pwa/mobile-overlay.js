@@ -53,7 +53,7 @@
    *
    * Bump it when this file changes in a way anyone would look for.
    */
-  const OVERLAY_BUILD = '2026-09-27.3';
+  const OVERLAY_BUILD = '2026-09-28.1';
 
   // -------------------------------------------- survive a browser refresh
   /*
@@ -192,6 +192,15 @@
     0%,100% { box-shadow: 0 0 0 0 rgba(217,119,87,.55), 0 4px 14px rgba(0,0,0,.45) }
     50%     { box-shadow: 0 0 0 14px rgba(217,119,87,0), 0 4px 14px rgba(0,0,0,.45) }
   }
+
+  /*
+   * The install offer is styled from JavaScript, not from here — see OFFER_STYLE and
+   * the CSP note beside it. These two rules are the exceptions, because neither can be
+   * written as a property on an element: a pseudo-class, and someone else's element.
+   */
+  #cmo-offer-go:active { transform: scale(.96); }
+  /* An open offer owns the top slot; the chip moves under it rather than behind it. */
+  body.cmo-offering #cmo-chip { top: calc(max(6px, env(safe-area-inset-top)) + 60px); }
 
   #cmo-sheet {
     position: fixed; inset: 0; z-index: 2147483001;
@@ -1384,21 +1393,181 @@
   addBtn.type = 'button';
   addBtn.className = 'cmo-btn cmo-secondary';
   addBtn.innerHTML = '&#8962;'; // the same mark the switcher's own install row carries
-  addBtn.addEventListener('click', async () => {
-    const offer = installPrompt;
-    // One shot per page load either way: the event cannot be prompted twice, and a
-    // button that looks live after it is spent is the dead button this replaced.
-    installPrompt = null;
+  addBtn.addEventListener('click', () => {
+    takeOffer('bar').catch(() => {});
+  });
+
+  /*
+   * And the same offer said out loud, which is what was missing.
+   *
+   * A button on the bar was the answer to "the menu people reach for cannot do
+   * this", and it was half an answer: the offer existed, the button was there, and
+   * the phone's own reports show it was never tapped. An unlabelled glyph among five
+   * other glyphs, at 45% opacity, does not tell anyone that the thing they have been
+   * trying to do for four rounds is one tap away. This does, by name.
+   *
+   * Dismissal is per page load and deliberately not remembered: the browser's own
+   * install strip behaves the same way, and a dismissal kept on disk is how someone
+   * loses the only route that works. The bar button and the switcher's install row
+   * both survive a dismissal.
+   */
+  const installBar = document.createElement('div');
+  installBar.id = 'cmo-offer';
+  installBar.setAttribute('role', 'dialog');
+  installBar.setAttribute('aria-live', 'polite');
+  installBar.innerHTML =
+    '<span class="cmo-offer-what"><b></b>' +
+    '<span>Its own icon, its own window</span></span>' +
+    '<button id="cmo-offer-go" type="button">Install</button>' +
+    '<button id="cmo-offer-no" type="button" aria-label="Not now">&#215;</button>';
+
+  /*
+   * Styled here rather than in the stylesheet above, because on one of the two pages
+   * this has to appear on, that stylesheet does not exist.
+   *
+   * code-server's login page carries its own
+   * <meta http-equiv="Content-Security-Policy" content="style-src 'self'; …"> with no
+   * 'unsafe-inline', which blocks the <style> element this file injects. Measured, not
+   * assumed: on that page getComputedStyle reports `position: static` for this element
+   * and `fixed` once the same value is written through the CSSOM, which CSP does not
+   * police. The workbench sends no CSP at all, which is why the bar has looked right
+   * for as long as it has and nobody noticed this.
+   *
+   * It matters here specifically because Chrome offers the install on the login page
+   * too — the phone's own reports say `page=/p/<name>/login … offer=held` — and an
+   * offer that is only styled on one of the two pages it appears on is the same class
+   * of bug as an offer nobody can see.
+   */
+  Object.assign(installBar.style, {
+    position: 'fixed',
+    zIndex: '2147483002',
+    top: '6px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    boxSizing: 'border-box',
+    // A width, not a max-width. `left: 50%` leaves a fixed box only the right half of
+    // the viewport to be shrink-to-fit in, so a max-width above that half is never the
+    // binding constraint and the text wraps into a tall stack at half the screen — 195
+    // x 117 on a 390px phone, measured. Stating the width is what makes the centring
+    // mean what it looks like it means.
+    width: 'min(94vw, 460px)',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '8px 8px 8px 14px',
+    borderRadius: '14px',
+    background: 'rgba(38,38,36,.98)',
+    color: '#f5f4ef',
+    border: '1px solid #45453f',
+    boxShadow: '0 6px 24px rgba(0,0,0,.55)',
+    font: '14px/1.3 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif',
+    display: 'none',
+  });
+  // Under a notch where it parses. jsdom's CSS parser drops env() and keeps the 6px
+  // above, which is the right answer for a browser that has no safe area either.
+  installBar.style.top = 'max(6px, env(safe-area-inset-top))';
+  Object.assign(installBar.querySelector('.cmo-offer-what').style, {
+    flex: '1 1 auto',
+    minWidth: '0',
+  });
+  Object.assign(installBar.querySelector('.cmo-offer-what b').style, {
+    display: 'block',
+    fontWeight: '600',
+  });
+  Object.assign(installBar.querySelector('.cmo-offer-what span').style, {
+    display: 'block',
+    color: '#a3a39b',
+    fontSize: '12px',
+  });
+  Object.assign(installBar.querySelector('#cmo-offer-go').style, {
+    flex: '0 0 auto',
+    border: 'none',
+    borderRadius: '9px',
+    background: '#d97757',
+    color: '#fff',
+    padding: '9px 15px',
+    fontWeight: '600',
+    fontSize: '14px',
+    fontFamily: 'inherit',
+    cursor: 'pointer',
+  });
+  Object.assign(installBar.querySelector('#cmo-offer-no').style, {
+    flex: '0 0 auto',
+    border: 'none',
+    background: 'transparent',
+    cursor: 'pointer',
+    color: '#8a8a82',
+    fontSize: '20px',
+    lineHeight: '1',
+    padding: '6px 8px',
+  });
+  installBar.querySelector('#cmo-offer-go').addEventListener('click', () => {
+    takeOffer('banner').catch(() => {});
+  });
+  installBar.querySelector('#cmo-offer-no').addEventListener('click', () => {
+    offerDismissed = true;
+    closeBanner();
+    reportInstall('dismissed');
+  });
+
+  /** Set by the × only: an offer this page load was declined, so stop showing it. */
+  let offerDismissed = false;
+
+  /**
+   * Put the banner away, leaving the offer itself alone.
+   *
+   * What the x means is "not this, not now", not "throw the offer away": the event is
+   * still live, the bar button still holds it, and the switcher's install row still
+   * works. Declining the loud version of an offer should not cost someone the quiet
+   * one — that is how the only route that works gets lost.
+   */
+  function closeBanner() {
+    installBar.classList.remove('cmo-open');
+    installBar.style.display = 'none';
+    document.body.classList.remove('cmo-offering');
+  }
+
+  /** And the offer is gone: spent, or installed. Every control with it. */
+  function hideOffer() {
+    closeBanner();
     addBtn.remove();
-    if (!offer) return;
+  }
+
+  /**
+   * Straight from a tap to `prompt()`, wherever the tap landed.
+   *
+   * Nothing is awaited before `prompt()`: it needs the transient activation of the
+   * tap, so a fetch or a sheet that lists projects first spends it and the call
+   * throws NotAllowedError. One shot either way — the event cannot be prompted
+   * twice, so both controls go at once and neither is left looking live when it is
+   * spent. `source` rides along into the journal because which of the two the offer
+   * was finally taken from is the thing this round is trying to find out.
+   */
+  async function takeOffer(source) {
+    const offer = installPrompt;
+    installPrompt = null;
+    hideOffer();
+    if (!offer) {
+      /*
+       * A tap on a control that looked live and was not. Worth a line of its own: a
+       * tap that produces no report is indistinguishable from no tap at all, and
+       * telling those two apart is the whole reason any of this is in the journal.
+       * It is how the switcher's row used to leave the bar button behind — prompted,
+       * cleared the offer, and left something on screen that could only disappoint.
+       */
+      reportInstall(`no-offer-in-hand-via-${source}`);
+      return null;
+    }
     try {
       await offer.prompt();
       const choice = await offer.userChoice;
-      reportInstall(`prompted-${choice?.outcome || 'unknown'}`);
+      const outcome = choice?.outcome || 'unknown';
+      reportInstall(`prompted-${outcome}-via-${source}`);
+      return outcome;
     } catch (err) {
-      reportInstall(`prompt-failed-${err.name || 'Error'}`);
+      reportInstall(`prompt-failed-${err.name || 'Error'}-via-${source}`);
+      throw err;
     }
-  });
+  }
 
   window.addEventListener('beforeinstallprompt', (event) => {
     event.preventDefault();
@@ -1408,18 +1577,37 @@
     waiting.forEach((resolve) => resolve(event));
     /*
      * And the offer becomes something on screen rather than something to be found,
-     * plus one line in the box's journal saying it arrived. That line is the fact this
-     * has been missing: nginx logs every project page a phone opens, so a page load
-     * with no "offered" beside it is Chrome refusing, and a page load with one is
-     * Chrome willing and the button being missed. Guessing between those two is what
-     * three rounds of this went on.
+     * plus one line in the box's journal saying it arrived. That line is what ended
+     * the guessing: nginx logs every project page a phone opens, so a page load with
+     * no "offered" beside it is Chrome refusing, and a page load with one is Chrome
+     * willing and the offer being missed. It was the second one.
      */
     const project = thisWindowsProject();
     if (!project) return;
     addBtn.setAttribute('aria-label', `Install ${project}`);
     addBtn.title = `Install ${project}`;
     if (!addBtn.isConnected) fab.insertBefore(addBtn, fab.querySelector('#cmo-mic'));
+    installBar.querySelector('.cmo-offer-what b').textContent = `Install ${project}`;
+    if (!installBar.isConnected) document.body.appendChild(installBar);
+    if (!offerDismissed) {
+      installBar.classList.add('cmo-open');
+      installBar.style.display = 'flex';
+      document.body.classList.add('cmo-offering');
+    }
     reportInstall('offered');
+  });
+
+  /*
+   * It worked. Android fires this once the WebAPK is on the home screen, and the
+   * offer that produced it is stale from that moment — including on a page that was
+   * never the one prompted from, which is why this clears everything rather than
+   * whichever control was tapped.
+   */
+  window.addEventListener('appinstalled', () => {
+    installPrompt = null;
+    offerDismissed = true;
+    hideOffer();
+    reportInstall('installed');
   });
 
   /** Whether this browser has the event at all — no iOS browser does. */
@@ -1589,13 +1777,17 @@
         return;
       }
     }
+    /*
+     * Through the same one door as the bar and the banner, rather than a third copy
+     * of prompt-and-hope. It was a third copy until now, and the difference showed:
+     * this one cleared the offer without taking the other two controls off the
+     * screen, so a tap here left a live-looking button that could do nothing, and it
+     * never said a word in the journal about how it went.
+     */
     try {
-      await installPrompt.prompt();
-      const choice = await installPrompt.userChoice;
-      // One shot per page load: the event cannot be prompted twice.
-      installPrompt = null;
+      const outcome = await takeOffer('switcher');
       say(
-        choice?.outcome === 'accepted'
+        outcome === 'accepted'
           ? `${project} is on your home screen. It opens in its own window.`
           : 'Not added. This button can offer again after a reload.',
       );
