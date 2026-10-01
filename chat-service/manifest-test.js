@@ -47,6 +47,7 @@ const {
   manifestForProject,
   deploymentName,
   appTitle,
+  iconLabel,
   chatManifest,
   applyDeploymentName,
   APP_NAME,
@@ -267,7 +268,24 @@ process.env.PWA_NAME = 'work';
 const named = await manifestForProject('demo');
 ok(deploymentName() === 'work', 'the deployment name is not read from the environment');
 ok(appTitle('demo') === 'work: demo', 'a project title is not "<name>: <project>"');
-ok(named.short_name === 'work: demo', 'the label under the icon does not say which deployment it opens');
+ok(iconLabel('demo') === 'demo · work', 'the icon label is not "<project> · <name>"');
+ok(named.short_name === 'demo · work', 'the label under the icon does not say which deployment it opens');
+/*
+ * The ordering, asserted rather than left to the string above, because this is the bug
+ * it was changed for: a phone shows about a dozen characters under an icon and the app
+ * drawer sorts on the same string, so a deployment-first label makes every project on
+ * one deployment read the same and sort together. Seven installed projects looked like
+ * none. What survives truncation has to be the part that differs.
+ */
+ok(
+  named.short_name.startsWith('demo'),
+  'the label under the icon leads with the deployment, so every project on this ' +
+    'deployment truncates to the same word and sorts under the same letter',
+);
+ok(
+  named.short_name !== (await manifestForProject('other')).short_name,
+  'two projects on a named deployment install under the same icon label',
+);
 ok(
   named.name === `work: demo — ${APP_NAME}`,
   'the installer label does not name the deployment, so two deployments offer the same install',

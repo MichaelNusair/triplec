@@ -131,6 +131,29 @@ export function appTitle(project) {
 }
 
 /**
+ * The label a phone writes under the icon, which is a different job from a title.
+ *
+ * A tab has room for "<deployment>: <project>" and reads better with the deployment
+ * first. `short_name` has no room at all: Android gives a home-screen label about a
+ * dozen characters and truncates, and the app drawer sorts on the same string. So the
+ * deployment-first order that is right for appTitle is wrong here, and the difference
+ * is the whole report this exists for — seven project apps installed on one phone
+ * (the journal has the `installed` line for each) all read "personal: …" under seven
+ * identical icons, filed together under "p". Which is indistinguishable from the
+ * installs having silently failed, and was reported as exactly that: "I only have
+ * triplec installed".
+ *
+ * So the project goes where the characters are, and the deployment follows it for the
+ * case the prefix was added for — two deployments' icons for the same project, which
+ * would otherwise be the same word twice. The project is still the part that survives
+ * truncation, which is the part that has to differ.
+ */
+export function iconLabel(project) {
+  const name = deploymentName();
+  return name ? `${project} · ${name}` : project;
+}
+
+/**
  * The chat app's own manifest: pwa/manifest.webmanifest, wearing this deployment's
  * name.
  *
@@ -216,11 +239,11 @@ export function projectStartUrl(project, path) {
 /**
  * The manifest for one project.
  *
- * `short_name` is what Android writes under the icon, so it is the project and
- * nothing else it can do without — on a deployment with a name of its own that is
- * "<name>: <project>", because two deployments' icons for the same project are
- * otherwise the same word twice. `name` is the longer label used in the installer
- * and app info, and says what the thing is.
+ * `short_name` is what Android writes under the icon and truncates, so it leads with
+ * the project and nothing else — see iconLabel, which is where the ordering is argued
+ * and why it is not appTitle's. `name` is the longer label used in the installer and
+ * app info, and it is the one that carries the deployment's name in full, because
+ * nothing truncates it.
  *
  * Two deliberate omissions:
  *   - `orientation`. The chat app asks for portrait; a workbench is used in both,
@@ -239,7 +262,7 @@ export function projectManifest({ project, path }) {
     // is renamed, which is why the name below is not in here.
     id: home,
     name: `${title} — ${APP_NAME}`,
-    short_name: title,
+    short_name: iconLabel(project),
     description: `Claude Code in ${project}, in a window of its own`,
     start_url: projectStartUrl(project, path),
     /*
