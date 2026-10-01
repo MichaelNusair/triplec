@@ -1755,10 +1755,17 @@
     if (!installPrompt) {
       /*
        * One reason is worth acting on rather than explaining: this page is not the
-       * project's own window, so it is outside the scope of the manifest it links and
-       * no browser will offer to install it. One tap lands on /p/<name>/, where the
-       * offer exists; the alternative was a status line telling someone to navigate
-       * themselves, which is the same two taps with a paragraph to read first.
+       * project's own window, so it is outside the scope of the manifest it links.
+       * One tap lands on /p/<name>/, where the page and the manifest agree; the
+       * alternative was a status line telling someone to navigate themselves, which
+       * is the same two taps with a paragraph to read first.
+       *
+       * Not because the install would be refused out here — it is not. The journal
+       * has `page=/editor/ … inScope=no … offered`, then accepted, then `installed`,
+       * twice, and the icon it produced opens /p/<name>/ as the manifest asks:
+       * Chrome's installability check reads the manifest, not the document's place in
+       * its scope. This stays because arriving in the window the icon will open is
+       * worth one tap, and because the offer out here is Chrome's to withdraw.
        */
       if (project && !inProjectWindow(project)) {
         say(`Opening ${project} in its own window — ask again there.`);

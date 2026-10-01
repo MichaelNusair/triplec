@@ -217,10 +217,13 @@ const PAGE_BUILD = $('meta[name="build"]')?.content.trim() || '';
 /**
  * Title the tab after the project on screen, or after the deployment when none is.
  *
- * "<name>: <project>" is the same label the project's own installed icon carries
- * (short_name in chat-service/manifest.js), so the tab and the home screen agree
- * about what a window is. Without a deployment name the project stands alone, which
- * is what one deployment wants: it has nothing to be told apart from.
+ * "<name>: <project>" names the same two things the project's installed icon does,
+ * in the other order: a tab has room for both and reads better with the deployment
+ * first, while a home-screen label is truncated to about a dozen characters and has
+ * to lead with the project (iconLabel in chat-service/manifest.js, which is where
+ * that is argued). Without a deployment name the two are the same string, and the
+ * project stands alone — which is what one deployment wants: it has nothing to be
+ * told apart from.
  */
 function setTabTitle(project) {
   if (!project) {
