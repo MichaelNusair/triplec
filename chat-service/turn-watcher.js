@@ -254,6 +254,14 @@ export function createTurnWatcher({
    * is looking at.
    */
   const ours = new Set();
+  /*
+   * Whether the last scan had anywhere to send to.
+   *
+   * Starts true so that a box with nothing subscribed says so on its first scan
+   * rather than on its first *loss* — "it has never worked" and "it stopped working"
+   * both need saying, and neither used to be said.
+   */
+  let hadDevices = true;
   let seeded = false;
   let timer = null;
   let scanning = null;
@@ -273,9 +281,32 @@ export function createTurnWatcher({
     // listening.
     const devices = await subscriptions();
     if (!devices.length) {
+      /*
+       * And said out loud the first time, because this branch is indistinguishable
+       * from working.
+       *
+       * An empty device list is the one failure that produces no error on any side:
+       * this returns before it reads a transcript, push.js has nothing to send to, and
+       * the switch on the phone goes on reading "on" because the browser still holds a
+       * subscription object whose endpoint the push service has quietly forgotten.
+       * Notifications stopped for two days here in exactly this state, and the journal
+       * for those two days contains not one line about push. Now it contains this one.
+       */
+      if (hadDevices) {
+        hadDevices = false;
+        complain('turn-watcher: nothing is subscribed — no turn will be announced until a device opens the app');
+      }
       seeded = false;
       seen.clear();
       return { sent: [], scanned: 0 };
+    }
+    if (!hadDevices) {
+      hadDevices = true;
+      // Cleared so that emptying again complains again: `complain` only suppresses a
+      // message identical to the last one, and an outage either side of a recovery is
+      // two outages.
+      lastComplaint = '';
+      log(`turn-watcher: ${devices.length} device(s) subscribed, watching for turns to end`);
     }
 
     let dirs = [];

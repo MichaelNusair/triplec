@@ -459,6 +459,29 @@ section('Notifying every device, and forgetting the ones that are gone:');
   ok(left.length === 2 && !left.some((s) => s.endpoint.includes('/gone/')), 'the pruned device is still in the list');
   ok(JSON.parse(fs.readFileSync(path.join(PUSH_DIR, 'subscriptions.json'), 'utf8')).subscriptions.length === 2, 'the pruning was not written to disk');
 
+  /*
+   * Dropping the *last* device is a different event from dropping one of several, and
+   * the one worth waking up for: from here on every send returns `devices: 0` without
+   * a network call and turn-watcher.js stops reading transcripts at all. That is the
+   * state this box sat in for two days, and the journal for those two days contains no
+   * line about push whatsoever — there was no device left to fail.
+   */
+  fs.writeFileSync(
+    path.join(PUSH_DIR, 'subscriptions.json'),
+    JSON.stringify({ subscriptions: [at('/gone/last')] }),
+  );
+  await push.resetForTest({ keepFiles: true });
+  const lastWords = [];
+  console.error = (...args) => lastWords.push(args.join(' '));
+  try {
+    await push.notifyAll({ title: 'Claude finished', body: 'done' }, { topic: push.topicFor('x') });
+  } finally {
+    console.error = realError;
+  }
+  ok(lastWords.length === 2, `${lastWords.length} lines logged for the prune that emptied the list`);
+  ok(/last device/.test(lastWords[1] || ''), `emptying the device list did not say so: ${JSON.stringify(lastWords)}`);
+  ok(!(await push.listSubscriptions()).length, 'the last device survived being forgotten by the push service');
+
   // A device with unusable keys must not take the batch down with it.
   fs.writeFileSync(
     path.join(PUSH_DIR, 'subscriptions.json'),

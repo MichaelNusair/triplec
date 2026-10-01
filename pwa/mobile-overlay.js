@@ -4105,6 +4105,26 @@
   }
 
   /*
+   * The same repair every time this window is looked at again, not only when it loads.
+   *
+   * A repair that only runs at load cannot reach the failure it is for. The endpoint
+   * dies while nobody is here — the push service forgets it between one visit and the
+   * next — and an installed project window that is opened and backgrounded rather than
+   * started cold never runs the line above again. On this box that left the phone
+   * unreachable for two days, with the switch still reading "on".
+   *
+   * Throttled: coming back to a window is something that happens dozens of times an
+   * hour, and this costs a round trip and sometimes a resubscribe.
+   */
+  const PUSH_REPAIR_EVERY_MS = 5 * 60 * 1000;
+  let pushRepairedAt = 0;
+  function pushRepairSoon({ force = false } = {}) {
+    if (!force && Date.now() - pushRepairedAt < PUSH_REPAIR_EVERY_MS) return;
+    pushRepairedAt = Date.now();
+    pushRepair().catch(() => {});
+  }
+
+  /*
    * The last thing this switch said about itself, kept across a redraw.
    *
    * The sheet it lives on redraws itself every five seconds, and a message that
@@ -5848,7 +5868,7 @@
    * list or its keypair changes underneath it. It does nothing at all unless
    * notifications are already on for this device.
    */
-  pushRepair();
+  pushRepairSoon({ force: true });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState !== 'visible') {
       stopStatusPoll();
@@ -5856,6 +5876,9 @@
     }
     statusPollingSince = Date.now();
     checkStatus();
+    // Coming back is also the moment to find out the subscription died while this
+    // window sat in the background. See pushRepairSoon.
+    pushRepairSoon();
   });
   // Returning to the window is the cheapest signal there is that something may
   // have changed in the panel while attention was elsewhere.

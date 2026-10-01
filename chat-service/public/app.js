@@ -3562,6 +3562,51 @@ async function pushSync() {
   await pushSubscribe().catch(() => {});
 }
 
+/**
+ * Whether the box agrees this device is subscribed. `null` when it could not be asked.
+ *
+ * The browser's own answer is not enough and never was: `getSubscription()` hands back
+ * a subscription that looks healthy long after the push service has forgotten its
+ * endpoint, so "the browser has one" and "the box can reach this phone" are different
+ * facts and only the second one matters. See /api/push/status in server.js.
+ */
+async function pushKnown(subscription) {
+  if (!subscription) return false;
+  try {
+    const answer = await api('/api/push/status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ endpoint: subscription.endpoint }),
+    }).then((r) => r.json());
+    return Boolean(answer?.known);
+  } catch {
+    // Offline, or the route is older than this script. Not knowing is not the same as
+    // knowing it is broken, so the switch says nothing rather than crying wolf.
+    return null;
+  }
+}
+
+/*
+ * The same repair whenever the app comes back to the front, not only at boot.
+ *
+ * A boot-only repair cannot reach the failure it exists for. An endpoint dies while
+ * nobody is looking — the push service forgets it between one visit and the next — and
+ * an installed app that is never cold-started never runs the boot path again, so the
+ * phone stays unreachable for as long as it is left alone. Here that was two days.
+ * Coming back to the front is the one moment the person is present and nothing has been
+ * asked of them, so the check happens there too.
+ *
+ * Throttled, because switching tabs is something people do dozens of times an hour and
+ * this is a network round trip plus, on a bad day, a resubscribe.
+ */
+const PUSH_SYNC_EVERY_MS = 5 * 60 * 1000;
+let pushSyncedAt = 0;
+function pushSyncSoon({ force = false } = {}) {
+  if (!force && Date.now() - pushSyncedAt < PUSH_SYNC_EVERY_MS) return;
+  pushSyncedAt = Date.now();
+  pushSync().then(() => paintPushToggle()).catch(() => {});
+}
+
 /** Ask the server to send one to *this* device, and say which one that is. */
 const pushTest = (subscription) =>
   api('/api/push/test', {
@@ -4673,6 +4718,11 @@ function paintPushHint(state) {
       'On for this device. You get one notification per conversation, replaced rather '
       + 'than stacked when the same session answers again, and nothing at all for '
       + 'anything older than ten minutes. Turn it off here to stop them.',
+    stale:
+      'On in this browser, but the box has no subscription for this device — the push '
+      + 'service forgot it, which is how notifications stop without anything looking '
+      + 'wrong. Reopening the app repairs it on its own; if this stays, turn the switch '
+      + 'off and on again.',
   }[state];
   pushHint.textContent = text || '';
 }
@@ -4691,10 +4741,16 @@ async function paintPushToggle() {
     paintPushHint('blocked');
     return;
   }
-  const subscribed = Boolean(await pushSubscription());
-  pushToggle.checked = subscribed;
+  const subscription = await pushSubscription();
+  pushToggle.checked = Boolean(subscription);
   pushToggle.disabled = false;
-  paintPushHint(subscribed ? 'on' : 'off');
+  if (!subscription) {
+    paintPushHint('off');
+    return;
+  }
+  // The browser is subscribed; whether the *box* is reachable from here is a separate
+  // question, and the only one the notification depends on.
+  paintPushHint((await pushKnown(subscription)) === false ? 'stale' : 'on');
 }
 
 if (pushToggle) {
@@ -4824,7 +4880,14 @@ if ('serviceWorker' in navigator) {
   if (window.caches) {
     caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
   }
-  pushSync().catch(() => {});
+  pushSyncSoon({ force: true });
+  // And every time the app is looked at again. See pushSyncSoon: the subscription dies
+  // while nobody is here, so a repair that only runs at boot never runs on the device
+  // that needs it most — an installed app that is opened and backgrounded, never
+  // started cold.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') pushSyncSoon();
+  });
 }
 
 // Exposed so smoke-test.js can exercise event rendering without a live socket.
@@ -4872,7 +4935,7 @@ window.__screenForTest = {
 // browser, so the test stubs the three browser pieces and drives these.
 window.__pushForTest = {
   paintPushToggle, pushSync, pushSubscription, pushSubscribe, pushUnsubscribe, pushKeyOf,
-  pushTest, pushTestToast,
+  pushTest, pushTestToast, pushKnown, pushSyncSoon,
 };
 // Reading aloud is server-side synthesis played through one unlocked element, and
 // every interesting part of it — what a block button sends, what a refusal does, the

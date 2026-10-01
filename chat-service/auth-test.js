@@ -170,6 +170,11 @@ const guarded = [
   ['POST', '/api/push/subscribe'],
   ['POST', '/api/push/unsubscribe'],
   ['POST', '/api/push/test'],
+  // Whether this box has a given endpoint. It answers yes/no and a count, never the
+  // list — but an open one is an oracle for "is this device subscribed" and a count of
+  // how many of the operator's devices exist, which is the inventory the note above is
+  // about.
+  ['POST', '/api/push/status'],
   // The receipt a service worker posts when it has shown a notification. It only
   // writes a log line, but an open one is a stranger writing into this box's log
   // with a tag of their choosing, and a way to learn whether anyone is subscribed.

@@ -865,6 +865,13 @@ if (typeof handler === 'function' && panesHooks) {
   const nextAnswer = (which) => (answers[which].length > 1 ? answers[which].shift() : answers[which][0]);
 
   let endpointSeq = 0;
+  /*
+   * Whether the box still has this device in its list. Flipped by hand below to stage
+   * the outage that cannot be staged any other way: the push service forgets an
+   * endpoint, the box prunes it, and the browser carries on handing out a subscription
+   * that looks exactly as healthy as it did the day it worked.
+   */
+  let serverKnows = true;
   const makeSubscription = (key) => ({
     endpoint: endpointSeq <= 1 ? ENDPOINT : `${ENDPOINT}-${endpointSeq}`,
     // The browser reports back the key it was created with; the client compares
@@ -935,6 +942,21 @@ if (typeof handler === 'function' && panesHooks) {
     }
     if (path.includes('/api/push/unsubscribe')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ devices: 1 }) });
+    }
+    /*
+     * Whether the box agrees this device is subscribed — the one fact the browser
+     * cannot supply, because a subscription whose endpoint has been pruned is handed
+     * back looking perfectly healthy, key and all.
+     */
+    if (path.includes('/api/push/status')) {
+      const asked = options.body ? JSON.parse(options.body).endpoint : null;
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          devices: serverKnows ? 1 : 0,
+          known: Boolean(serverKnows && asked && asked === subscription?.endpoint),
+        }),
+      });
     }
     if (path.includes('/api/push/test')) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve(nextAnswer('test')) });
@@ -1023,6 +1045,60 @@ if (typeof handler === 'function' && panesHooks) {
     if (!/On for this device/i.test(hint.textContent)) {
       failures.push(`on hint is wrong: ${JSON.stringify(hint.textContent)}`);
     }
+    if (posted['/api/push/status']?.endpoint !== subscription.endpoint) {
+      // Without naming the endpoint the answer is a fleet total again, which is the
+      // mistake /api/push/test already had to be fixed for.
+      failures.push(`the switch asked about the fleet, not this device: ${JSON.stringify(posted['/api/push/status'])}`);
+    }
+
+    /*
+     * The switch over a device the box cannot reach.
+     *
+     * This read "On for this device" for two days while the box had nothing subscribed
+     * at all, because it was painted from `getSubscription()` alone and that call has no
+     * opinion about whether the endpoint behind it still exists. The browser being
+     * subscribed and the phone being reachable are different facts; only the second one
+     * puts a notification on a lock screen.
+     */
+    serverKnows = false;
+    await hooks.paintPushToggle();
+    if (!toggle.checked) failures.push('a pruned device unticked the switch, which the browser cannot know');
+    if (/^On for this device/i.test(hint.textContent)) {
+      failures.push(`the switch claims notifications work over a device the box has dropped: ${JSON.stringify(hint.textContent)}`);
+    }
+    if (!/push service forgot it/i.test(hint.textContent)) {
+      failures.push(`the stale hint does not say what went wrong: ${JSON.stringify(hint.textContent)}`);
+    }
+    // And a box that cannot be asked at all is not evidence of anything: offline must
+    // not be reported as broken.
+    serverKnows = true;
+    const realFetch = w2.fetch;
+    w2.fetch = () => Promise.reject(new Error('offline'));
+    await hooks.paintPushToggle();
+    if (!/^On for this device/i.test(hint.textContent)) {
+      failures.push(`an unreachable server was reported as a dropped device: ${JSON.stringify(hint.textContent)}`);
+    }
+    w2.fetch = realFetch;
+    await hooks.paintPushToggle();
+
+    /*
+     * Repairing on the way back in, and only now and then.
+     *
+     * The endpoint dies while nobody is here, so a repair that only runs at boot never
+     * runs on the device it is for: an installed app that is opened and backgrounded is
+     * never cold-started again. Coming back to the front is therefore a trigger too —
+     * but it is one that happens dozens of times an hour, so the second check in a
+     * minute has to cost nothing.
+     */
+    acts.length = 0;
+    const syncs = () => acts.filter((a) => a === 'fetch:/api/push/subscribe').length;
+    hooks.pushSyncSoon({ force: true });
+    await settle(120);
+    if (syncs() !== 1) failures.push(`coming back to the app repaired ${syncs()} times instead of once`);
+    hooks.pushSyncSoon();
+    hooks.pushSyncSoon();
+    await settle(120);
+    if (syncs() !== 1) failures.push(`every glance at the app costs a resubscribe: ${syncs()} in a row`);
     const toastText = w2.document.querySelector('#toast')?.textContent ?? '';
     if (!/test/i.test(toastText)) failures.push(`no confirmation that a test was sent: ${JSON.stringify(toastText)}`);
     if (posted['/api/push/test']?.endpoint !== ENDPOINT) {

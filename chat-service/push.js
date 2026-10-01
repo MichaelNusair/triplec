@@ -519,6 +519,23 @@ export async function notifyAll(payload, { topic } = {}) {
       console.error(`push: ${who} answered ${result.status}${result.error ? ` (${result.error})` : ''}`);
     }
   }
+  /*
+   * The prune that leaves nothing behind, in a line of its own.
+   *
+   * Dropping one device of several is housekeeping. Dropping the *last* one is the
+   * whole feature switching itself off: every send after this returns `devices: 0`
+   * without touching the network, and turn-watcher.js stops reading transcripts
+   * altogether. That state held here for two days and the only evidence of it
+   * anywhere was an absence — no device left to fail, so nothing left to log, while
+   * the switch on the phone still read "on". An outage that logs nothing is one
+   * nobody can be told about, so the transition says so itself.
+   */
+  if (gone.length && !(await listSubscriptions()).length) {
+    console.error(
+      'push: that was the last device — nothing is subscribed now, so no notification will be '
+      + 'sent until a device opens the app again',
+    );
+  }
   return {
     sent,
     failed,

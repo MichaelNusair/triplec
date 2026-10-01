@@ -846,6 +846,32 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    /*
+     * Whether the box agrees that *this* device is subscribed.
+     *
+     * The switch in settings used to be painted from `pushManager.getSubscription()`
+     * alone, on the reasoning that a stored flag can disagree with the browser while
+     * the browser cannot be wrong. It can: a subscription whose endpoint the push
+     * service has forgotten, or that the box has pruned, is still handed back looking
+     * perfectly healthy — right shape, right key — and the switch reads "on" over a
+     * device the box cannot reach. That is the lie this answers.
+     *
+     * A POST because an endpoint is far too long to put in a query string and has no
+     * business in an access log. It returns a count and a yes/no, never the list: the
+     * endpoints are capabilities to write to someone's lock screen, as the note on
+     * /api/push/key says.
+     */
+    if (pathname === '/api/push/status' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 8 * 1024)).toString() || '{}');
+      const devices = await listSubscriptions();
+      const endpoint = String(body.endpoint || '');
+      json(res, 200, {
+        devices: devices.length,
+        known: Boolean(endpoint) && devices.some((d) => d.endpoint === endpoint),
+      });
+      return;
+    }
+
     if (pathname === '/api/push/subscribe' && req.method === 'POST') {
       // A subscription is what `pushManager.subscribe()` hands back, passed
       // through unchanged. push.js validates it rather than trusting it.
@@ -1225,7 +1251,11 @@ startTurnWatcher({ liveSessions: () => manager.liveSummary() });
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`chat service on 127.0.0.1:${PORT} (projects: ${PROJECTS_ROOT})`);
+  // "0 device(s) subscribed, watching for turns to end" was true and read as healthy.
+  // Nothing is being watched for in that state, so it says what it will do instead.
   listSubscriptions()
-    .then((devices) => console.log(`push: ${devices.length} device(s) subscribed, watching for turns to end`))
+    .then((devices) => console.log(devices.length
+      ? `push: ${devices.length} device(s) subscribed, watching for turns to end`
+      : 'push: no device is subscribed — no turn will be announced until one opens the app'))
     .catch(() => {});
 });

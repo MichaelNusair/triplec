@@ -462,6 +462,49 @@ section('With nothing subscribed, there is nothing to do:');
   ok(sent.length === 1 && sent[0].body === 'And this one just now.', 'the first turn after subscribing was not announced');
 }
 
+section('An empty device list says so, because it is indistinguishable from working:');
+{
+  /*
+   * The two days this cost. With nothing subscribed the watcher returns before it reads
+   * a transcript, so there is no device to fail, nothing to log, and a journal that
+   * agrees all is well while the phone is unreachable. The switch on the phone reads
+   * "on" throughout, because the browser still holds a subscription whose endpoint the
+   * push service has forgotten. The only possible evidence is this line.
+   */
+  let devices = 0;
+  const logged = [];
+  const watcher = createTurnWatcher({
+    subscriptions: async () => Array.from({ length: devices }, () => ({ endpoint: 'https://push.example/1' })),
+    notify: async () => {},
+    log: (message) => logged.push(message),
+  });
+
+  await watcher.scan();
+  ok(logged.length === 1, `${logged.length} lines logged for a box with nothing subscribed`);
+  ok(/nothing is subscribed/.test(logged[0] || ''), `the empty device list said nothing legible: ${JSON.stringify(logged)}`);
+
+  // Once, not every five seconds forever: this runs on a timer and a real complaint
+  // must not be buried under thousands of copies of itself.
+  await watcher.scan();
+  await watcher.scan();
+  ok(logged.length === 1, `the complaint repeated ${logged.length} times, which fills the log instead of reporting`);
+
+  // Coming back is worth a line too — "it is working again" is how you read the gap.
+  devices = 1;
+  await watcher.scan();
+  ok(logged.length === 2 && /1 device/.test(logged[1]), `recovering from an empty list was silent: ${JSON.stringify(logged)}`);
+
+  /*
+   * And losing it again complains again. `complain` suppresses only a message identical
+   * to the last one it said, so without clearing that record on recovery the second
+   * outage would be swallowed by the memory of the first — and the second outage is the
+   * one that proves this is a pattern rather than a bad day.
+   */
+  devices = 0;
+  await watcher.scan();
+  ok(logged.length === 3 && /nothing is subscribed/.test(logged[2]), `a second outage after a recovery was silent: ${JSON.stringify(logged)}`);
+}
+
 section('Every project, named the way a person names it:');
 {
   const { watcher, sent } = watcherWith();
