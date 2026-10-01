@@ -3570,20 +3570,55 @@ async function pushSync() {
  * endpoint, so "the browser has one" and "the box can reach this phone" are different
  * facts and only the second one matters. See /api/push/status in server.js.
  */
+const pushStatus = (subscription) =>
+  api('/api/push/status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ endpoint: subscription.endpoint }),
+  }).then((r) => r.json());
+
 async function pushKnown(subscription) {
   if (!subscription) return false;
   try {
-    const answer = await api('/api/push/status', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ endpoint: subscription.endpoint }),
-    }).then((r) => r.json());
-    return Boolean(answer?.known);
+    return Boolean((await pushStatus(subscription))?.known);
   } catch {
     // Offline, or the route is older than this script. Not knowing is not the same as
     // knowing it is broken, so the switch says nothing rather than crying wolf.
     return null;
   }
+}
+
+/*
+ * Wait for this device to say what happened to the notification just sent to it.
+ *
+ * The receipt comes from the service worker — it shows the notification, counts what
+ * the registration is holding and posts both — so it arrives at the box about a second
+ * after the push service accepted the message, by a path this page is not on. Polling
+ * is the whole mechanism: there is no channel from the worker to a page that may not
+ * have been open when the push landed, and the page only needs one answer, once,
+ * seconds after a tap.
+ *
+ * Why bother: "the push service accepted it" and "your phone put it on screen" are the
+ * same HTTP 201, and reporting the first as the second is how a switch said
+ * "sent a test one to this device" to someone who had never seen a notification from
+ * this app. `null` means no receipt arrived, which is itself the loudest answer
+ * available — the message never reached the worker.
+ */
+const PUSH_RECEIPT_WAIT_MS = 6000;
+async function pushReceipt(subscription, { since = 0, waitMs = PUSH_RECEIPT_WAIT_MS } = {}) {
+  const until = Date.now() + waitMs;
+  while (Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    try {
+      const receipt = (await pushStatus(subscription))?.receipt;
+      // Older than the test it is being asked about: a previous notification's receipt
+      // answering for this one would be worse than no answer at all.
+      if (receipt && receipt.at >= since) return receipt;
+    } catch {
+      /* Keep waiting: one failed poll is not an answer. */
+    }
+  }
+  return null;
 }
 
 /*

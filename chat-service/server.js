@@ -35,7 +35,7 @@ import {
   applyDeploymentName,
   deploymentName,
 } from './manifest.js';
-import { vapidPublicKey, addSubscription, removeSubscription, listSubscriptions, notifyAll, topicFor, wasGone, describeDevice } from './push.js';
+import { vapidPublicKey, addSubscription, removeSubscription, listSubscriptions, notifyAll, topicFor, wasGone, describeDevice, recordReceipt, lastReceipt } from './push.js';
 import { startTurnWatcher } from './turn-watcher.js';
 import { createAdmin } from './admin.js';
 import {
@@ -860,6 +860,11 @@ const server = http.createServer(async (req, res) => {
      * business in an access log. It returns a count and a yes/no, never the list: the
      * endpoints are capabilities to write to someone's lock screen, as the note on
      * /api/push/key says.
+     *
+     * `receipt` is the same answer in the other direction: what this device last said
+     * about a notification sent to it. The switch polls for it after a test, because
+     * what the push service accepted and what the phone displayed had until now
+     * produced one indistinguishable "sent" on screen.
      */
     if (pathname === '/api/push/status' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req, 8 * 1024)).toString() || '{}');
@@ -868,6 +873,7 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, {
         devices: devices.length,
         known: Boolean(endpoint) && devices.some((d) => d.endpoint === endpoint),
+        receipt: endpoint ? lastReceipt(endpoint) : null,
       });
       return;
     }
@@ -986,19 +992,34 @@ const server = http.createServer(async (req, res) => {
         );
       } else {
         /*
-         * `held` is what the browser believes is on screen. Zero is the interesting
-         * answer: the browser accepted the notification and the platform then declined
-         * to keep it, which is the phone's own settings rather than anything here.
+         * `held` is what the browser believes is on screen, and neither answer is proof
+         * that anything was seen.
+         *
+         * This line used to read a non-zero count as success — "showed a notification"
+         * — and that was wrong in the way that costs the most: on 2026-10-01 eleven
+         * consecutive sends to one phone logged `showed a notification … holding 1`
+         * while the phone's owner had never seen a single one. Chrome accepted every
+         * call and kept the notification in the registration's list; Android declined
+         * to put it on screen, and from in here those two are the same bytes. So the
+         * count is reported as a count, and the one thing it does settle is said
+         * plainly: the message arrived and the worker ran, which moves the question off
+         * this box and onto the phone's own notification settings.
          */
         const holding = Number.isInteger(body.held)
           ? ` — the browser is holding ${body.held}`
             + (body.held === 0
               ? ', so the phone accepted it and displayed nothing: check notifications for the'
                 + ' installed app as well as for the browser'
-              : '')
+              : ', which is not proof it is on screen: Android can hold one and show'
+                + ' nothing when notifications are off for the installed app')
           : '';
-        console.log(`push: ${who} showed a notification${which}${holding}`);
+        console.log(`push: ${who} accepted a notification${which}${holding}`);
       }
+      /*
+       * Keep it for the page that is waiting. The journal is the wrong place to answer
+       * someone holding the phone, and it was the only place this went.
+       */
+      recordReceipt(body.endpoint, { shown: body.shown !== false, held: body.held, error: body.error });
       json(res, 200, { ok: true });
       return;
     }

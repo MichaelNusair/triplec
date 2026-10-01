@@ -124,6 +124,22 @@ self.addEventListener('push', (event) => {
       }
 
       /*
+       * Which subscription this arrived on, so the receipt can be matched to a device.
+       *
+       * The server has a page waiting for this answer — the switch that has just sent a
+       * test asks for the receipt by endpoint — and `credentials: 'include'` is not
+       * enough to say which device a receipt is about: one login has several, and the
+       * user agent string does not distinguish two phones. Best-effort, because a
+       * receipt is worth sending even when this cannot be read.
+       */
+      let endpoint = null;
+      try {
+        endpoint = (await self.registration.pushManager.getSubscription())?.endpoint || null;
+      } catch {
+        /* Then the journal still gets the line; only the waiting page loses out. */
+      }
+
+      /*
        * Tell the server it arrived.
        *
        * Without this the server's knowledge stops at the push service: FCM answers
@@ -146,6 +162,7 @@ self.addEventListener('push', (event) => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             tag,
+            endpoint,
             shown: !refused,
             held,
             error: refused ? String(refused.message || refused).slice(0, 200) : undefined,

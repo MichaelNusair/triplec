@@ -101,6 +101,14 @@ const MAX_SUBSCRIPTIONS = 20;
  */
 const MAX_GONE = 50;
 
+/*
+ * How many devices' last receipt to keep, and for how long a receipt answers for a
+ * notification. Short on both counts: the question it answers is "did the one I just
+ * asked for arrive", and an old receipt answering that is worse than none.
+ */
+const MAX_RECEIPTS = 50;
+const RECEIPT_FRESH_MS = 2 * 60 * 1000;
+
 const b64u = (buf) => Buffer.from(buf).toString('base64url');
 const unb64u = (text) => Buffer.from(String(text || ''), 'base64url');
 const hmac = (key, data) => createHmac('sha256', key).update(data).digest();
@@ -303,6 +311,57 @@ export function wasGone(endpoint) {
   return goneEndpoints.delete(String(endpoint));
 }
 
+/*
+ * The last thing each device said about a notification it was sent.
+ *
+ * This exists because the receipt had nowhere to go but the journal, and the person
+ * who needs it is holding the phone. The sequence it has to serve is: tap the switch,
+ * a test is sent, and a few seconds later the device itself has an answer — the worker
+ * ran, or it did not; the platform displayed, or it accepted and showed nothing. Until
+ * now the app could only report what the *push service* said, which is "201 accepted"
+ * in every one of those cases, so the switch said "sent a test one to this device"
+ * about notifications that never appeared. For two days, truthfully, and nobody could
+ * see the one line that disagreed.
+ *
+ * In memory and deliberately short-lived, like `goneEndpoints` above: a receipt is
+ * evidence about one notification, not state. A restart losing them reads as "no
+ * receipt yet", which is the honest answer rather than a stale yes.
+ */
+const receipts = new Map();
+
+/** Remember what a device reported, keyed by the endpoint the notification went to. */
+export function recordReceipt(endpoint, { shown, held, error, at = Date.now() } = {}) {
+  const key = String(endpoint || '');
+  if (!key) return;
+  // Re-inserting keeps the map insertion-ordered by recency, so the first key is the
+  // least recently heard from and is the right one to drop.
+  receipts.delete(key);
+  receipts.set(key, {
+    at,
+    shown: shown !== false,
+    held: Number.isInteger(held) ? held : null,
+    error: error ? String(error).slice(0, 200) : '',
+  });
+  while (receipts.size > MAX_RECEIPTS) receipts.delete(receipts.keys().next().value);
+}
+
+/**
+ * What this device last said, or null if it has not said anything lately.
+ *
+ * Unlike `wasGone` this does not consume the record: the caller polls until an answer
+ * appears, and a one-shot read would hand the answer to whichever poll happened to
+ * land first and nothing to the one that asked.
+ */
+export function lastReceipt(endpoint, { now = Date.now() } = {}) {
+  const found = receipts.get(String(endpoint || ''));
+  if (!found) return null;
+  if (now - found.at > RECEIPT_FRESH_MS) {
+    receipts.delete(String(endpoint));
+    return null;
+  }
+  return { ...found };
+}
+
 let subsPromise = null;
 
 async function readSubscriptions() {
@@ -395,6 +454,7 @@ export async function resetForTest({ keepFiles = false } = {}) {
   keysPromise = null;
   subsPromise = null;
   goneEndpoints.clear();
+  receipts.clear();
   if (keepFiles) return;
   await unlink(KEY_FILE()).catch(() => {});
   await unlink(SUBS_FILE()).catch(() => {});
