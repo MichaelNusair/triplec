@@ -313,6 +313,30 @@
     /* 16px minimum or iOS zooms the page and never zooms back. */
     font: 16px/1.3 inherit;
   }
+  /*
+   * How fast it reads: minus, the rate, plus — a transport control rather than a
+   * slider or a picker. This sheet is used with the screen away as often as not, and
+   * a thumb can find a 44-pixel button it cannot see, where a slider has to be aimed
+   * at and a native picker wheel covers the message while you choose. The middle
+   * button is both the readout and the way back to normal speed, which is where a
+   * media player keeps it.
+   */
+  .cmo-speed {
+    display: flex; align-items: center; gap: 8px;
+    margin: 10px 0 0; font-size: 14px; color: #a8a49b;
+  }
+  .cmo-speed span { flex: 1 1 auto; min-width: 0; }
+  .cmo-speed button {
+    flex: 0 0 auto; min-width: 48px; min-height: 44px; padding: 0 10px;
+    background: #272725; color: #f5f4ef;
+    border: 1px solid #34342f; border-radius: 10px;
+    font: 600 16px/1 inherit; cursor: pointer;
+    -webkit-tap-highlight-color: transparent; touch-action: manipulation;
+  }
+  .cmo-speed button:active { background: #34342f; }
+  /* Tabular figures and a fixed width, so walking the ladder does not move the two
+     buttons a thumb is already on its way down to. */
+  .cmo-speed #cmo-speed-now { min-width: 68px; font-variant-numeric: tabular-nums; }
 
   /*
    * Docked to the TOP, for the same reason the bar is docked to the left: the
@@ -3505,6 +3529,18 @@
           <select id="cmo-voice" aria-label="Which voice reads the message"></select>
         </label>
         <p class="cmo-hint" id="cmo-voice-note"></p>` : ''}
+      <!-- How fast it reads. Offered whenever anything can read at all, not only
+           when the server can: the browser's own voice takes a rate too, and the
+           device that has nothing but that voice is the one most in need of
+           hurrying it along. -->
+      ${canSpeak ? `
+        <div class="cmo-speed" id="cmo-speed">
+          <span>Speed</span>
+          <button type="button" id="cmo-speed-down" aria-label="Read slower">&#8722;</button>
+          <button type="button" id="cmo-speed-now"></button>
+          <button type="button" id="cmo-speed-up" aria-label="Read faster">+</button>
+        </div>
+        <p class="cmo-hint" id="cmo-speed-note"></p>` : ''}
       <!-- One button per fenced block in the message, filled in below: the labels
            name a language that came out of the message, and nothing from outside
            this file is ever built into a string of HTML here. -->
@@ -3795,6 +3831,62 @@
     }
 
     /*
+     * How fast it reads, and saying what the number means.
+     *
+     * Wired before the voice picker below because that picker's `change` handler
+     * repaints this note: what a change of speed does depends on which voice is
+     * reading — the server's takes it mid-message, the browser's at the next
+     * sentence — and a note that keeps describing the voice you just switched away
+     * from is worse than no note.
+     */
+    const speedNow = panel.querySelector('#cmo-speed-now');
+    const paintSpeed = () => {
+      if (!speedNow) return;
+      const rate = speedPref();
+      speedNow.textContent = speedLabel(rate);
+      // The readout is a button, so it has to say what pressing it does. Normal
+      // speed is the one state where it does nothing, and it says that too.
+      speedNow.setAttribute(
+        'aria-label',
+        rate === SPEED_DEFAULT
+          ? 'Normal reading speed'
+          : `Reading at ${speedLabel(rate)} \u2014 tap for normal speed`,
+      );
+      const note = panel.querySelector('#cmo-speed-note');
+      if (!note) return;
+      const browser = wantsBrowserVoice() || !serverVoiceReady();
+      note.textContent = browser
+        ? `${rate === SPEED_DEFAULT ? 'Normal speed' : speedLabel(rate)}. This device\u2019s own voice fixes its speed when a sentence starts, so a change is heard from the next sentence on. Tap the number for normal.`
+        : `${rate === SPEED_DEFAULT ? 'Normal speed' : speedLabel(rate)}. Changes what is being read now as well as what comes next, and the voice keeps its pitch. Tap the number for normal.`;
+    };
+    if (speedNow) {
+      const setSpeed = (rate) => {
+        setSpeedPref(rate);
+        /*
+         * Straight onto whatever is playing. This is the whole point of the control
+         * being on the sheet the message is on rather than in a settings screen: a
+         * speed that only takes effect on the next message is indistinguishable from
+         * a button that does nothing, which is how someone decides a feature is
+         * broken and stops pressing it.
+         */
+        applySpeed(rate);
+        paintSpeed();
+      };
+      const step = (by) => {
+        const at = SPEEDS.indexOf(speedPref());
+        const from = at === -1 ? SPEEDS.indexOf(SPEED_DEFAULT) : at;
+        // Clamped rather than wrapped: an end that wraps round turns the last press
+        // of "faster" into the slowest read there is, which on a surface used with
+        // the screen away is a press nobody can see the result of coming.
+        setSpeed(SPEEDS[Math.min(SPEEDS.length - 1, Math.max(0, from + by))]);
+      };
+      panel.querySelector('#cmo-speed-down').addEventListener('click', () => step(-1));
+      panel.querySelector('#cmo-speed-up').addEventListener('click', () => step(1));
+      speedNow.addEventListener('click', () => setSpeed(SPEED_DEFAULT));
+    }
+    paintSpeed();
+
+    /*
      * Which voice reads it.
      *
      * Options as nodes, not as interpolated markup: the names come from the AWS
@@ -3884,6 +3976,8 @@
         // playable — which is what the auto-read while this sheet is open needs.
         if (voiceSelect.value !== 'browser') unlockAudio();
         paintVoiceNote();
+        // What a speed change does differs between the two voices — see paintSpeed.
+        paintSpeed();
       });
       paintVoiceNote();
     }
@@ -4392,6 +4486,50 @@
   const wantsBrowserVoice = () => voicePref() === 'browser';
 
   /*
+   * How fast it reads, remembered per device.
+   *
+   * A ladder of rates rather than a free scale, for the same reason the control is
+   * two buttons: the step is what somebody listening actually reaches for ("a bit
+   * faster"), and a rate arrived at by dragging is a rate that cannot be got back
+   * to. These are the stops a podcast player offers, and 1 is in the middle of them
+   * rather than at the bottom — reading a long answer at three quarters speed is a
+   * real thing to want on a bad connection to a language you half read.
+   *
+   * The ends are where the voice stops being words: past 3x a neural voice is a
+   * noise, and below 0.5 the pauses between sentences are longer than the sentences.
+   */
+  const SPEED_KEY = 'cmo-speed';
+  const SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+  const SPEED_DEFAULT = 1;
+
+  function speedPref() {
+    let stored = NaN;
+    try {
+      stored = Number(localStorage.getItem(SPEED_KEY));
+    } catch {
+      /* private mode: normal speed, which is what an unset preference means anyway */
+    }
+    /*
+     * Snapped to the ladder rather than trusted. This is a number out of storage —
+     * put there by a hand, or by a build of this file with a different ladder in it —
+     * and the failure it would cause is a silent one: `playbackRate = 0` is an
+     * element that plays nothing and reports no error, which is indistinguishable
+     * from a voice that is broken.
+     */
+    return SPEEDS.find((rate) => Math.abs(rate - stored) < 0.001) || SPEED_DEFAULT;
+  }
+  function setSpeedPref(rate) {
+    try {
+      if (rate === SPEED_DEFAULT) localStorage.removeItem(SPEED_KEY);
+      else localStorage.setItem(SPEED_KEY, String(rate));
+    } catch {
+      /* private mode: the choice holds for this page and no longer */
+    }
+  }
+  /** `1.5` as something to put on a button. */
+  const speedLabel = (rate) => `${rate}\u00D7`;
+
+  /*
    * The audio element, and the tap that makes it usable.
    *
    * iOS will not play audio that no gesture asked for, and the permission is
@@ -4437,6 +4575,7 @@
       audioEl.onended = null;
       audioEl.onerror = null;
       audioEl.src = SILENCE;
+      applySpeed();
       const played = audioEl.play();
       // Older browsers return undefined here rather than a promise, and a rejection
       // is not a failure worth reporting: it means this was not a gesture, and the
@@ -4446,6 +4585,32 @@
       /* as above */
     }
     return true;
+  }
+
+  /*
+   * Put the chosen rate on the element — both rates, and after every source change.
+   *
+   * `defaultPlaybackRate` is the one that survives. The media load algorithm resets
+   * `playbackRate` to it whenever a new `src` is set, and a message here is a chain
+   * of sources, so setting only `playbackRate` reads the first piece fast and every
+   * piece after it at normal speed — a bug that would look like the control working
+   * and then forgetting, which is the hardest kind to report.
+   *
+   * `preservesPitch` is the difference between a faster reader and a chipmunk. It is
+   * the default in every current browser and set here anyway: the prefixed property
+   * that older WebKit and Chrome shipped defaulted the other way, and this file runs
+   * in whatever browser the phone has.
+   */
+  function applySpeed(rate = speedPref()) {
+    if (!audioEl) return;
+    try {
+      audioEl.defaultPlaybackRate = rate;
+      audioEl.playbackRate = rate;
+      if ('preservesPitch' in audioEl) audioEl.preservesPitch = true;
+      else if ('webkitPreservesPitch' in audioEl) audioEl.webkitPreservesPitch = true;
+    } catch {
+      /* a browser that refuses a rate reads at its own, which is the old behaviour */
+    }
   }
 
   /**
@@ -4944,6 +5109,9 @@
 
     try {
       audioEl.src = url;
+      // After the source and not before: the load that `src` starts resets the rate
+      // to the default one, so every piece of the chain has to be told again.
+      applySpeed();
       const played = audioEl.play();
       if (played && typeof played.catch === 'function') {
         played.catch((err) => {
@@ -5059,6 +5227,14 @@
     // The same language the recognizer dictates in, so one setting governs both
     // directions of the conversation.
     utterance.lang = navigator.language || 'en-US';
+    /*
+     * The same speed the server voice is read at, as near as this API gets: a rate
+     * is fixed when an utterance starts, so a change made mid-message lands on the
+     * next piece rather than on this one. Pieces are a couple of sentences, which is
+     * close enough to immediate to be worth having. The API's range is 0.1 to 10 and
+     * the ladder is well inside it.
+     */
+    utterance.rate = speedPref();
     // Chaining on `end` is what keeps iOS speaking past the first piece. `error`
     // is chained too rather than aborting: one refused piece (a stray character,
     // an interrupted voice) must not silence the rest of the message.

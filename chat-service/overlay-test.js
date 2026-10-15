@@ -1116,6 +1116,9 @@ ok(
  */
 const utterances = [];
 const langs = [];
+/* The rate each utterance was handed, which is where the speed control lands on
+   this voice: the API fixes it when the sentence starts. */
+const rates = [];
 let cancels = 0;
 let speechGeneration = 0;
 /*
@@ -1130,6 +1133,7 @@ class FakeUtterance {
   constructor(text) {
     this.text = text;
     this.lang = '';
+    this.rate = 1;
     this.onend = null;
     this.onerror = null;
   }
@@ -1140,6 +1144,7 @@ w.speechSynthesis = {
     const generation = speechGeneration;
     utterances.push(utterance.text);
     langs.push(utterance.lang);
+    rates.push(utterance.rate);
     // Cancelled utterances never report `end`; that is what makes Stop stop.
     setTimeout(() => {
       if (generation === speechGeneration && utterance.onend) utterance.onend();
@@ -1732,6 +1737,7 @@ speechMs = 0;
  *   silence, and the sheet has to say which voice it ended up using.
  */
 const audioSrcs = [];   // every src handed to the element, in order
+const audioRates = [];  // the rate each of those was playing at
 /*
  * Every URL the overlay tried to mint for the element. Has to stay empty — see the
  * policy note in `play` below.
@@ -1746,14 +1752,33 @@ class FakeAudio {
   constructor() {
     audioElements += 1;
     audioNode = this;
+    /*
+     * Both rates, because the browser has both and the difference between them is
+     * the whole bug: the media load algorithm resets `playbackRate` to
+     * `defaultPlaybackRate` every time a source is set, so a reader that sets only
+     * the first one plays the first piece of a message fast and the rest at normal
+     * speed. A fake that kept one number could not see it.
+     */
+    this.defaultPlaybackRate = 1;
+    this.playbackRate = 1;
     this.src = '';
     this.paused = true;
     this.onended = null;
     this.onerror = null;
     this.preload = '';
   }
+  set src(value) {
+    this.srcValue = value;
+    // The load the assignment starts, as far as this matters here.
+    this.playbackRate = this.defaultPlaybackRate;
+  }
+  get src() {
+    return this.srcValue;
+  }
   play() {
     audioSrcs.push(this.src);
+    // What it would actually be heard at, which is the only number that matters.
+    audioRates.push(this.playbackRate);
     /*
      * The Content-Security-Policy, enforced here, because this is the layer that
      * enforces it in a browser and no other layer can see it.
@@ -1784,6 +1809,10 @@ class FakeAudio {
   load() {}
   removeAttribute(name) {
     if (name === 'src') this.src = '';
+  }
+  /** The rate the element would be reading at now. */
+  get rate() {
+    return this.playbackRate;
   }
   /** What the browser does when a file finishes: the chain hangs off this. */
   finish() {
@@ -2155,6 +2184,171 @@ ok(
   'the arriving message was not announced as one that just landed',
   /^Claude finished\./.test(prepareCalls[0]?.text || ''),
 );
+barBtn.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+
+// ---------------------------------------------------------- how fast it reads
+/*
+ * The speed control, which is a transport control and not a setting.
+ *
+ * Three things about it fail quietly, and all three are what this section is for.
+ *
+ *   **The rate has to survive the chain.** A message is a row of separate sources,
+ *   and setting a new `src` resets `playbackRate` to `defaultPlaybackRate` — so a
+ *   reader that sets only `playbackRate` reads the first piece at 1.5x and the rest
+ *   at normal speed. Nothing reports that; it sounds like the button half working.
+ *
+ *   **A change has to reach the audio already playing.** The control is on the sheet
+ *   the message is on, two taps from the thing being read; a speed that waits for the
+ *   next message is indistinguishable from a button that does nothing.
+ *
+ *   **The stored number is not to be trusted.** It comes out of localStorage, and
+ *   `playbackRate = 0` is an element that plays nothing and reports no error.
+ */
+await tapStatus();
+const speedNow = () => doc.getElementById('cmo-speed-now');
+const tapSpeedBtn = (id) =>
+  doc.getElementById(id)?.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+
+ok('the sheet offers no way to read it faster', Boolean(speedNow()));
+ok(
+  `the speed does not start at normal: ${JSON.stringify(speedNow()?.textContent)}`,
+  speedNow()?.textContent === '1×',
+);
+ok(
+  'the speed control is drawn above the message rather than under it, where the ' +
+    'other read controls are',
+  doc.getElementById('cmo-speed')?.previousElementSibling?.id === 'cmo-voice-note',
+);
+
+tapSpeedBtn('cmo-speed-up');
+tapSpeedBtn('cmo-speed-up');
+ok(
+  `two presses of faster did not reach 1.5×: ${JSON.stringify(speedNow()?.textContent)}`,
+  speedNow()?.textContent === '1.5×',
+);
+ok(
+  'the speed was not remembered, so it has to be set again on every message',
+  w.localStorage.getItem('cmo-speed') === '1.5',
+);
+ok(
+  'nothing says what the number does, on a control whose whole state is a number',
+  /1\.5×/.test(doc.getElementById('cmo-speed-note')?.textContent || ''),
+);
+
+prepareCalls.length = 0;
+audioSrcs.length = 0;
+audioRates.length = 0;
+tapSpeak();
+await settle();
+ok(
+  `the first piece was not played at the chosen speed: ${audioRates.join(', ')}`,
+  audioRates[audioRates.length - 1] === 1.5,
+);
+audioNode.finish();
+await settle();
+ok(
+  `the message fell back to normal speed part-way through — the load that a new ` +
+    `source starts resets the rate, so every piece has to be told: ${audioRates.join(', ')}`,
+  audioSrcs[audioSrcs.length - 1] === segUrl(1) && audioRates.every((rate) => rate === 1.5),
+);
+
+const srcsBeforeChange = audioSrcs.length;
+tapSpeedBtn('cmo-speed-down');
+ok(
+  `a speed change did not reach the audio that is playing: ${audioNode.rate}`,
+  audioNode.rate === 1.25,
+);
+ok(
+  'changing the speed restarted the message, so the part already heard is read again',
+  audioSrcs.length === srcsBeforeChange,
+);
+ok(
+  'the new speed was not made the element’s default — a source change resets the ' +
+    'rate to that, so the pieces of the message still to come would be read at the ' +
+    'old speed',
+  audioNode.defaultPlaybackRate === 1.25,
+);
+
+tapSpeedBtn('cmo-speed-now');
+ok(
+  `the readout is not the way back to normal speed: ${JSON.stringify(speedNow()?.textContent)} ` +
+    `at ${audioNode.rate}`,
+  speedNow()?.textContent === '1×' && audioNode.rate === 1,
+);
+ok(
+  'normal speed was stored rather than left unset, so a phone that never chose is ' +
+    'pinned to whatever this build calls normal',
+  w.localStorage.getItem('cmo-speed') === null,
+);
+barBtn.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+
+for (let i = 0; i < 12; i += 1) tapSpeedBtn('cmo-speed-up');
+ok(
+  `faster past the end did not stop at the top of the ladder: ${JSON.stringify(speedNow()?.textContent)}`,
+  speedNow()?.textContent === '3×',
+);
+for (let i = 0; i < 12; i += 1) tapSpeedBtn('cmo-speed-down');
+ok(
+  `slower past the end wrapped round or went below half speed: ` +
+    `${JSON.stringify(speedNow()?.textContent)}`,
+  speedNow()?.textContent === '0.5×',
+);
+
+/*
+ * The browser's own voice takes a rate too, and it is the voice on a device that has
+ * no server voice at all — which is the device most in need of hurrying a long
+ * message along. Its rate is fixed when the utterance starts, so this lands on the
+ * pieces after the change rather than on the one being spoken.
+ */
+await tapStatus();
+voiceSelect().value = 'browser';
+voiceSelect().dispatchEvent(new w.Event('change'));
+ok(
+  'the note still describes the server voice after the local one was chosen, so it ' +
+    'promises a change mid-sentence that this voice cannot make',
+  /next sentence/.test(doc.getElementById('cmo-speed-note')?.textContent || ''),
+);
+tapSpeedBtn('cmo-speed-now');
+tapSpeedBtn('cmo-speed-up');
+tapSpeedBtn('cmo-speed-up');
+utterances.length = 0;
+rates.length = 0;
+prepareCalls.length = 0;
+tapSpeak();
+await settle();
+ok('the server was asked to read, after the browser voice was chosen', prepareCalls.length === 0);
+ok(
+  `the browser voice was not given the chosen rate: ${rates.join(', ')}`,
+  rates.length > 0 && rates.every((rate) => rate === 1.5),
+);
+barBtn.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await drain();
+
+/*
+ * A stored rate of zero is an element that plays nothing and reports no error, which
+ * is indistinguishable from a voice that is broken. Anything off the ladder is
+ * snapped back to normal rather than handed to the element.
+ */
+w.localStorage.setItem('cmo-speed', '0');
+await tapStatus();
+ok(
+  `a stored rate of zero was kept: ${JSON.stringify(speedNow()?.textContent)}`,
+  speedNow()?.textContent === '1×',
+);
+w.localStorage.setItem('cmo-speed', '1.5');
+await tapStatus();
+ok(
+  'a rate stored by an earlier visit was not picked up, so the setting is forgotten ' +
+    'on every reload',
+  speedNow()?.textContent === '1.5×',
+);
+w.localStorage.removeItem('cmo-speed');
+
+// Back to the voice the sections below are written for: they read code, which the
+// browser's own voice cannot do at all.
+await tapStatus();
+voiceSelect().value = 'Matthew';
+voiceSelect().dispatchEvent(new w.Event('change'));
 barBtn.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 
 // ------------------------------------------------- reading a code block as code

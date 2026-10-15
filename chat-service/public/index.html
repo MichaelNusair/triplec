@@ -193,6 +193,12 @@
       <select id="select-voice"></select>
     </label>
     <p class="hint" id="voice-hint"></p>
+    <!-- Hidden with the picker above it, for the same reason: both are read-aloud,
+         and neither has anything behind it on a box that cannot synthesise. -->
+    <label id="speed-row" class="hidden">Read aloud at
+      <select id="select-speed"></select>
+    </label>
+    <p class="hint" id="speed-hint"></p>
     <label class="opt-row">
       <input type="checkbox" id="opt-keep-awake" checked>
       Keep the screen awake while the app is open

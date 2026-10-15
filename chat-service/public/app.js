@@ -78,6 +78,10 @@ const DEFAULTS = {
   // message — a Hebrew answer read by a Hebrew voice with nothing set. A named
   // voice here is an override of that. See paintVoicePicker.
   voice: '',
+  // How fast a message is read out, as a multiplier on the audio. One of READ_SPEEDS
+  // — anything else is snapped back to the nearest of them, because this number
+  // comes out of localStorage and a rate of 0 is an element that plays silently.
+  speed: 1,
 };
 
 function loadSettings() {
@@ -3783,6 +3787,7 @@ function unlockSpeech() {
     speech.audio.onended = null;
     speech.audio.onerror = null;
     speech.audio.src = SPEAK_SILENCE;
+    applyReadSpeed();
     const played = speech.audio.play();
     // Older browsers return undefined rather than a promise, and a rejection here
     // means this was not a gesture — which the read that follows will report if it
@@ -3792,6 +3797,54 @@ function unlockSpeech() {
     /* as above */
   }
   return true;
+}
+
+/*
+ * How fast it reads.
+ *
+ * The stops a podcast player offers, with normal speed in the middle of them rather
+ * than at the bottom: most of the reason to touch this is to get through a long
+ * answer faster, and some of it is to slow down a Hebrew one. The ends are where the
+ * voice stops being words — past 3x a neural voice is a noise, and below 0.5 the
+ * pauses between sentences are longer than the sentences.
+ *
+ * The editor overlay has the same ladder with a minus/plus control on the sheet the
+ * message is on (see `SPEEDS` in pwa/mobile-overlay.js). Here it is a picker in
+ * Settings instead: the controls on this surface are per message and there are three
+ * of them on a message with two code blocks in it, so a stepper beside each would be
+ * more chrome than text. A change still lands on the message being read.
+ */
+const READ_SPEEDS = [0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const READ_SPEED_DEFAULT = 1;
+
+/** The chosen rate, snapped to the ladder. Never 0, whatever storage says. */
+function readSpeed() {
+  const stored = Number(state.settings.speed);
+  return READ_SPEEDS.find((rate) => Math.abs(rate - stored) < 0.001) || READ_SPEED_DEFAULT;
+}
+
+/*
+ * Put the rate on the element — both rates, and after every source change.
+ *
+ * `defaultPlaybackRate` is the one that survives: the media load algorithm resets
+ * `playbackRate` to it whenever a new `src` is set, and a message here is a chain of
+ * sources, so setting only `playbackRate` would read the first piece fast and
+ * everything after it at normal speed.
+ *
+ * `preservesPitch` is the difference between a faster reader and a chipmunk. It is
+ * the default everywhere current and set anyway, because the prefixed property older
+ * WebKit shipped defaulted the other way.
+ */
+function applyReadSpeed(rate = readSpeed()) {
+  if (!speech.audio) return;
+  try {
+    speech.audio.defaultPlaybackRate = rate;
+    speech.audio.playbackRate = rate;
+    if ('preservesPitch' in speech.audio) speech.audio.preservesPitch = true;
+    else if ('webkitPreservesPitch' in speech.audio) speech.audio.webkitPreservesPitch = true;
+  } catch {
+    /* a browser that refuses a rate reads at its own, which is the old behaviour */
+  }
 }
 
 /** Forget the read in progress, keeping the element and its unlock. */
@@ -3905,6 +3958,9 @@ async function playSpeech(index, generation) {
   };
   try {
     speech.audio.src = url;
+    // After the source and not before: the load that `src` starts resets the rate to
+    // the default one, so every piece of the chain has to be told again.
+    applyReadSpeed();
     speech.audio.play()?.catch?.((err) => {
       if (generation !== speech.generation) return;
       stopSpeaking();
@@ -4116,6 +4172,45 @@ function paintVoicePicker() {
     ? state.settings.voice
     : '';
   paintVoiceHint();
+  // The two pickers answer the same question about this deployment — whether it can
+  // read at all — so they are shown and hidden together rather than each asking.
+  paintSpeedPicker();
+}
+
+/**
+ * The speed picker, which lives or dies with the voice one: both are read-aloud, and
+ * a box that cannot synthesise has neither.
+ */
+function paintSpeedPicker() {
+  const row = $('#speed-row');
+  const select = $('#select-speed');
+  if (!row || !select) return;
+  if (!speechReady()) {
+    row.classList.add('hidden');
+    return;
+  }
+  row.classList.remove('hidden');
+  select.textContent = '';
+  for (const rate of READ_SPEEDS) {
+    const option = document.createElement('option');
+    option.value = String(rate);
+    // Normal speed is named as well as numbered: 1× in a list of numbers is not
+    // obviously the one to come back to.
+    option.textContent = rate === READ_SPEED_DEFAULT ? '1× · normal' : `${rate}×`;
+    select.appendChild(option);
+  }
+  select.value = String(readSpeed());
+  paintSpeedHint();
+}
+
+function paintSpeedHint() {
+  const hint = $('#speed-hint');
+  if (!hint) return;
+  const rate = readSpeed();
+  hint.textContent =
+    rate === READ_SPEED_DEFAULT
+      ? 'Applies to every read, including a code block, and to the message being read right now. The voice keeps its pitch, so faster is not higher.'
+      : `Everything is read at ${rate}× — the message being read right now included. The voice keeps its pitch, so faster is not higher.`;
 }
 
 function paintVoiceHint() {
@@ -4671,6 +4766,25 @@ $('#select-voice').addEventListener('change', (e) => {
   paintVoiceHint();
 });
 
+/*
+ * How fast it reads. Guarded, unlike the pickers above it: a browser holding a
+ * cached index.html from before this row existed would throw here and take the whole
+ * script down with it, which looks like the app failing to boot rather than like one
+ * missing control.
+ */
+const speedSelect = $('#select-speed');
+if (speedSelect) {
+  speedSelect.addEventListener('change', (e) => {
+    state.settings.speed = Number(e.target.value);
+    saveSettings();
+    // Onto whatever is playing, rather than from the next message on: this sheet is
+    // two taps from the message, and a setting that does nothing you can hear is one
+    // nobody comes back to.
+    applyReadSpeed();
+    paintSpeedHint();
+  });
+}
+
 $('#select-effort').value = state.settings.effort;
 $('#select-effort').addEventListener('change', (e) => {
   state.settings.effort = e.target.value;
@@ -4981,7 +5095,7 @@ window.__pushForTest = {
 // and inaudible from a test. So the pieces are driven directly.
 window.__speechForTest = {
   loadVoices, decorateSpoken, fencedBlocks, speakableText, stopSpeaking, paintVoicePicker,
-  speech, renderMarkdown, splitFences,
+  speech, renderMarkdown, splitFences, readSpeed, applyReadSpeed, READ_SPEEDS,
 };
 // The spoken conversation, for the same reason and more of it: this one holds a
 // credential for a paid service, a live microphone and a peer connection, none of

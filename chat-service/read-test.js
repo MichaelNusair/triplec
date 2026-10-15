@@ -21,6 +21,10 @@
  *  - **That nothing is offered when the server cannot read.** No Polly
  *    permission, no Azure or OpenAI key, an older server with no such route: all
  *    of them mean no controls at all rather than buttons that explain a 401.
+ *  - **How fast it reads.** The rate goes on the element as both `playbackRate`
+ *    and `defaultPlaybackRate`, because a new source resets the first to the
+ *    second — set one of them once and the first piece of a message is fast and
+ *    the rest is not, which sounds like the setting half working.
  *  - **Hebrew.** An unset voice means "whichever fits the message", decided per
  *    message on the server — which is the only arrangement where a Hebrew answer
  *    is read in Hebrew on a phone nobody configured.
@@ -86,7 +90,7 @@ const CWD = '/workspace/projects/demo';
  * `speech: null` is every way of not being able to read aloud — they are one case
  * on screen, and it is the case the controls must not appear in.
  */
-function boot({ speech = SPEECH } = {}) {
+function boot({ speech = SPEECH, settings = null } = {}) {
   const virtualConsole = new VirtualConsole();
   virtualConsole.on('jsdomError', () => {});
   const dom = new JSDOM(html, {
@@ -129,20 +133,38 @@ function boot({ speech = SPEECH } = {}) {
    * segments must arrive in order, and nothing else may ever be handed to it.
    */
   const played = [];
+  /* The rate each of those sources was playing at — see section 9. */
+  const rates = [];
   const audio = { el: null, built: 0 };
   class FakeAudio {
     constructor() {
       this.onended = null;
       this.onerror = null;
+      /*
+       * Both rates, because the browser has both and the difference is the bug: a
+       * new `src` resets `playbackRate` to `defaultPlaybackRate`, so a reader that
+       * sets only the first reads the first piece of a message fast and the rest at
+       * normal speed.
+       */
+      this.defaultPlaybackRate = 1;
+      this.playbackRate = 1;
       audio.built += 1;
       audio.el = this;
     }
-    set src(value) { this._src = value; played.push(value); }
+    set src(value) {
+      this._src = value;
+      // The load the assignment starts, as far as this matters here.
+      this.playbackRate = this.defaultPlaybackRate;
+      played.push(value);
+    }
     get src() { return this._src; }
     removeAttribute() { this._src = undefined; }
     load() {}
     pause() {}
-    play() { return Promise.resolve(); }
+    play() {
+      rates.push(this.playbackRate);
+      return Promise.resolve();
+    }
     /** The piece finished, which is what chains the next one. */
     finish() { this.onended?.(); }
     /** The browser refused the source. */
@@ -201,6 +223,10 @@ function boot({ speech = SPEECH } = {}) {
 
   const thrown = [];
   w.addEventListener('error', (e) => thrown.push(e.message));
+  // What a previous launch left in storage, seeded before the script reads it:
+  // every JSDOM gets its own localStorage, so this is the only way to be a device
+  // that has settings already.
+  if (settings) w.localStorage.setItem('claude-chat', JSON.stringify(settings));
   try {
     w.eval(js);
   } catch (err) {
@@ -211,7 +237,7 @@ function boot({ speech = SPEECH } = {}) {
 
   const doc = w.document;
   return {
-    dom, w, doc, sockets, prepareCalls, segmentFetches, played, audio, state, thrown,
+    dom, w, doc, sockets, prepareCalls, segmentFetches, played, rates, audio, state, thrown,
     $: (sel) => doc.querySelector(sel),
     hooks: w.__panesForTest,
     speechHooks: w.__speechForTest,
@@ -530,6 +556,10 @@ console.log('\nA deployment with no server voice offers no controls at all:');
     'the settings sheet shows a voice picker with nothing behind it',
     h.$('#voice-row').classList.contains('hidden'),
   );
+  check(
+    'the settings sheet shows a speed picker on a box with nothing to read with',
+    h.$('#speed-row').classList.contains('hidden'),
+  );
   check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
   h.close();
 }
@@ -666,7 +696,125 @@ console.log('\nThe fence parser and the renderer agree, block for block:');
   h.close();
 }
 
-// --- 8. the styling exists, since the controls are nothing without it -------
+// --- 8. how fast it reads ---------------------------------------------------
+/*
+ * The speed, which has one failure that is invisible and one that is merely
+ * annoying.
+ *
+ * The invisible one: a message is a row of separate sources, and setting a new `src`
+ * resets `playbackRate` to `defaultPlaybackRate`. A reader that sets only
+ * `playbackRate` reads the first piece at 1.5x and everything after it at normal
+ * speed, which sounds like the setting half working and is reported as "it doesn't
+ * stick".
+ *
+ * The annoying one: this control is in Settings, two taps from the message. A change
+ * that waits for the next message is a change nobody can hear themselves making.
+ */
+console.log('\nA message can be read faster, and the speed holds across the whole of it:');
+{
+  const h = boot();
+  await settle(120);
+  const select = h.$('#select-speed');
+  check('there is no way to change the reading speed', Boolean(select));
+  check(
+    'the speed picker is hidden on a box that can read aloud',
+    !h.$('#speed-row').classList.contains('hidden'),
+  );
+  check(
+    `the speed does not start at normal: ${JSON.stringify(select?.value)}`,
+    select.value === '1',
+  );
+  check(
+    'normal speed is offered as a bare number, which is not obviously the one to ' +
+      'come back to',
+    /normal/.test([...select.options].find((o) => o.value === '1')?.textContent || ''),
+  );
+  check(
+    `the ladder is not a media player's: ${[...select.options].map((o) => o.value).join(', ')}`,
+    [...select.options].map((o) => o.value).join(',') === '0.5,0.75,1,1.25,1.5,1.75,2,2.5,3',
+  );
+
+  select.value = '1.5';
+  select.dispatchEvent(new h.w.Event('change'));
+  check(
+    'the speed was not remembered, so it has to be set again on every launch',
+    JSON.parse(h.w.localStorage.getItem('claude-chat') || '{}').speed === 1.5,
+  );
+  check(
+    'nothing says what the number does, on a setting whose whole state is a number',
+    /1\.5×/.test(h.$('#speed-hint').textContent || ''),
+  );
+
+  const sock = h.open();
+  sock.deliver({ type: 'assistant_text', text: 'A short answer, in two pieces.' });
+  await settle();
+  h.readBtns(h.bubbles()[0])[0].dispatchEvent(new h.w.MouseEvent('click', { bubbles: true }));
+  await settle();
+  check(
+    `the first piece was not played at the chosen speed: ${h.rates.join(', ')}`,
+    h.rates[h.rates.length - 1] === 1.5,
+  );
+  h.audio.el.finish();
+  await settle();
+  check(
+    `the message fell back to normal speed part-way through — a new source resets the `
+      + `rate, so every piece has to be told: ${h.rates.join(', ')}`,
+    h.played[h.played.length - 1].includes('segment=1')
+      && h.rates.every((rate) => rate === 1.5),
+  );
+
+  // Mid-read, from the sheet: this is the case the setting exists for, since the
+  // decision to speed up is made while listening to something too slow.
+  const piecesBefore = h.played.length;
+  select.value = '2';
+  select.dispatchEvent(new h.w.Event('change'));
+  check(
+    `a speed change did not reach the audio that is playing: ${h.audio.el.playbackRate}`,
+    h.audio.el.playbackRate === 2,
+  );
+  check(
+    'the new speed was not made the element’s default — a source change resets the '
+      + 'rate to that, so the rest of the message would be read at the old speed',
+    h.audio.el.defaultPlaybackRate === 2,
+  );
+  check(
+    'changing the speed restarted the message, so the part already heard is read again',
+    h.played.length === piecesBefore,
+  );
+  check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
+  h.close();
+}
+
+// --- 9. a stored speed is not to be trusted ---------------------------------
+/*
+ * `playbackRate = 0` is an element that plays nothing and reports no error, which is
+ * indistinguishable from a voice that is broken. The number comes out of
+ * localStorage, so anything off the ladder is snapped back to normal rather than
+ * handed to the element.
+ */
+console.log('\nA speed out of storage is checked before it reaches the element:');
+{
+  const zero = boot({ settings: { speed: 0 } });
+  await settle(120);
+  check(
+    `a stored speed of zero was kept: ${JSON.stringify(zero.$('#select-speed').value)}`,
+    zero.$('#select-speed').value === '1',
+  );
+  check('a zero speed reached the reader', zero.speechHooks.readSpeed() === 1);
+  check('nothing threw', zero.thrown.length === 0, zero.thrown.join('; '));
+  zero.close();
+
+  const kept = boot({ settings: { speed: 1.75 } });
+  await settle(120);
+  check(
+    'a speed set on an earlier launch was forgotten',
+    kept.$('#select-speed').value === '1.75' && kept.speechHooks.readSpeed() === 1.75,
+  );
+  check('nothing threw', kept.thrown.length === 0, kept.thrown.join('; '));
+  kept.close();
+}
+
+// --- 10. the styling exists, since the controls are nothing without it ------
 console.log('\nThe controls are styled, and the rows do not break a pre-wrap bubble:');
 {
   check('.read-btn has no rule, so the buttons are browser-default grey', /\.read-btn\s*\{/.test(css));
@@ -699,6 +847,9 @@ console.log(
   + 'own button and is read as code by the server, the audio is unlocked inside the tap '
   + 'and played in order from same-origin URLs, Stop stops and a piece arriving after it '
   + 'is discarded, a refusal is a sentence rather than silence or the wrong voice, a box '
-  + 'that cannot synthesise offers no controls at all, and an unset voice leaves the '
-  + 'choice per message to the server — which is what reads Hebrew in Hebrew.',
+  + 'that cannot synthesise offers no controls at all, an unset voice leaves the '
+  + 'choice per message to the server — which is what reads Hebrew in Hebrew — and '
+  + 'the chosen speed holds across every piece of a message, reaches the audio '
+  + 'already playing, and is snapped back to normal if storage hands it a rate that '
+  + 'would play silently.',
 );

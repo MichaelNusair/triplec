@@ -320,7 +320,10 @@ The status button answers **is Claude working, and what did it last say** withou
 waiting out the panel's own history load — a phone that has just come back from
 sleep otherwise shows an empty transcript for several seconds. One tap gives a
 line; tapping that opens the whole of the last message, with **Read aloud** for
-when it is longer than a phone screen. While that sheet is open it re-asks every
+when it is longer than a phone screen, and a **speed** stepper beside it — minus,
+the rate, plus, from half speed to three times, which changes the message being
+read as well as the next one and keeps the voice's pitch where it is. (The chat
+app has the same range in Settings.) While that sheet is open it re-asks every
 five seconds and reads a newly arrived message out by itself, so watching a turn
 finish costs nothing at all — bounded by the sheet, because a phone that starts
 talking on its own after you have put it down is worse than one that stays quiet.

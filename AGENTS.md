@@ -1517,6 +1517,27 @@ Things that have burned people, in this codebase specifically:
   refuses while the mic button carries `cmo-rec` — because the recognizer would
   otherwise dictate Claude's own reply into the composer and the whisper recorder
   would upload it to be transcribed.
+- **How fast it reads is changed on this side, never on the server's.** The status
+  sheet has a minus / readout / plus stepper (`#cmo-speed`, remembered per device in
+  `cmo-speed`) and the chat app's Settings has the same ladder as a picker
+  (`#select-speed`, in `claude-chat`'s `speed`); the stops are the ones a podcast
+  player offers, 0.5 to 3, with normal in the middle. Nothing about a rate reaches
+  `/api/speak`, and that is the point: cached audio is keyed by `(engine, voice,
+  text)` — see `VoiceCache` in `chat-service/speak.js` — so asking the server for a
+  faster read would be a cache miss, a second synthesis and a second bill for a
+  message already on the device, where `playbackRate` is free, instant, and applies
+  to the piece already playing. Two things about it are easy to get wrong and both
+  have a test. **The rate goes on the element twice**, as `playbackRate` *and*
+  `defaultPlaybackRate`, and after every `src`: the media load algorithm resets the
+  first to the second on each new source, and a message here is a chain of them, so
+  setting one of them once reads the first segment fast and the rest at normal
+  speed — a failure that sounds like the control half working and gets reported as
+  "it doesn't stick". **`preservesPitch` is set explicitly**, true, because the
+  prefixed property older WebKit shipped defaulted the other way and the difference
+  is a reader rather than a chipmunk. The browser's own voice takes the same number
+  as `SpeechSynthesisUtterance.rate`, which it fixes when an utterance starts, so a
+  change there is heard from the next piece on — the sheet's note says so, and says
+  something different once a server voice is picked.
 - **The markdown is reduced before it is spoken, and the reduction is
   deliberately lossy.** A final message is written to be read: spoken literally it
   is "asterisk asterisk Done asterisk asterisk", every slash of every path read
