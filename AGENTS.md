@@ -275,6 +275,71 @@ Two things to know about it:
   `|| echo` group if the build does not depend on it — and ship that. Installing it
   by hand is the right answer for a one-off and the wrong one for a dependency.
 
+## More than one session is in this checkout
+
+Several Claude sessions run on this box at once, and more than one of them is
+usually in *this* directory: the editor's tmux session (`cc triplec`), every
+conversation in the chat and in the editor's panel — one `claude` process each,
+keyed by cwd and conversation id — and whatever a phone has open. They hold
+separate context, they cannot see each other, and they share one working tree, one
+index and one stash stack. Nothing arbitrates between them.
+
+That is a sharper problem here than in most repositories, because of the finishing
+rule at the top of this file: every session is told to sweep the tree and ship what
+it finds. An edit you leave half-written for ten minutes is therefore not waiting
+for you — it is something another session will commit to `main` and deploy to
+production, named in its commit message but still mid-thought. It costs in the
+other direction too: `deploy-remote.sh` refuses to run while the tree is dirty, so
+your unfinished work blocks their deploy and theirs blocks yours.
+
+**So work in a git worktree whenever the work will sit.** `EnterWorktree` makes one
+off `origin/main` under `.claude/worktrees/<name>` and moves the session into it;
+that path is gitignored here deliberately, so the sweep above can never commit a
+nested checkout. Reach for one when either of these is true — it is cheaper than
+being careful:
+
+- `git status` already shows changes that are not yours, or
+- your own change will be unfinished for more than a few minutes: anything with a
+  test to write, a deploy to weigh, or a question to put to the user first.
+
+A one-line fix you are about to commit is fine in the shared checkout, and so is
+the deploy. Give a subagent its own worktree as well (`Agent` with
+`isolation: "worktree"`) whenever you expect it to write files, rather than letting
+two of them edit the same paths. In a worktree the only uncommitted work is yours,
+which is what makes the `git add -A` in the block at the top of this file honest
+again.
+
+Three things about a worktree *of this repository* in particular:
+
+- **Nothing gitignored comes with it, and the suite needs three of those.** Symlink
+  them from the main checkout and `npm test` passes unchanged in the worktree —
+  verified 2026-10-21, 83 tests green, which is all of it:
+
+  ```bash
+  W=.claude/worktrees/<name>
+  ln -s /workspace/projects/triplec/chat-service/node_modules "$W/chat-service/node_modules"
+  ln -s /workspace/projects/triplec/infra/node_modules "$W/infra/node_modules"
+  ln -s /workspace/projects/triplec/claude-web.config.json "$W/claude-web.config.json"
+  ```
+
+  The config is `triplec.config.json` on a box set up after the rename; this one
+  predates it. Without it, anything that reads `infra/config.js` fails on a missing
+  `domainName` instead of on something that names the real cause.
+- **Push from the worktree, deploy from the main checkout.** `git push origin
+  HEAD:main` is the finish: `deploy-remote.sh` ships `origin/main`, so a pushed
+  commit is deployable from anywhere, while `deploy.sh --app-only` ships *the tree
+  it runs in* — which in a worktree is one branch plus three symlinks. Expect the
+  deploy to report the checkout is behind `origin/main` by the commit you just
+  pushed; that is the warning working, not a refusal.
+- **Then remove it.** `git worktree remove`, or `ExitWorktree` with `remove`. One
+  left behind holds a branch and a second copy of the tree, and becomes the next
+  session's confusion about whose work it is.
+
+The box-wide version of this note, for every project under `/workspace/projects`,
+is written by `bootstrap.sh` into `/workspace/projects/CLAUDE.md` — a
+parent-directory `CLAUDE.md`, which Claude Code loads alongside the project's own.
+What is above is the part specific to this repository.
+
 ## Repository map
 
 ```

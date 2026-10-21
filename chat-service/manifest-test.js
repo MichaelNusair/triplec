@@ -503,6 +503,53 @@ for (const lib of ['nss', 'mesa-libgbm', 'libXdamage', 'libxkbcommon', 'at-spi2-
   );
 }
 
+section('And every session is told it is not alone in the checkout:');
+/*
+ * The collision this guards against is invisible while it happens. Several sessions
+ * are normally live in one project directory — the editor's tmux session, every chat
+ * and panel conversation, a phone — sharing one working tree, and the finishing rule
+ * in AGENTS.md has each of them committing whatever it finds there. A git worktree is
+ * the fix, and Claude Code reaches for one only when an instruction file asks for it
+ * by name: its own tool documentation says to use a worktree "ONLY when explicitly
+ * instructed ... by the user, or by project instructions (CLAUDE.md / memory)". So the
+ * instruction is provisioning, exactly like the sudo grant above — nothing at runtime
+ * notices it going missing, and what it costs when it is gone is someone's
+ * half-written file in a commit on main.
+ *
+ * It lands at /workspace/projects/CLAUDE.md because Claude Code loads a CLAUDE.md from
+ * the working directory *and from its parents*, so one file covers every project on the
+ * box without being checked into any of them. Verified 2026-10-21: a canary token in a
+ * parent CLAUDE.md came back from `claude -p` run in a subdirectory.
+ */
+const projectsMd = /cat > "\$DATA_MNT\/projects\/CLAUDE\.md" <<'PROJECTSMD'\n([\s\S]*?)\nPROJECTSMD\n/
+  .exec(bootstrapSrc);
+ok(
+  projectsMd,
+  'bootstrap.sh no longer writes /workspace/projects/CLAUDE.md, so nothing tells a session ' +
+    'that other sessions are editing the tree it is editing — see AGENTS.md "More than one ' +
+    'session is in this checkout"',
+);
+ok(
+  /EnterWorktree/.test(projectsMd?.[1] || ''),
+  'the box-wide CLAUDE.md no longer names a worktree, and an agent creates one only when an ' +
+    'instruction file asks for it by name',
+);
+ok(
+  /isolation: "worktree"/.test(projectsMd?.[1] || ''),
+  'the box-wide CLAUDE.md no longer covers subagents, which are the other way two writers ' +
+    'end up in one working tree',
+);
+ok(
+  /^chown "\$USER_NAME:\$USER_NAME" "\$DATA_MNT\/projects\/CLAUDE\.md"$/m.test(bootstrapSrc),
+  'the box-wide CLAUDE.md is left owned by root, so the file every session on this box reads ' +
+    'is the one file on the volume the user cannot edit',
+);
+ok(
+  fs.readFileSync(path.join(root, '.gitignore'), 'utf8').includes('.claude/worktrees/'),
+  'this repository no longer ignores .claude/worktrees/, so a session that takes the advice ' +
+    'above leaves a nested checkout for the next git add -A to commit',
+);
+
 section('And the chat app leaves the projects alone, which is the other half of it:');
 /*
  * A path per project was necessary and still not sufficient, because the chat app

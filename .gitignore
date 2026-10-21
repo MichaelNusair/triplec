@@ -32,6 +32,14 @@ infra/cdk.context.json
 # committed it, confidently and forever.
 chat-service/build.json
 
+# Where a session's git worktree lands (EnterWorktree, or `git worktree add`
+# there by hand) — a whole second checkout, inside this one. Ignored because the
+# finishing rule in AGENTS.md tells every session to commit what it finds in the
+# tree, and a nested checkout is the one thing that must never be what it finds.
+# Recent Claude Code also writes this into .git/info/exclude; do not rely on that
+# alone, since it is local to one clone and this file is the version that ships.
+.claude/worktrees/
+
 # Copied in from pwa/ + pwa-icons/ by deploy.sh. pwa/ is the source of truth;
 # committing both copies lets them drift.
 chat-service/public/manifest.webmanifest

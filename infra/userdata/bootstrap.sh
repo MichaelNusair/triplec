@@ -220,6 +220,76 @@ cd /home/$USER_NAME
 VOLLINK
 
 # ---------------------------------------------------------------------------
+# What every session on this box should know before it edits anything
+# ---------------------------------------------------------------------------
+# Claude Code loads a CLAUDE.md from the working directory *and from its parent
+# directories*, so one file here is read by every session in every project under
+# it, alongside whatever that project says for itself. Verified on this box
+# 2026-10-21 with a canary token in a parent file and a headless `claude -p`.
+#
+# It states the one thing about this machine that no repository can state on its
+# own: several sessions are usually live in the same project directory at once —
+# the editor's tmux session, every chat and panel conversation, a phone — and they
+# share one working tree, one index and one stash stack. A session that does not
+# know that collides quietly, by committing another's half-written file, and the
+# fix is a worktree, which no session reaches for unless it is told to.
+#
+# Rewritten on every deploy rather than written once, for the same reason as the
+# zshrc and the CLI settings further down: this volume outlives the instance, so a
+# copy left by the first deploy would be permanent. Edit the text here.
+cat > "$DATA_MNT/projects/CLAUDE.md" <<'PROJECTSMD'
+# Working in /workspace/projects
+
+Managed by TripleC's bootstrap.sh — rewritten on every deploy, so the place to
+change it is `infra/userdata/bootstrap.sh` in the triplec repository, not here. A
+project's own CLAUDE.md or AGENTS.md outranks this file; this is only what is true
+of the machine.
+
+## Several Claude sessions run here at once, in the same checkout
+
+A project directory under /workspace/projects usually holds more than one live
+session: the editor's tmux session (`cc <project>`), every conversation in the chat
+and in the editor's panel — one `claude` process each — and whatever a phone has
+open. They hold separate context, they cannot see each other, and they share one
+working tree, one git index and one stash stack. Nothing arbitrates between them.
+
+The collisions are the quiet kind. `git add -A` sweeps up another session's
+half-written file and puts a commit on the branch that nobody can build; a
+checkout, a rebase or a bare `git stash` reverts work that was never yours; a test
+run reports on a tree two sessions are still editing.
+
+## So work in a worktree when the work will sit
+
+Run `git status` before you start editing. Work in a worktree — `EnterWorktree`,
+which branches off the default branch into `.claude/worktrees/<name>` and moves the
+session into it — when either of these is true:
+
+- the tree already holds changes that are not yours, or
+- your own change will be unfinished for more than a few minutes.
+
+A one-line fix you are about to commit is fine where you are. Give a subagent its
+own worktree as well (`Agent` with `isolation: "worktree"`) whenever you expect it
+to write files, rather than letting two of them edit the same paths.
+
+If `git status` then shows the worktree itself as untracked, add
+`.claude/worktrees/` to that project's .gitignore before you commit anything: a
+nested checkout is the worst thing a sweep like the one above can pick up.
+
+Two things a worktree does not bring, both of which look like a broken project:
+
+- **Nothing gitignored comes with it** — `node_modules`, `.env`, a local config
+  file. Symlink those from the main checkout before you run the project's tests.
+- **It is not where the project deploys from.** Finish by putting the commit on the
+  branch the project ships from (`git push origin HEAD:main`), then do whatever
+  that project calls deploying from its main checkout.
+
+Then remove the worktree — `git worktree remove`, or `ExitWorktree` with `remove`.
+One left behind holds a branch and a second copy of the tree, and becomes the next
+session's confusion about whose work it is.
+PROJECTSMD
+chown "$USER_NAME:$USER_NAME" "$DATA_MNT/projects/CLAUDE.md"
+
+# ---------------------------------------------------------------------------
 # Interactive shell (zsh)
 # ---------------------------------------------------------------------------
 # The environment this box needs in a shell — Bedrock region and model, the

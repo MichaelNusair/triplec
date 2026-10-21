@@ -22,6 +22,17 @@ The short version, if you read nothing else:
   change that is only app payload (`chat-service`, `pwa`, the extensions,
   `infra/userdata`). Either way both paths ship more than your diff and more than one
   agent works here at once, so run `git status` first and say what you are shipping.
+- **Several sessions share this one checkout, so work in a worktree when the work
+  will sit.** The editor, every chat and panel conversation, and any phone are
+  separate sessions in this same directory, with one working tree between them —
+  and the finishing rule above means another session will commit and deploy
+  whatever it finds half-written. If `git status` already shows work that is not
+  yours, or your change will be unfinished for more than a few minutes, use
+  `EnterWorktree` (and give a writing subagent its own, with
+  `isolation: "worktree"`). Symlink `chat-service/node_modules`,
+  `infra/node_modules` and the config file in, or the suite cannot run there;
+  push with `git push origin HEAD:main` and deploy from this checkout.
+  [AGENTS.md](AGENTS.md#more-than-one-session-is-in-this-checkout) has the rest.
 - **You have passwordless `sudo` on this box — install whatever you need.**
   `sudo dnf install -y …`, and `npx playwright install chromium` for a headless
   browser, whose system libraries `bootstrap.sh` already installs (`install-deps`
