@@ -448,11 +448,18 @@ html, body {
 /* --- sheet --- */
 .sheet { position: fixed; inset: 0; z-index: 50; }
 .sheet-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+/* A sheet grows with its contents, and its contents are unbounded: the settings
+   list gained a row, a project's facts gained a repository, a project's chats
+   gained a chat. A sheet is anchored to the bottom of the screen, so growth goes
+   off the *top* — out of reach, taking the heading with it, and nothing scrolls
+   because an absolutely positioned box is not a scroller. So every sheet is
+   bounded and scrolls here, once, rather than each one discovering it in turn. */
 .sheet-body {
   position: absolute; left: 0; right: 0; bottom: 0;
   background: var(--bg-raised);
   border-radius: 20px 20px 0 0;
   padding: 20px 20px calc(24px + env(safe-area-inset-bottom));
+  max-height: 86vh; overflow-y: auto;
 }
 .sheet-body h2 { margin: 0 0 16px; font-size: 17px; }
 .sheet-body label { display: block; margin-bottom: 14px; font-size: 13px; color: var(--text-dim); }
@@ -473,11 +480,6 @@ html, body {
 /* The tab is behind the server. Said in the accent rather than the error colour:
    nothing is broken, there is something to reload. */
 .build-block .hint.stale { color: var(--accent); }
-/* The settings sheet now has one more line than the screen it was designed for.
-   Without this the sheet grows off the top of a small phone and the Model row
-   becomes unreachable, taking the Done button with it — the project sheet has
-   carried the same rule since it started listing what a project holds. */
-#sheet .sheet-body { max-height: 86vh; overflow-y: auto; }
 
 /* --- toast --- */
 .toast {
@@ -531,7 +533,6 @@ html, body {
 }
 
 /* Project sheet */
-#project-sheet .sheet-body { max-height: 86vh; overflow-y: auto; }
 #project-sheet-body { font-size: 14px; color: var(--text-dim); }
 .fact-list { margin: 0; padding: 0; list-style: none; }
 .fact-list li {
@@ -551,6 +552,29 @@ html, body {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 #project-sheet-body > .repo-heading:first-child { margin-top: 0; }
+/* Chats sheet: the list scrolls, not the sheet.
+   A project here holds up to 50 conversations, so this is the one sheet whose
+   contents are unbounded by anything a person did — 14 of them already fills a
+   1300px window — and scrolling the whole body would put "New chat in this
+   project" and Close below the fold, which on a phone means scrolling past
+   every conversation to reach the button you came for. So the body is the frame
+   and the list inside it is the scroller. */
+#chats-sheet .sheet-body { display: flex; flex-direction: column; }
+/* The frame's own parts keep their height. A flex item in a column may be shrunk
+   below its content, and a squashed "New chat in this project" is exactly what a
+   sheet full of conversations would do to it. */
+#chats-sheet .sheet-body > h2,
+#chats-sheet .sheet-body > button { flex: 0 0 auto; }
+#chats-sheet-body {
+  flex: 1 1 auto;
+  /* Without `min-height: 0` a flex item refuses to shrink below its content, so
+     the list would push the buttons off the bottom instead of scrolling. */
+  min-height: 0; overflow-y: auto;
+  /* The rows have a 6px gap under them; the last one should not sit against the
+     button, and a scrolled list needs to look cut off rather than finished. */
+  padding-bottom: 2px;
+}
+
 .danger { background: var(--error); }
 .subtle { background: var(--bg-input); color: var(--text); }
 
