@@ -37,6 +37,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const publicDir = joinPath(here, 'public');
 const html = readFileSync(joinPath(publicDir, 'index.html'), 'utf8');
 const js = readFileSync(joinPath(publicDir, 'app.js'), 'utf8');
+// Read for one thing only: whether a sheet that outgrows the window can be
+// scrolled. jsdom lays nothing out, so the rules are the only thing to assert —
+// and the sheet full of a project's conversations is the one that outgrows it.
+const css = readFileSync(joinPath(publicDir, 'style.css'), 'utf8');
 
 /**
  * The shell as a named deployment serves it — through the real rewrite, not a
@@ -72,6 +76,13 @@ const API = '/workspace/projects/api';
 const WEB = '/workspace/projects/web';
 const INFRA = '/workspace/projects/infra';
 const DOCS = '/workspace/projects/docs';
+/*
+ * A conversation that has moved into a worktree: the same project, a directory of
+ * its own. Its transcript is recorded there and only there, so it has to be resumed
+ * there — see projectPlaces in session-manager.js. The server reports the directory
+ * on the row; the client's job is to send it back.
+ */
+const DOCS_TREE = `${DOCS}/.claude/worktrees/a-branch`;
 const settle = (ms = 30) => new Promise((resolve) => setTimeout(resolve, ms));
 /**
  * Let the in-flight fetches land before the window goes away.
@@ -112,7 +123,24 @@ function projectsPayload() {
       },
       { name: 'web', path: WEB, sessions: [{ sessionId: 'fff', mtime: now - 200_000, title: 'a web chat' }] },
       { name: 'infra', path: INFRA, sessions: [{ sessionId: 'ggg', mtime: now - 210_000, title: 'an infra chat' }] },
-      { name: 'docs', path: DOCS, sessions: [{ sessionId: 'hhh', mtime: now - 220_000, title: 'a docs chat' }] },
+      {
+        name: 'docs',
+        path: DOCS,
+        sessions: [
+          { sessionId: 'hhh', mtime: now - 220_000, title: 'a docs chat', cwd: DOCS, worktree: null },
+          // The one in a worktree. Deliberately the only row in this payload with a
+          // `worktree`, and deliberately beside rows that carry no `cwd` at all:
+          // those are what an older server answers with, and they must go on keying
+          // and opening against the project exactly as they did.
+          {
+            sessionId: 'iii',
+            mtime: now - 230_000,
+            title: 'a chat in a worktree',
+            cwd: DOCS_TREE,
+            worktree: 'a-branch',
+          },
+        ],
+      },
     ],
   };
 }
@@ -723,6 +751,98 @@ console.log('\nLists the project\'s own conversations in the switcher:');
   check('and its first message names it', pane.title === 'the first thing said in it', pane.title);
   check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
   await finish(h);
+}
+
+// The directory a conversation runs in is not always the project's own.
+console.log('\nOpens a chat that is in a worktree where that chat actually is:');
+{
+  const h = bootClient();
+  await settle();
+
+  const row = h.rows().find((r) => r.dataset.session === 'iii');
+  check('a chat in a worktree is in the list', Boolean(row));
+  check(
+    'the row says which worktree, because the project alone no longer places it',
+    /a-branch/.test(row?.textContent || ''),
+    row?.querySelector('.row-sub')?.textContent.trim(),
+  );
+  check(
+    'and is keyed for /api/live by the directory it runs in',
+    row?.dataset.key === `${DOCS_TREE}|iii`,
+    row?.dataset.key,
+  );
+
+  row.dispatchEvent(new h.w.Event('click'));
+  const pane = h.hooks.panes.get(h.hooks.paneKey(DOCS));
+  check('opening it opens its project\'s tab, not a tab of its own',
+    h.hooks.panes.size === 1 && pane?.sessionId === 'iii', `${h.hooks.panes.size} tabs`);
+  check('the tab is still named after the project', h.chipNames().join(',') === 'docs', h.chipNames().join(','));
+
+  h.sockets[0].accept();
+  const start = h.sockets[0].sent[0];
+  check(
+    'and it is resumed in the worktree, which is the only place its transcript is',
+    start?.type === 'start' && start.cwd === DOCS_TREE && start.resumeSessionId === 'iii',
+    JSON.stringify(start),
+  );
+  joinConversation(h.sockets[0], { sessionId: 'iii', cwd: DOCS_TREE });
+
+  // A cooled tab reads `/api/live`, which reports the conversation's own directory.
+  // Keying that by the project would leave this tab permanently "not running".
+  h.hooks.coolPane(pane);
+  h.box.live = [{ cwd: DOCS_TREE, sessionId: 'iii', busy: true, lastActivity: Date.now() }];
+  await h.hooks.pollLive();
+  check('a cooled worktree chat is still matched to its process',
+    pane.busy && !pane.trouble, `busy=${pane.busy} trouble=${pane.trouble}`);
+
+  // And the way back out: a new chat in this project starts in the project, not in
+  // whichever worktree the last conversation happened to be in.
+  h.hooks.activatePane(pane);
+  h.$('#conv-bar').dispatchEvent(new h.w.Event('click'));
+  await settle();
+  h.$('#btn-new-in-project').dispatchEvent(new h.w.Event('click'));
+  const fresh = h.sockets[h.sockets.length - 1];
+  fresh.accept();
+  check(
+    'a new chat in the project starts in the project',
+    fresh.sent[0]?.cwd === DOCS && fresh.sent[0]?.resumeSessionId === null,
+    JSON.stringify(fresh.sent[0]),
+  );
+  check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
+  await finish(h);
+}
+
+// Where the sheet listing those chats can run out of room.
+console.log('\nKeeps the chat switcher reachable when a project has many chats:');
+{
+  /*
+   * The bug, reported with a screenshot: a project with fourteen conversations drew
+   * a sheet taller than the window, and because a sheet is anchored to the bottom
+   * the overflow went off the *top* — oldest rows and the heading unreachable, and
+   * nothing scrolled, since an absolutely positioned box is not a scroller.
+   *
+   * Asserted in CSS rather than in layout because jsdom does not lay anything out.
+   * The three rules are what make the list the scroller and the sheet the frame; the
+   * last of them is the one that is easy to leave out and silently does nothing.
+   */
+  const rule = (selector) => {
+    const at = css.indexOf(selector);
+    return at === -1 ? '' : css.slice(at, css.indexOf('}', at));
+  };
+  const sheet = rule('.sheet-body {');
+  check('every sheet is bounded by the window', /max-height:\s*86vh/.test(sheet), sheet);
+  check('and scrolls rather than growing past it', /overflow-y:\s*auto/.test(sheet), sheet);
+  const frame = rule('#chats-sheet .sheet-body {');
+  check('the chats sheet is a column', /display:\s*flex/.test(frame) && /flex-direction:\s*column/.test(frame), frame);
+  const list = rule('#chats-sheet-body {');
+  check('with the list itself scrolling', /overflow-y:\s*auto/.test(list), list);
+  check(
+    'and able to shrink, which is what makes it scroll instead of pushing the buttons out',
+    /min-height:\s*0/.test(list),
+    list,
+  );
+  const parts = rule('#chats-sheet .sheet-body > button {');
+  check('while the buttons under it keep their height', /flex:\s*0 0 auto/.test(parts), parts);
 }
 
 // --- 8. Ambient state, for the tabs with no socket ---------------------------

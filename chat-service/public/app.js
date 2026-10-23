@@ -119,6 +119,9 @@ function saveOpenPanes() {
         cwd: p.cwd,
         project: p.project,
         sessionId: p.sessionId,
+        // Where that conversation runs, so a refresh rejoins it rather than
+        // resuming its transcript in the project root. See makePane.
+        sessionCwd: p.sessionCwd,
         title: p.title,
         named: Boolean(p.named),
       }));
@@ -319,8 +322,10 @@ async function refreshList() {
     const row = document.createElement('button');
     row.className = 'row';
     // The conversation key /api/live uses, so the badges below can be kept honest
-    // by polling without re-reading every transcript to redraw a list.
-    row.dataset.key = convKey(project.path, session.sessionId);
+    // by polling without re-reading every transcript to redraw a list. Keyed by
+    // the conversation's own directory, because that is what the server reports: a
+    // chat in a worktree is not keyed under the project it belongs to.
+    row.dataset.key = convKey(session.cwd || project.path, session.sessionId);
     // The tab this row would open, and the chat it would put in it — what
     // `paintRowBadges` needs to say whether it is already on screen.
     row.dataset.cwd = project.path;
@@ -332,7 +337,12 @@ async function refreshList() {
       <div class="avatar">${escapeHtml(project.name.slice(0, 2).toUpperCase())}</div>
       <div class="row-main">
         <div class="row-title">${escapeHtml(session.title)}</div>
-        <div class="row-sub">${escapeHtml(project.name)} · ${relTime(session.mtime)}
+        <!-- The worktree, when the chat is in one: it is the same project, and
+             which checkout a chat is working in is the thing you would otherwise
+             have to open it to find out. -->
+        <div class="row-sub">${escapeHtml(project.name)}${
+          session.worktree ? ` · ${escapeHtml(session.worktree)}` : ''
+        } · ${relTime(session.mtime)}
           <span class="row-live hidden"></span><span class="row-open hidden">open</span>
         </div>
       </div>`;
@@ -342,6 +352,7 @@ async function refreshList() {
         project: project.name,
         sessionId: session.sessionId,
         title: session.title,
+        sessionCwd: session.cwd,
       }),
     );
     body.appendChild(row);
@@ -359,7 +370,7 @@ function liveByKey(rows) {
   const map = new Map();
   for (const { project, session } of rows) {
     if (!session.live && !session.busy) continue;
-    map.set(convKey(project.path, session.sessionId), { busy: Boolean(session.busy) });
+    map.set(convKey(session.cwd || project.path, session.sessionId), { busy: Boolean(session.busy) });
   }
   return map;
 }
@@ -865,7 +876,7 @@ function activePane() {
   return panes.get(state.activeKey) || null;
 }
 
-function makePane({ cwd, project, title, sessionId }) {
+function makePane({ cwd, project, title, sessionId, sessionCwd }) {
   const pane = {
     // Stable for the life of the tab: a project does not become another project,
     // and the conversation inside it changing is not a re-key. This is the part
@@ -884,6 +895,20 @@ function makePane({ cwd, project, title, sessionId }) {
     // `conversationId` only identifies the process to this browser, so it is
     // useless after a refresh and meaningless on another device.
     sessionId: sessionId || null,
+    /*
+     * The directory that conversation runs in, which is the project's own for all
+     * but one case: a session that has moved into a worktree is recorded — and has
+     * to be resumed — under `<project>/.claude/worktrees/<name>`. See
+     * projectPlaces in chat-service/session-manager.js.
+     *
+     * Deliberately beside `cwd` rather than instead of it. `cwd` is the tab's
+     * identity and the project it names; this is where the chat in the window
+     * lives, and it changes when the window changes conversation. Sending the
+     * project's path for a worktree's conversation would resume its transcript in
+     * the wrong directory — a second process on one transcript, which is the fork
+     * everything else here is arranged to prevent.
+     */
+    sessionCwd: sessionCwd || cwd,
     conversationId: null,
     ws: null,
     thread: null,          // created on activation; null while cold
@@ -919,9 +944,9 @@ function basename(cwd) {
  * named, an existing window keeps the one it is showing (which is what "go to
  * TripleC" means) and a new window starts a new chat.
  */
-function openProject({ cwd, project, sessionId, title, fresh = false }) {
+function openProject({ cwd, project, sessionId, title, sessionCwd, fresh = false }) {
   const existing = panes.get(paneKey(cwd));
-  const pane = existing || makePane({ cwd, project, sessionId, title });
+  const pane = existing || makePane({ cwd, project, sessionId, title, sessionCwd });
   // Keep the name fresh: a tab restored from localStorage knows only what was
   // saved, and the list is authoritative about what a project is called.
   if (project) pane.project = project;
@@ -929,7 +954,7 @@ function openProject({ cwd, project, sessionId, title, fresh = false }) {
     // A named conversation moves the window to it; an explicit "new chat" empties
     // it. Neither stops what was there.
     if (sessionId && sessionId !== pane.sessionId) {
-      showConversation(pane, { sessionId, title });
+      showConversation(pane, { sessionId, title, sessionCwd });
       return pane;
     }
     if (fresh && pane.sessionId) {
@@ -948,8 +973,8 @@ function openProject({ cwd, project, sessionId, title, fresh = false }) {
  * what the tab is showing. Tapping a chat in a project that is already open moves
  * that window to it rather than opening a seventh tab.
  */
-function openConversation({ cwd, project, sessionId, title }) {
-  return openProject({ cwd, project, sessionId, title });
+function openConversation({ cwd, project, sessionId, title, sessionCwd }) {
+  return openProject({ cwd, project, sessionId, title, sessionCwd });
 }
 
 /**
@@ -962,7 +987,7 @@ function openConversation({ cwd, project, sessionId, title }) {
  * disappearing from the window while it is still spending money is exactly the
  * thing the user has to be able to trust.
  */
-function showConversation(pane, { sessionId = null, title } = {}) {
+function showConversation(pane, { sessionId = null, title, sessionCwd } = {}) {
   if (pane.closed) return pane;
   const sameChat = (sessionId || null) === (pane.sessionId || null);
   if (sameChat && !pane.cold) {
@@ -985,6 +1010,10 @@ function showConversation(pane, { sessionId = null, title } = {}) {
   const leaving = pane.busy ? pane.title : null;
   teardownPane(pane);
   pane.sessionId = sessionId || null;
+  // Where the arriving conversation runs. Back to the project itself unless the
+  // caller said otherwise, which is what makes "new chat in this project" start in
+  // the project and not in whichever worktree the last conversation was in.
+  pane.sessionCwd = sessionCwd || pane.cwd;
   pane.title = title || (sessionId ? 'Chat' : 'New chat');
   pane.named = Boolean(title);
   pane.busy = false;
@@ -1291,6 +1320,7 @@ async function openChatsSheet() {
       <div class="sheet-row-main">
         <div class="sheet-row-title">${escapeHtml(session.title)}</div>
         <div class="sheet-row-sub">${relTime(session.mtime)}
+          ${session.worktree ? `<span class="row-where">${escapeHtml(session.worktree)}</span>` : ''}
           ${badge ? `<span class="row-live${session.busy ? ' busy' : ''}">${badge}</span>` : ''}
           ${current ? '<span class="row-open">on screen</span>' : ''}
         </div>
@@ -1298,7 +1328,13 @@ async function openChatsSheet() {
     row.addEventListener('click', () => {
       closeChatsSheet();
       if (!current) {
-        showConversation(pane, { sessionId: session.sessionId, title: session.title });
+        showConversation(pane, {
+          sessionId: session.sessionId,
+          title: session.title,
+          // Where it runs. A worktree's conversation resumed against the project
+          // root would be a second process on its transcript.
+          sessionCwd: session.cwd,
+        });
       }
     });
     body.appendChild(row);
@@ -1361,7 +1397,9 @@ function connect(pane) {
       }
       ws.send(JSON.stringify({
         type: 'start',
-        cwd: pane.cwd,
+        // The conversation's directory, not the tab's: they differ for a chat in a
+        // worktree, and only the former can adopt the process already running it.
+        cwd: pane.sessionCwd || pane.cwd,
         resumeSessionId: pane.sessionId,
         model: state.settings.model,
         permissionMode: state.settings.permissionMode,
@@ -5000,7 +5038,9 @@ async function pollLive() {
     // A window with no conversation in it has nothing to be busy about, and no key
     // to look up — `convKey(cwd, null)` would match nothing and mark it in trouble.
     if (!pane.sessionId) continue;
-    const live = byKey.get(convKey(pane.cwd, pane.sessionId));
+    // `/api/live` reports the directory each conversation actually runs in, which
+    // for a chat in a worktree is not the tab's. See makePane.
+    const live = byKey.get(convKey(pane.sessionCwd || pane.cwd, pane.sessionId));
     const wasBusy = pane.busy;
     pane.busy = Boolean(live?.busy);
     // A cooled tab whose process has gone can still be reopened — the transcript

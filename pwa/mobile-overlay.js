@@ -3698,6 +3698,11 @@
             ? 'waiting on you'
             : c.state === 'working' ? 'working' : c.cutOff ? 'stopped' : 'your turn',
           sinceText(c.at),
+          // Which worktree, when this conversation is in one. A project's
+          // conversations no longer all share its checkout — see projectPlaces in
+          // chat-service/session-manager.js — and a row that is editing a separate
+          // tree is a row whose work will not be in the files the panel is showing.
+          c.worktree ? `in ${c.worktree}` : null,
           c.live === false ? 'not running' : null,
         ]
           .filter(Boolean)

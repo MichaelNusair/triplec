@@ -1071,6 +1071,46 @@ ok(
     !waitingRow?.querySelector('.cmo-dot')?.classList.contains('cmo-busy'),
 );
 
+/*
+ * A conversation in one of the project's worktrees.
+ *
+ * It belongs to this project and is listed with the rest — that is the whole of the
+ * fix on the server side, where such a conversation used to be missing from the
+ * answer altogether — but it is editing a different checkout from the one the panel
+ * and the editor are showing, which is worth a word in the row rather than a
+ * discovery later.
+ */
+statusReply = {
+  ...statusReply,
+  conversations: [
+    { sessionId: 'abc123', title: 'This one', state: 'idle', at: Date.now(), current: true },
+    {
+      sessionId: 'mno345',
+      title: 'The one in a worktree',
+      state: 'working',
+      at: Date.now() - 1e5,
+      cwd: '/workspace/projects/demo/.claude/worktrees/drop-azure',
+      worktree: 'drop-azure',
+    },
+  ],
+};
+await tapStatus();
+const treeRow = [...doc.querySelectorAll('#cmo-convos .cmo-convo')].find((row) =>
+  /The one in a worktree/.test(row.textContent ?? ''),
+);
+ok(
+  'a conversation in a worktree is listed, and the row says which one',
+  /in drop-azure/.test(treeRow?.querySelector('.cmo-convo-meta')?.textContent ?? ''),
+);
+ok(
+  "and a row in the project's own checkout says nothing about worktrees",
+  !/\bin \b/.test(
+    [...doc.querySelectorAll('#cmo-convos .cmo-convo')]
+      .find((row) => /This one/.test(row.textContent ?? ''))
+      ?.querySelector('.cmo-convo-meta')?.textContent ?? 'in ',
+  ),
+);
+
 // Back to the working branch, whose sheet the next section reads.
 delete statusReply.conversations;
 delete statusReply.live;

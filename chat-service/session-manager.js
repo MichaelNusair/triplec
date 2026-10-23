@@ -62,6 +62,55 @@ async function mangleCwd(cwd) {
   return resolved.replace(/[/.]/g, '-');
 }
 
+/** Where Claude Code records the conversations held in a directory. */
+async function transcriptDir(cwd) {
+  return join(CLAUDE_HOME, 'projects', await mangleCwd(cwd));
+}
+
+/** Where a session moved into a worktree ends up — see projectPlaces. */
+const WORKTREES = ['.claude', 'worktrees'];
+
+/**
+ * Every directory a project's conversations are recorded under: the project
+ * itself, then each of its worktrees.
+ *
+ * A project is a directory, and its conversations used to run in exactly that
+ * directory — one mangled path named every transcript belonging to it. A worktree
+ * breaks that assumption without announcing it. `EnterWorktree` moves a session
+ * into `<project>/.claude/worktrees/<name>`, which is what this box's own
+ * instructions ask for whenever several sessions share one checkout, and from that
+ * moment Claude Code writes the conversation's transcript under the *worktree's*
+ * mangled path instead. Nothing moves it back.
+ *
+ * Measured here on 2026-10-23: `personal-site` had a conversation live in the
+ * broker, mid-turn, with nobody watching it — the exact case every status surface
+ * in this repository exists for — and it appeared in no list of that project's
+ * chats and in no status answer about it, because its transcript had moved to
+ * `-workspace-projects-personal-site--claude-worktrees-drop-azure-bedrock-chat`
+ * and every reader was still looking at `-workspace-projects-personal-site`.
+ *
+ * So anything that means "the conversations in this project" asks this, and each
+ * answer carries the cwd the conversation really runs in. That cwd is not
+ * decoration: it is what a client sends back to resume, and resuming a worktree's
+ * conversation against the project root would start a second process on one
+ * transcript, which is the fork claude-broker exists to prevent.
+ *
+ * One level, and only `.claude/worktrees/*`, deliberately. That is the path the
+ * tool creates; a general walk of a project is a walk of its node_modules.
+ */
+async function projectPlaces(cwd) {
+  const places = [{ cwd, dir: await transcriptDir(cwd), worktree: null }];
+  const root = join(cwd, ...WORKTREES);
+  for (const entry of await readdir(root, { withFileTypes: true }).catch(() => [])) {
+    // `isDirectory()` is false for a symlink, which is what keeps this from
+    // following one out of the project — the same rule `findRepos` follows.
+    if (!entry.isDirectory()) continue;
+    const path = join(root, entry.name);
+    places.push({ cwd: path, dir: await transcriptDir(path), worktree: entry.name });
+  }
+  return places;
+}
+
 /**
  * Not everything stored as a `user` turn was typed by the user. The CLI injects
  * skill loaders, interrupt markers, compaction preambles, command output and
@@ -646,40 +695,79 @@ export class SessionManager {
     return projects;
   }
 
-  /** Past conversations for a directory, newest first, with a title preview. */
+  /**
+   * Past conversations for a project, newest first, with a title preview.
+   *
+   * Every directory the project's conversations are recorded in, not just the
+   * project's own — see projectPlaces for what a worktree does to that. Each row
+   * therefore says which cwd it belongs to, and a client that opens one has to
+   * send that cwd back: it is where the conversation runs.
+   */
   async listSessions(cwd) {
-    const dir = join(CLAUDE_HOME, 'projects', await mangleCwd(cwd));
-    let files;
-    try {
-      files = await readdir(dir);
-    } catch {
-      return [];
-    }
-
+    const places = await projectPlaces(cwd);
     const sessions = [];
-    for (const file of files) {
-      // `._*` are macOS AppleDouble metadata stubs, not real transcripts.
-      if (!file.endsWith('.jsonl') || file.startsWith('._')) continue;
-      const full = join(dir, file);
+
+    for (const place of places) {
+      let files;
       try {
-        const info = await stat(full);
-        const sessionId = file.replace(/\.jsonl$/, '');
-        const live = this.getBySession(cwd, sessionId);
-        sessions.push({
-          sessionId,
-          mtime: info.mtimeMs,
-          title: await this.#titleOf(full),
-          // Surfaced so the list can show a chat that is still working, and so
-          // any device can tell it will be joining rather than restarting.
-          live: Boolean(live),
-          busy: Boolean(live?.busy),
-        });
+        files = await readdir(place.dir);
       } catch {
-        /* transcript vanished mid-scan */
+        continue; // nothing recorded here yet
+      }
+
+      for (const file of files) {
+        // `._*` are macOS AppleDouble metadata stubs, not real transcripts.
+        if (!file.endsWith('.jsonl') || file.startsWith('._')) continue;
+        const full = join(place.dir, file);
+        try {
+          const info = await stat(full);
+          const sessionId = file.replace(/\.jsonl$/, '');
+          const live = this.#liveInProject(places, sessionId);
+          sessions.push({
+            sessionId,
+            // Where this conversation runs, which is the project's own directory
+            // for all but a worktree's — and, when a live process disagrees with
+            // the transcript about that, the process's, because that is the one a
+            // resume has to address to be adopted rather than duplicated.
+            cwd: live?.cwd || place.cwd,
+            // Which worktree it is in, or null for the project itself: a row has
+            // to be able to say where it is, now that a project has more than one
+            // place to be.
+            worktree: place.worktree,
+            mtime: info.mtimeMs,
+            title: await this.#titleOf(full),
+            // Surfaced so the list can show a chat that is still working, and so
+            // any device can tell it will be joining rather than restarting.
+            live: Boolean(live),
+            busy: Boolean(live?.busy),
+          });
+        } catch {
+          /* transcript vanished mid-scan */
+        }
       }
     }
+
     sessions.sort((a, b) => b.mtime - a.mtime);
     return sessions.slice(0, 50);
+  }
+
+  /**
+   * The live conversation for a session id, in whichever of a project's
+   * directories it is keyed under.
+   *
+   * Conversations are keyed by `(cwd, sessionId)`, and the cwd a conversation was
+   * started in is not always the one its transcript ends up under: a session that
+   * enters a worktree mid-conversation keeps the process it had. Looking the id up
+   * only where the transcript is would call that conversation dead, and then
+   * opening it would resume the transcript in a second process — the fork that
+   * `create` adopts an existing conversation to avoid.
+   */
+  #liveInProject(places, sessionId) {
+    for (const place of places) {
+      const conv = this.getBySession(place.cwd, sessionId);
+      if (conv) return conv;
+    }
+    return null;
   }
 
   /**
@@ -749,7 +837,7 @@ export class SessionManager {
       throw new Error('cwd must be inside the projects root');
     }
 
-    const file = join(CLAUDE_HOME, 'projects', await mangleCwd(cwd), `${sessionId}.jsonl`);
+    const file = join(await transcriptDir(cwd), `${sessionId}.jsonl`);
     let raw;
     try {
       raw = await readFile(file, 'utf8');
@@ -996,9 +1084,16 @@ export class SessionManager {
     return { name, path, sessions: [], steps };
   }
 
-  /** Live conversations working in a directory, so it isn't deleted from under one. */
+  /**
+   * Live conversations working in a project, so it isn't deleted from under one.
+   *
+   * Anywhere inside the directory, not only at its root: a conversation in a
+   * worktree is a conversation in this project, and the caller is about to
+   * `rm -rf` the tree it is standing in.
+   */
   #liveIn(cwd) {
-    return [...this.conversations.values()].filter((c) => c.cwd === cwd && !c.exited);
+    const inside = (c) => c.cwd === cwd || c.cwd.startsWith(`${cwd}/`);
+    return [...this.conversations.values()].filter((c) => inside(c) && !c.exited);
   }
 
   /**
@@ -1346,5 +1441,16 @@ export class SessionManager {
 // mangleCwd and CLAUDE_HOME are exported for claude-status.js, which reads the
 // same transcripts from the other end. Shared rather than copied: the symlink
 // resolution above is the kind of detail that silently stops finding anything
-// when two copies drift.
-export { PROJECTS_ROOT, CLAUDE_HOME, DEFAULT_MODEL, mangleCwd, parseGithubRepo, projectPathFor };
+// when two copies drift. projectPlaces is there for the same reason and more so —
+// "which directories hold this project's conversations" is answered by three files
+// now, and a reader that misses a worktree loses a live conversation silently.
+export {
+  PROJECTS_ROOT,
+  CLAUDE_HOME,
+  DEFAULT_MODEL,
+  mangleCwd,
+  transcriptDir,
+  projectPlaces,
+  parseGithubRepo,
+  projectPathFor,
+};

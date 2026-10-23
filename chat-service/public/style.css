@@ -101,6 +101,17 @@ html, body {
   background: var(--accent-dim); color: #fff; vertical-align: 1px;
 }
 .row-live.busy { background: var(--accent); }
+/* Which worktree a chat is in, when it is in one. A project's conversations no
+   longer all share its checkout — see projectPlaces in session-manager.js — and
+   the name of the branch it is working on is how you tell two of them apart.
+   Monospace and unfilled: it is a directory name, not a state. */
+.row-where {
+  display: inline-block; margin-left: 4px; padding: 1px 6px;
+  border: 1px solid var(--border); border-radius: 9px;
+  font-size: 11px; color: var(--text-dim); vertical-align: 1px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 14ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 /* Already a tab on this device, so tapping the row switches to it rather than
    opening the same conversation a second time. */
 .row-open {

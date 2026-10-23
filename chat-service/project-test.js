@@ -216,6 +216,54 @@ console.log('\nCalls a conversation what the CLI calls it:');
   check('an empty transcript is still listed', byId.get('5') === 'Untitled conversation', byId.get('5'));
 }
 
+console.log('\nA chat in a worktree is a chat in the project:');
+{
+  /*
+   * What a worktree does to this list, and why it is a bug and not a nicety.
+   *
+   * `EnterWorktree` moves a session into `<project>/.claude/worktrees/<name>`, and
+   * from then on Claude Code records it under that directory's mangled path. This
+   * list read the project's own path only, so those conversations vanished out of
+   * every surface that asks what is in a project — including, on this box, one that
+   * was live and mid-turn.
+   *
+   * The `cwd` on each row is the part that has to be right rather than merely
+   * present: it is what a client sends back to resume, and resuming a worktree's
+   * transcript against the project root starts a second process on it.
+   */
+  const path = await makeProject('with-tree', { repo: false });
+  const resolved = await realpath(path);
+  const mangle = (p) => join(process.env.CLAUDE_HOME, 'projects', p.replace(/[/.]/g, '-'));
+  const tree = join(path, '.claude', 'worktrees', 'a-branch');
+  await mkdir(tree, { recursive: true });
+  await mkdir(mangle(resolved), { recursive: true });
+  await mkdir(mangle(join(resolved, '.claude', 'worktrees', 'a-branch')), { recursive: true });
+
+  const user = (text) => JSON.stringify({ type: 'user', message: { role: 'user', content: text } });
+  await writeFile(join(mangle(resolved), 'aaaaaaaa-0000-4000-8000-000000000000.jsonl'),
+    `${user('in the project itself')}\n`);
+  await writeFile(
+    join(mangle(join(resolved, '.claude', 'worktrees', 'a-branch')),
+      'bbbbbbbb-0000-4000-8000-000000000000.jsonl'),
+    `${user('in the worktree')}\n`,
+  );
+
+  const sessions = await manager.listSessions(path);
+  const inTree = sessions.find((s) => s.title === 'in the worktree');
+  const inProject = sessions.find((s) => s.title === 'in the project itself');
+  check('both the project’s chats and its worktree’s are listed', sessions.length === 2,
+    `${sessions.length} listed`);
+  check('the worktree’s chat says which worktree it is in', inTree?.worktree === 'a-branch',
+    String(inTree?.worktree));
+  check('and the directory it has to be resumed in', inTree?.cwd === tree, String(inTree?.cwd));
+  check('the project’s own chats are unchanged: no worktree, the project’s path',
+    inProject?.worktree === null && inProject?.cwd === path,
+    `${inProject?.worktree} ${inProject?.cwd}`);
+  // The project list is what the phone reads, and it is built from the same call.
+  const listed = (await manager.listProjects()).find((p) => p.name === 'with-tree');
+  check('and the project list carries them both', listed?.sessions.length === 2);
+}
+
 console.log('\nRefuses to delete work that exists nowhere else:');
 {
   await makeProject('not-a-repo', { repo: false });

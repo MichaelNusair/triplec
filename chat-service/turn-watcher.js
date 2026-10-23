@@ -51,7 +51,7 @@
 import { readdir, stat } from 'fs/promises';
 import { basename, join } from 'path';
 import { createHash } from 'crypto';
-import { CLAUDE_HOME, PROJECTS_ROOT, mangleCwd } from './session-manager.js';
+import { CLAUDE_HOME, PROJECTS_ROOT, mangleCwd, projectPlaces } from './session-manager.js';
 import { lastExchange } from './claude-status.js';
 import { appTitle, projectStartUrl } from './manifest.js';
 import { listSubscriptions, notifyAll, topicFor } from './push.js';
@@ -156,13 +156,22 @@ export function questionBody(question) {
  * code-server to open — `projectStartUrl` in manifest.js. This is the only side that
  * knows that path: the phone has the mangled directory name and nothing else.
  *
- * Only the top level of PROJECTS_ROOT, deliberately. A project is no longer the same
- * thing as a git repository — one can hold several — but a conversation's cwd is still
- * a project root, because that is what the chat app and the editor both open. If
- * something ever starts a conversation inside a sub-repository (`projects/foo/web`) it
- * will not be found here: that notification keeps the mangled directory name and
- * carries no URL, which is ugly and harmless rather than wrong. Walking deeper would
- * mean guessing which of several directories a person calls the project.
+ * The top level of PROJECTS_ROOT and each project's worktrees, and nothing else. A
+ * project is no longer the same thing as a git repository — one can hold several — but
+ * a conversation's cwd is still either a project root or a worktree inside one, because
+ * those are what the chat app, the editor and `EnterWorktree` open. A worktree's
+ * conversations belong to the project they were branched from and are reported under
+ * its name: the window a notification opens is the project's, and the overlay in it can
+ * now pin a conversation recorded in any of the project's directories — see
+ * projectPlaces in session-manager.js. Before this, every turn a worktree session
+ * finished buzzed the phone with a mangled directory name for a title and no URL to tap
+ * through to.
+ *
+ * If something ever starts a conversation somewhere else — inside a sub-repository
+ * (`projects/foo/web`), in a home directory — it will not be found here: that
+ * notification keeps the mangled directory name and carries no URL, which is ugly and
+ * harmless rather than wrong. Walking deeper would mean guessing which of several
+ * directories a person calls the project.
  */
 async function projectsByDir() {
   const found = new Map();
@@ -175,7 +184,11 @@ async function projectsByDir() {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const path = join(PROJECTS_ROOT, entry.name);
-    found.set(await mangleCwd(path), { name: entry.name, path });
+    // The project's own directory first, then its worktrees — all of them mapped to
+    // the project itself, which is the name a person knows and the window to open.
+    for (const place of await projectPlaces(path)) {
+      found.set(await mangleCwd(place.cwd), { name: entry.name, path });
+    }
   }
   return found;
 }

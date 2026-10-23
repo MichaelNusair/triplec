@@ -536,6 +536,39 @@ section('Every project, named the way a person names it:');
     `the second project's URL is ${JSON.stringify(inProject?.payload.url)}`);
 }
 
+section('A turn finished in a worktree is named after the project it belongs to:');
+{
+  /*
+   * A worktree is not a project and must not be announced as one.
+   *
+   * `EnterWorktree` moves a session into `<project>/.claude/worktrees/<name>`, and
+   * Claude Code then records it under that path — which is inside the projects tree
+   * but is not one of the directories this used to map, so every turn one of those
+   * sessions finished arrived as `-workspace-projects-demo--claude-worktrees-a-branch`
+   * with no URL to tap. The conversation belongs to the project, so it is announced
+   * under the project's name and opens the project's window, where the overlay can
+   * now pin a conversation recorded in any of its directories.
+   */
+  const tree = path.join(DEMO, '.claude', 'worktrees', 'a-branch');
+  fs.mkdirSync(tree, { recursive: true });
+  fs.mkdirSync(dirFor(tree), { recursive: true });
+
+  const { watcher, sent } = watcherWith();
+  await watcher.scan();
+  await write(tree, S3, assistant('Azure is gone.'));
+  await watcher.scan();
+
+  const buzz = sent.find((s) => s.payload.sessionId === S3);
+  ok(buzz?.payload.title === 'personal: demo',
+    `a worktree turn was announced as ${JSON.stringify(buzz?.payload.title)}`);
+  ok(buzz?.payload.project === 'demo', `its project was ${JSON.stringify(buzz?.payload.project)}`);
+  ok(buzz?.payload.url === `/p/demo/?folder=${encodeURIComponent(DEMO)}&session=${S3}`,
+    `tapping it goes to ${JSON.stringify(buzz?.payload.url)}`);
+
+  fs.rmSync(path.join(DEMO, '.claude'), { recursive: true, force: true });
+  fs.rmSync(dirFor(tree), { recursive: true, force: true });
+}
+
 section('One push service failing does not lose the rest:');
 {
   let calls = 0;

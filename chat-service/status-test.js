@@ -807,6 +807,70 @@ ok(status.sessionId === ELSEWHERE && status.state === 'working' && status.title 
   'and that project is answered about its own conversation');
 ok(status.conversations.length === 1, 'with only its own conversations listed');
 
+section('A conversation that moved into a worktree is still this project’s:');
+/*
+ * The bug this section exists for, as it was found on the box rather than imagined.
+ *
+ * `EnterWorktree` moves a session into `<project>/.claude/worktrees/<name>`, and
+ * Claude Code then records that conversation under the *worktree's* mangled path —
+ * while the process holding it keeps the cwd it was started with, so the broker goes
+ * on reporting the project root. Every reader here matched both sides on the project's
+ * own directory, so the two halves of one conversation fell down the gap between them:
+ * `personal-site` had a conversation live, mid-turn, with nobody watching it, in no
+ * list of that project's chats and in no answer about it.
+ *
+ * Two things are therefore checked, and the second is the one that was wrong: that the
+ * conversation is listed at all, and that it is listed when the only process holding it
+ * is keyed under the project root.
+ */
+const TREE = path.join(CWD, '.claude', 'worktrees', 'drop-azure');
+const TREE_DIR = path.join(CLAUDE_HOME, 'projects', TREE.replace(/[/.]/g, '-'));
+const INTREE = 'd4e5f6a7-3333-4000-8000-000000000000';
+fs.mkdirSync(TREE, { recursive: true });
+fs.mkdirSync(TREE_DIR, { recursive: true });
+writeConvo(
+  path.join(TREE_DIR, `${INTREE}.jsonl`),
+  title('Dropping Azure', INTREE),
+  userText('drop azure'),
+  assistant('reading the stack', 'tool_use'),
+);
+
+// The measured arrangement: the broker knows this conversation by the project root,
+// because that is where the process was started, and nothing told it the cwd moved.
+brokerReply = {
+  ok: true,
+  v: 1,
+  sessions: [
+    { cwd: CWD, sessionId: INTREE, working: true, clients: 0, idleMs: 20, spokeMs: 20, pid: 7 },
+  ],
+};
+status = await claudeStatus(CWD);
+const inTree = status.conversations.find((c) => c.sessionId === INTREE);
+ok(Boolean(inTree), 'a conversation recorded in a worktree is listed under its project');
+ok(inTree?.worktree === 'drop-azure' && inTree?.cwd === TREE,
+  'and says which worktree it is in, and the directory a client has to resume it in');
+ok(inTree?.state === 'working' && inTree?.live === true,
+  'and is reported working, which is the answer that was being lost');
+status = await claudeStatus(CWD, { sessionId: INTREE });
+ok(status.sessionId === INTREE && status.title === 'Dropping Azure',
+  'asking about it by id reads the transcript from the worktree, not the project');
+ok(status.sessionCwd === TREE && status.worktree === 'drop-azure',
+  'and the answer names where it runs, so a client can address it');
+ok(status.state === 'working' && status.live === true,
+  'the process keyed under the project root is still matched to it');
+const treePrompt = await firstPromptFor(CWD, INTREE);
+ok(treePrompt.text === 'drop azure',
+  'the prompt it began with is found in the worktree too, addressed by the project');
+
+// And the other direction: the worktree is a directory inside the project, so asking
+// about it on its own must not answer with the whole project's conversations.
+status = await claudeStatus(TREE);
+ok(status.conversations.length === 1 && status.sessionId === INTREE,
+  'a worktree asked about on its own answers with its own conversation only');
+
+fs.rmSync(path.join(CWD, '.claude'), { recursive: true, force: true });
+fs.rmSync(TREE_DIR, { recursive: true, force: true });
+
 section('Every way of not knowing falls back rather than guessing:');
 // Mid-turn, and said so here: the point below is that a conversation left mid-turn is
 // reported as the file has it when there is no broker to ask, so the fixture has to be

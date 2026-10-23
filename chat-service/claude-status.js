@@ -42,9 +42,8 @@ import { join } from 'path';
 // person typed. Imported rather than copied — two lists of those patterns would
 // drift, and the cost of the drift is showing someone a "prompt" they never sent.
 import {
-  CLAUDE_HOME,
   PROJECTS_ROOT,
-  mangleCwd,
+  projectPlaces,
   isSyntheticUserText,
 } from './session-manager.js';
 
@@ -841,7 +840,10 @@ export async function firstPromptFor(cwd, sessionId) {
     throw new Error('sessionId is not a session id');
   }
 
-  const file = join(CLAUDE_HOME, 'projects', await mangleCwd(cwd), `${sessionId}.jsonl`);
+  // Found by id across the project's directories rather than assumed to be in the
+  // project's own: a client addresses a conversation by the project it is in, and
+  // the conversation may be recorded in one of its worktrees. See projectPlaces.
+  const file = await transcriptOf(await projectPlaces(cwd), sessionId);
   const found = await firstPrompt(file);
   return {
     cwd,
@@ -853,28 +855,58 @@ export async function firstPromptFor(cwd, sessionId) {
   };
 }
 
-/** Every conversation in a project, newest first. One `stat` each, no reads. */
-async function transcripts(cwd) {
-  const dir = join(CLAUDE_HOME, 'projects', await mangleCwd(cwd));
-  let files;
-  try {
-    files = await readdir(dir);
-  } catch {
-    return [];
-  }
-
+/**
+ * Every conversation in a project, newest first. One `stat` each, no reads.
+ *
+ * Across every directory the project records conversations in, each row carrying
+ * the one it came from — because a conversation in a worktree is a conversation in
+ * this project, and the file it is read from is not where the project's own
+ * transcripts are. See projectPlaces.
+ */
+async function transcripts(places) {
   const found = [];
-  for (const file of files) {
-    // `._*` are macOS AppleDouble metadata stubs, not transcripts.
-    if (!file.endsWith('.jsonl') || file.startsWith('._')) continue;
+  for (const place of places) {
+    let files;
     try {
-      const info = await stat(join(dir, file));
-      found.push({ sessionId: file.replace(/\.jsonl$/, ''), mtimeMs: info.mtimeMs, size: info.size });
+      files = await readdir(place.dir);
     } catch {
-      /* vanished mid-scan */
+      continue; // nothing recorded here
+    }
+    for (const file of files) {
+      // `._*` are macOS AppleDouble metadata stubs, not transcripts.
+      if (!file.endsWith('.jsonl') || file.startsWith('._')) continue;
+      try {
+        const info = await stat(join(place.dir, file));
+        found.push({
+          sessionId: file.replace(/\.jsonl$/, ''),
+          mtimeMs: info.mtimeMs,
+          size: info.size,
+          path: join(place.dir, file),
+          cwd: place.cwd,
+          worktree: place.worktree,
+        });
+      } catch {
+        /* vanished mid-scan */
+      }
     }
   }
   return found.sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+/**
+ * The transcript of one conversation, looked for in each of a project's
+ * directories and defaulting to the project's own.
+ *
+ * The default is what keeps "no such conversation" answering the way it always
+ * did: a path that does not exist, which every reader here treats as an empty
+ * transcript rather than as an error.
+ */
+async function transcriptOf(places, sessionId) {
+  for (const place of places) {
+    const file = join(place.dir, `${sessionId}.jsonl`);
+    if (await stat(file).then(() => true, () => false)) return file;
+  }
+  return join(places[0].dir, `${sessionId}.jsonl`);
 }
 
 /**
@@ -933,23 +965,27 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
     throw new Error('cwd must be inside the projects root');
   }
 
-  const dir = join(CLAUDE_HOME, 'projects', await mangleCwd(cwd));
+  // Everywhere this project's conversations are: itself, and any worktree a
+  // session has moved into. See projectPlaces — before this, a conversation that
+  // entered a worktree dropped out of every answer about the project it belongs to.
+  const places = await projectPlaces(cwd);
   const live = await brokerSessions();
-  // Which of the broker's sessions are in this directory, by the directory itself
-  // rather than by the spelling of its path — see resolveDir. One `realpath` per
-  // distinct path, not per session, and the literal match short-circuits it.
-  const root = await resolveDir(cwd);
+  // Which of the broker's sessions are in this project, by the directories
+  // themselves rather than by the spelling of their paths — see resolveDir. One
+  // `realpath` per distinct path, not per session, and the literal match
+  // short-circuits it.
+  const here = new Set(await Promise.all(places.map((place) => resolveDir(place.cwd))));
   const samePlace = new Map();
   for (const s of live || []) {
     if (samePlace.has(s.cwd)) continue;
-    samePlace.set(s.cwd, s.cwd === cwd || (await resolveDir(s.cwd)) === root);
+    samePlace.set(s.cwd, here.has(s.cwd) || here.has(await resolveDir(s.cwd)));
   }
   // A session with no id has never been spoken to — the panel opens such probes
   // and never sends them a message. They hold no conversation.
   const candidates = live?.filter((s) => samePlace.get(s.cwd) && s.sessionId) || [];
   const brokered = (id) => candidates.find((s) => s.sessionId === id) || null;
 
-  const files = await transcripts(cwd);
+  const files = await transcripts(places);
   const sessionId = asked || guessConversation(candidates)?.sessionId || files[0]?.sessionId || null;
 
   /*
@@ -967,8 +1003,19 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
   const liveFor = (id) => brokered(id) || offBroker.get(id) || null;
   const mine = sessionId ? liveFor(sessionId) : null;
 
+  /*
+   * Which of the project's directories this conversation is recorded in.
+   *
+   * Looked up by id, and never inferred from the process holding it, because the
+   * two can legitimately disagree: a session that entered a worktree mid-turn
+   * keeps the process it was started with, so the broker reports the project root
+   * while the transcript has moved. That pair is the case this whole change is
+   * about — the conversation measured on this box was live under one path and
+   * recorded under another.
+   */
+  const file = files.find((f) => f.sessionId === sessionId) || null;
   const transcript = sessionId
-    ? await lastExchange(join(dir, `${sessionId}.jsonl`))
+    ? await lastExchange(file?.path || (await transcriptOf(places, sessionId)))
     : null;
 
   /*
@@ -1051,6 +1098,18 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
   return {
     cwd,
     sessionId,
+    /*
+     * Where this conversation actually runs, when that is not the project itself,
+     * and the name of the worktree it is in.
+     *
+     * The project is what a caller asks about — the editor opens a folder, the
+     * phone taps a project — and the answer may be about a conversation one level
+     * inside it. Both are reported rather than one: `sessionCwd` is what a client
+     * has to send back to resume this conversation in the right place, and
+     * `worktree` is the word a person recognises it by.
+     */
+    sessionCwd: file?.cwd || cwd,
+    worktree: file?.worktree || null,
     // What this conversation is called, so an answer about the wrong one can be
     // recognised as such. Null when no title has been written yet.
     title: transcript?.title || null,
@@ -1103,7 +1162,7 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
     // Every other conversation in this project, so that the guess above can be
     // checked rather than taken on trust — and so that switching conversations
     // does not mean waiting out the panel again to find out where you are.
-    conversations: await summarise(dir, listed, { liveFor, live, sessionId }),
+    conversations: await summarise(listed, { liveFor, live, sessionId }),
     at: Date.now(),
   };
 }
@@ -1117,11 +1176,13 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
  * preview that costs as much as the answer would defeat the point of the whole file.
  * See SUMMARY_RETRY for the one case that is worth a second read anyway.
  */
-async function summarise(dir, files, { liveFor, live, sessionId }) {
+async function summarise(files, { liveFor, live, sessionId }) {
   return Promise.all(
     files.map(async (file) => {
       const running = liveFor(file.sessionId);
-      const path = join(dir, `${file.sessionId}.jsonl`);
+      // Each row is read from the file it was found in — a project's own directory
+      // for most of them, a worktree's for the rest. See projectPlaces.
+      const path = file.path;
       let tail = await lastExchange(path, SUMMARY_WINDOW);
       // Nothing in the window parsed, which means the window is inside one huge line.
       // See SUMMARY_RETRY: this is a row mid-tool-result, and the state is the half of
@@ -1146,6 +1207,10 @@ async function summarise(dir, files, { liveFor, live, sessionId }) {
       const state = verdict();
       return {
         sessionId: file.sessionId,
+        // As above: where this one runs, and the name to recognise it by when a
+        // project holds conversations in more than one place.
+        cwd: file.cwd,
+        worktree: file.worktree,
         title: tail?.title || null,
         // Deliberately one line: enough to recognise a conversation by, not enough
         // to be a second copy of the message.
