@@ -812,6 +812,42 @@ That is what makes `systemctl stop claude-broker` a complete rollback with no
 settings change and no deploy. `claude-broker/broker-test.js` asserts both halves
 and `deploy.sh` will not deploy without it.
 
+**One conversation, one process — between surfaces, not just inside one.** Every
+row of the table above solves sharing within its own surface, and each of them
+believed it was the only thing on the box running conversations. On 2026-10-25 a
+chat was started in the phone UI, the editor came up 71 seconds later, and the
+panel resumed *that* session id — the newest transcript in the folder it had open.
+For ten minutes two processes in two systemd units held one conversation: the
+chat's did the work and moved into a worktree, the panel's sat on the history it
+had read at startup, and when the user typed, the stale one answered. It re-ran a
+survey the other had finished, overwrote its output file, and reported that
+"another session" was doing the job — itself. Nothing could have seen it: a new
+chat had no id in its argv at all, because `chat-service` let the CLI name it and
+only learned the name from the `init` event a second later.
+
+So a conversation is now identifiable from outside the process holding it, and
+both owners ask before resuming one:
+
+- `chat-service` passes `--session-id` for every chat it starts, which is what
+  puts the id in `/proc` from the first instant. Taking that flag away does not
+  break a test you will notice — it makes the two guards below silently blind,
+  which is exactly the state that produced the incident.
+- `ownerOutside` (broker.js) and `sessionOwner` (claude-status.js) ask the same
+  question from the two sides: is a `claude` outside *this* service already
+  holding this id. Where one is, the conversation is resumed with
+  `--fork-session` — same history, new id, its own transcript — instead of
+  becoming the second writer on someone else's. The chat says so in the thread
+  when it happens, because silence is what made the original expensive.
+- Both also match a live conversation on the id alone when the directory does not
+  match (`liveBySessionId`, `liveSession`). A session that moves into a worktree
+  mid-conversation keeps the directory it was keyed under while its transcript
+  moves below it, so the pair legitimately misses — and a miss used to mean a
+  second process on one transcript.
+
+A fork is the fallback, not the goal: it is what this can offer because there is
+no joining a process another unit owns. If you are adding a fifth surface, give it
+`--session-id` and these two questions before it resumes anything.
+
 `cc` / tmux stays as the surface that depends on nothing — no broker, no wrapper,
 no extension setting — and is the real CLI rather than a UI over it. Verified on
 the box: two simultaneous clients, one session, one `claude`, and the session still

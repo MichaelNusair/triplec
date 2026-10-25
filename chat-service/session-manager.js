@@ -375,7 +375,7 @@ const PERMISSION_MODES = new Set([
 ]);
 
 class Conversation extends EventEmitter {
-  constructor({ id, cwd, model, permissionMode, effort, resumeSessionId }) {
+  constructor({ id, cwd, model, permissionMode, effort, resumeSessionId, fork = false }) {
     super();
     this.id = id;
     this.cwd = cwd;
@@ -387,7 +387,36 @@ class Conversation extends EventEmitter {
       ? effort
       : DEFAULT_EFFORT;
     this.resumeSessionId = resumeSessionId || null;
-    this.sessionId = resumeSessionId || null;
+    /*
+     * Resume a conversation into a new one instead of continuing it, because
+     * something else on this box is already running it. See `create`.
+     */
+    this.fork = Boolean(fork && resumeSessionId);
+    /*
+     * The conversation's durable name, known before the process exists.
+     *
+     * A new chat used to be nameless until the CLI announced an id in its `init`
+     * event, roughly a second in, and that second was a hole nothing could see
+     * into: the transcript existed, but no one outside this service could tell
+     * which process was writing it, because the id appeared in no argv. On
+     * 2026-10-25 the editor's panel resumed a chat 71 seconds after the phone
+     * started it — the newest transcript in the folder it had open — and the two
+     * processes held one conversation for ten minutes. Nothing could have
+     * reported the collision, let alone prevented it.
+     *
+     * So this service names its own conversations and passes the name to the CLI
+     * with `--session-id`. That makes a chat identifiable from `/proc` the moment
+     * it exists, which is what `claude-broker` and `claudeStatus` both need in
+     * order to see it at all.
+     *
+     * A fork is the exception: it resumes one id and is given another by the CLI,
+     * so its name is not ours to choose and arrives with the init event, as every
+     * conversation's used to.
+     */
+    this.sessionId = this.fork ? null : resumeSessionId || randomUUID();
+    // What the CLI is told to call itself, as opposed to what it is resuming:
+    // null whenever an id is being resumed, including into a fork.
+    this.startSessionId = resumeSessionId ? null : this.sessionId;
     this.proc = null;
     this.busy = false;
     this.buffer = '';
@@ -416,6 +445,12 @@ class Conversation extends EventEmitter {
       '--effort', this.effort,
     ];
     if (this.resumeSessionId) args.push('--resume', this.resumeSessionId);
+    // A name of our own, so the conversation is identifiable from outside this
+    // process the moment it starts. See the constructor.
+    if (this.startSessionId) args.push('--session-id', this.startSessionId);
+    // Same history, new conversation: this one is already being run by something
+    // else, and two processes on one transcript is the bug this avoids.
+    if (this.fork) args.push('--fork-session');
 
     this.proc = spawn('claude', args, {
       cwd: this.cwd,
@@ -898,26 +933,68 @@ export class SessionManager {
   }
 
   /**
+   * The live conversation for a session id, under the directory it was asked for
+   * or under any other.
+   *
+   * The key is `(cwd, sessionId)` because that is what a client can derive from a
+   * chat list, but the conversation is the id, and the two legitimately disagree:
+   * a session that moves into a worktree mid-conversation keeps the process it
+   * had while its transcript moves to the worktree's directory. A client that
+   * then sends the worktree path — which it should, because that is where the
+   * conversation is recorded — missed this process entirely and got a second one
+   * resuming the same transcript.
+   *
+   * The exact pair still wins, so two projects cannot be confused for one
+   * another; the id alone is the fallback, and it can only match a conversation
+   * this service is already running.
+   */
+  liveSession(sessionId, cwd = null) {
+    if (!sessionId) return null;
+    if (cwd) {
+      const exact = this.getBySession(cwd, sessionId);
+      if (exact) return exact;
+    }
+    for (const conv of this.conversations.values()) {
+      if (!conv.exited && conv.sessionId === sessionId) return conv;
+    }
+    return null;
+  }
+
+  /** The pids of every process this service is running a conversation in. */
+  livePids() {
+    return [...this.conversations.values()]
+      .filter((conv) => !conv.exited && conv.proc?.pid)
+      .map((conv) => conv.proc.pid);
+  }
+
+  /**
    * Open a conversation. If the requested session already has a live process,
    * adopt it rather than starting a second `claude --resume` against the same
    * transcript — two processes sharing one transcript is what made a refresh or
    * a device switch land in an idle session waiting for a new command.
+   *
+   * `fork` is for the case this service cannot adopt: the conversation is live,
+   * but in a process belonging to something else on this box — the editor's
+   * panel, a terminal, a timer. There is no joining those from here, so the
+   * choice is between appending to a transcript another process is writing and
+   * resuming a copy of it. The copy wins; see the constructor's `fork`.
    */
-  create({ cwd, model, permissionMode, effort, resumeSessionId }) {
+  create({ cwd, model, permissionMode, effort, resumeSessionId, fork = false }) {
     if (!cwd.startsWith(PROJECTS_ROOT)) {
       throw new Error('cwd must be inside the projects root');
     }
 
     if (resumeSessionId) {
-      const existing = this.getBySession(cwd, resumeSessionId);
+      const existing = this.liveSession(resumeSessionId, cwd);
       if (existing) return existing;
     }
 
     const id = randomUUID();
-    const conv = new Conversation({ id, cwd, model, permissionMode, effort, resumeSessionId });
+    const conv = new Conversation({ id, cwd, model, permissionMode, effort, resumeSessionId, fork });
     this.conversations.set(id, conv);
-    // A resumed session is reachable by key immediately; a new one only once
-    // the CLI reports its generated session id via `system/init`.
+    // Reachable by key immediately, resumed or new, because this service names
+    // the new ones itself. A fork is the one conversation whose id is not known
+    // yet, and it is indexed when `system/init` says what the CLI called it.
     this.#index(conv);
     conv.on('sessionId', (c, previous) => this.#index(c, previous));
     conv.start();

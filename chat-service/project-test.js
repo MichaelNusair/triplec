@@ -14,7 +14,7 @@
  * Run: node chat-service/project-test.js
  */
 import { execFile } from 'child_process';
-import { mkdtemp, mkdir, writeFile, stat, rm, realpath } from 'fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, stat, rm, realpath } from 'fs/promises';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
@@ -485,6 +485,71 @@ console.log('\nCloning refuses what it should before touching the network:');
     .cloneProject({ repo: 'someone/thing', name: '../escape' })
     .then(() => null, (err) => err.message);
   check('will not clone to a name outside the projects root', Boolean(named), named);
+}
+
+/*
+ * One conversation, one process.
+ *
+ * Driven through the real `create`, against a `claude` on PATH that only records
+ * how it was called. The thing being tested IS the argv — a mock of the spawn
+ * would assert whatever shape the test author had in mind — and the reason it is
+ * worth a real process is that the incident this prevents was invisible from
+ * inside the service: on 2026-10-25 a chat and the editor's panel held one
+ * conversation for ten minutes, and the only place the collision was visible was
+ * the argv of two processes.
+ */
+console.log('\nA conversation is named, and never run twice:');
+{
+  const bin = join(root, 'fakebin');
+  await mkdir(bin, { recursive: true });
+  const fake = join(bin, 'claude');
+  const argvLog = join(root, 'argv.log');
+  await writeFile(
+    fake,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> ${JSON.stringify(argvLog)}\nexec sleep 30\n`,
+  );
+  await execFileAsync('chmod', ['+x', fake]);
+  process.env.PATH = `${bin}:${process.env.PATH}`;
+
+  const path = await makeProject('one-owner', { repo: false });
+  // Waits for the nth start rather than for the file, so the second assertion
+  // cannot read the first process's line and pass by accident.
+  const argvOf = async (nth) => {
+    for (let i = 0; i < 150; i += 1) {
+      const log = await readFile(argvLog, 'utf8').catch(() => '');
+      const lines = log.trim() ? log.trim().split('\n') : [];
+      if (lines.length >= nth) return lines[nth - 1];
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    return '';
+  };
+
+  const fresh = manager.create({ cwd: path });
+  check('a new chat has a session id before the CLI has said anything',
+    /^[0-9a-f-]{36}$/.test(fresh.sessionId || ''), fresh.sessionId);
+  const freshArgv = await argvOf(1);
+  check('and the CLI is told that name, so /proc can be asked whose it is',
+    freshArgv.includes(`--session-id ${fresh.sessionId}`), freshArgv);
+  check('a chat nobody is resuming is not a fork', !freshArgv.includes('--fork-session'));
+
+  check('reopening it by (cwd, id) adopts the running process',
+    manager.create({ cwd: path, resumeSessionId: fresh.sessionId }) === fresh);
+  check('and so does reopening it from the worktree it moved into',
+    manager.liveSession(fresh.sessionId, join(path, '.claude', 'worktrees', 'wt')) === fresh);
+  check('its pid is reported as this service\'s own',
+    manager.livePids().includes(fresh.proc.pid));
+
+  const forked = manager.create({ cwd: path, resumeSessionId: 'd0d0caca-0000-4000-8000-00000000beef', fork: true });
+  const forkArgv = await argvOf(2);
+  check('a conversation someone else is running is resumed as a fork',
+    /--resume d0d0caca-0000-4000-8000-00000000beef/.test(forkArgv)
+      && forkArgv.includes('--fork-session'), forkArgv);
+  check('and is not given a name of ours, because the CLI names a fork',
+    !forkArgv.includes('--session-id'), forkArgv);
+  check('nor indexed under the id it forked from, which is not its conversation',
+    manager.liveSession('d0d0caca-0000-4000-8000-00000000beef', path) === null);
+
+  for (const conv of [fresh, forked]) conv.stop();
 }
 
 await rm(root, { recursive: true, force: true });

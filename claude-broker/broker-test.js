@@ -23,17 +23,21 @@ const WRAPPER = path.join(HERE, 'wrapper');
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-test-'));
 const SOCKET = path.join(TMP, 'broker.sock');
 const PIDFILE = path.join(TMP, 'starts.log');
+// One line per start, in the same order as PIDFILE: how the broker chose to
+// launch the CLI. The fork guard is a decision about argv, so the only honest
+// way to test it is to read the argv the broker actually used.
+const ARGVFILE = path.join(TMP, 'argv.log');
 const FAKE = path.join(TMP, 'fake-claude');
 
 let pass = 0;
 let fail = 0;
-const ok = (cond, label) => {
+const ok = (cond, label, detail = '') => {
   if (cond) {
     pass += 1;
     console.log(`  ok   ${label}`);
   } else {
     fail += 1;
-    console.log(`  FAIL ${label}`);
+    console.log(`  FAIL ${label}${detail ? ` — ${detail}` : ''}`);
   }
 };
 const section = (name) => console.log(`\n${name}`);
@@ -47,6 +51,7 @@ fs.writeFileSync(
   FAKE,
   `#!/usr/bin/env node
 require('fs').appendFileSync(${JSON.stringify(PIDFILE)}, process.pid + '\\n');
+require('fs').appendFileSync(${JSON.stringify(ARGVFILE)}, process.argv.slice(2).join(' ') + '\\n');
 process.stdout.write(JSON.stringify({ type: 'system', subtype: 'init', session_id: 'S1' }) + '\\n');
 let buf = '';
 process.stdin.on('data', (c) => {
@@ -198,6 +203,10 @@ const pids = () =>
     ? fs.readFileSync(PIDFILE, 'utf8').trim().split('\n').filter(Boolean).map(Number)
     : [];
 const starts = () => pids().length;
+const argvs = () =>
+  fs.existsSync(ARGVFILE)
+    ? fs.readFileSync(ARGVFILE, 'utf8').trim().split('\n').filter(Boolean)
+    : [];
 const lastPid = () => pids().at(-1);
 const alive = (pid) => {
   try {
@@ -210,7 +219,15 @@ const alive = (pid) => {
 
 const SESSION_ARGS = ['--input-format', 'stream-json', '--output-format', 'stream-json'];
 
-/** A wrapper-shaped client: speaks the framing, collects decoded stdout. */
+/**
+ * A wrapper-shaped client: speaks the framing, collects decoded stdout.
+ *
+ * `resume` goes into the args as well as into the handshake, because that is the
+ * only shape the real client comes in: the wrapper reads the id out of the
+ * extension's argv (`resumeIdFrom`), so a hello naming a session always has a
+ * `--resume` beside it. A helper that sent one without the other let a check pass
+ * on a command line the CLI would have refused.
+ */
 function connect({ resume, cwd = TMP, socket = SOCKET }) {
   const sock = net.connect(socket);
   const client = { sock, hello: null, out: '', frames: [] };
@@ -238,7 +255,7 @@ function connect({ resume, cwd = TMP, socket = SOCKET }) {
           v: 1,
           cwd,
           claude: FAKE,
-          args: SESSION_ARGS,
+          args: resume ? [...SESSION_ARGS, `--resume=${resume}`] : SESSION_ARGS,
           resume,
           env: process.env,
         })}\n`,
@@ -512,6 +529,21 @@ async function main() {
   ok(b.hello.joined === true, 'it is reported as a join, not a new conversation');
   ok(b.out.includes('"session_id":"S1"'), 'the joining page is replayed the stream so far');
   ok(starts() === 1, 'still exactly one claude — this is the fork that used to happen');
+
+  section('A conversation is found by its id, not by the directory it is asked for:');
+  /*
+   * The worktree case, and the panel case, which are one bug. A session that moves
+   * into `.claude/worktrees/<name>` mid-conversation keeps the directory it was
+   * keyed under while its transcript moves below it, so the next device asks for
+   * the conversation under a path this broker has never seen. Matching on the pair
+   * alone missed the live process and started a second one on its transcript.
+   */
+  const elsewhere = await connect({ resume: 'S1', cwd: path.join(TMP, 'worktrees', 'wt') });
+  await sleep(500);
+  ok(elsewhere.hello?.joined === true, 'a different cwd for the same id still joins');
+  ok(starts() === 1, 'and starts nothing — the id is the conversation');
+  elsewhere.sock.write(`${JSON.stringify({ s: 'detach' })}\n`);
+  await sleep(300);
 
   section('Both devices drive the one process:');
   send(a, 'from-the-phone\n');
@@ -824,6 +856,87 @@ async function main() {
     'but a conversation that was spoken to still outlives its last page — the point of all this',
   );
   fs.rmSync(ALT, { recursive: true, force: true });
+
+  section('A conversation another service is running is forked, not joined in:');
+  /*
+   * The incident of 2026-10-25, reproduced. `chat-service` runs its own `claude`
+   * for every chat in the phone UI — a different service, a different process
+   * tree, nothing this daemon can see over its socket. A chat was started there,
+   * the editor's panel came up 71 seconds later and resumed that same id (the
+   * newest transcript in the folder it had open), and for ten minutes two
+   * processes held one conversation. The phone's did the work; the panel's sat on
+   * the history it read at startup, and when the user typed, the stale one
+   * answered — re-ran a survey the other had finished, overwrote its output, and
+   * reported that "another session" was doing the job. It was itself.
+   *
+   * So a resume whose id is already held outside this daemon is answered with
+   * `--fork-session`: the page opens, reads the same history, and writes its own
+   * transcript. What must not happen is a second process on the original.
+   */
+  const FOREIGN = 'aaaaaaaa-0000-4000-8000-000000000001';
+  const FORKDIR = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-test-fork-'));
+  // argv[0] has to end in `/claude` for this to count as a conversation rather
+  // than as something merely holding a claude path — which is exactly what the
+  // wrapper's own argv is, and counting those would stop a second page joining a
+  // shared conversation at all. A symlink to node is the cheapest real one.
+  const FOREIGN_BIN = path.join(FORKDIR, 'claude');
+  fs.symlinkSync(process.execPath, FOREIGN_BIN);
+  const SLEEPER = path.join(FORKDIR, 'sleep.js');
+  fs.writeFileSync(SLEEPER, 'setTimeout(() => {}, 60000);\n');
+  // Spawned by the test, so its parent is not the broker: that is the whole
+  // distinction the guard turns on, and it is read from /proc rather than trusted.
+  const foreign = spawn(FOREIGN_BIN, [SLEEPER, '--session-id', FOREIGN], { stdio: 'ignore' });
+  await sleep(300);
+
+  const startsBeforeFork = starts();
+  const forkPage = await connect({ resume: FOREIGN, cwd: FORKDIR });
+  await sleep(700);
+  ok(forkPage.hello?.ok === true, 'the page still opens — a page that will not open is worse');
+  ok(forkPage.hello?.joined === false, 'and is told it is a new conversation, which it is');
+  ok(starts() === startsBeforeFork + 1, 'one process was started for it');
+  const forkArgv = argvs().at(-1) || '';
+  ok(forkArgv.includes('--fork-session'), 'and it was started as a fork', forkArgv);
+  ok(
+    forkArgv.includes(`--resume=${FOREIGN}`) || forkArgv.includes(`--resume ${FOREIGN}`),
+    'resuming the same history, so the page reads the conversation it asked for',
+    forkArgv,
+  );
+  const forkSessions = (await status()).sessions || [];
+  ok(
+    !forkSessions.some((s) => s.sessionId === FOREIGN),
+    'nothing here claims the id the other service is running',
+  );
+  ok(alive(foreign.pid), 'and the process that owns it was left alone');
+
+  forkPage.sock.destroy();
+  foreign.kill();
+  await sleep(300);
+  fs.rmSync(FORKDIR, { recursive: true, force: true });
+
+  section('What the CLI calls a conversation beats what argv asked for:');
+  /*
+   * The id in argv is the earliest guess at a conversation's name, not the
+   * answer: the CLI hands a fork a new one, and it does the same to a `--resume`
+   * of an id it cannot find. Keying on the guess leaves this daemon holding a
+   * process under a conversation that is not in it — and then the conversation
+   * that IS in it is found by nobody, which is how a second writer gets started.
+   */
+  const RENAMED = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-test-renamed-'));
+  const askedFor = await connect({ resume: 'bbbbbbbb-0000-4000-8000-000000000002', cwd: RENAMED });
+  await sleep(700);
+  ok(askedFor.hello?.ok === true, 'the page opens');
+  const renamedSessions = (await status()).sessions || [];
+  ok(
+    renamedSessions.some((s) => s.cwd === RENAMED && s.sessionId === 'S1'),
+    'and the session is reported under the id the CLI announced',
+  );
+  const byRealId = await connect({ resume: 'S1', cwd: RENAMED });
+  await sleep(500);
+  ok(byRealId.hello?.joined === true, 'so a page arriving with that id joins it');
+  askedFor.sock.destroy();
+  byRealId.sock.destroy();
+  await sleep(300);
+  fs.rmSync(RENAMED, { recursive: true, force: true });
 
   const idleLog = await checkUnattendedReaping();
 

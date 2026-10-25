@@ -153,6 +153,15 @@ if (typeof handler === 'function' && panesHooks) {
     if (chat.thread?.parentElement?.id !== 'threads') {
       failures.push("history: the pane's thread is not inside #threads");
     }
+
+    // A notice is the server telling the user something about the conversation
+    // that is neither an answer nor an error — today, that this chat was already
+    // open elsewhere and has been continued in a copy. It has to be rendered: the
+    // one thing that made the collision it reports expensive was its silence.
+    handler({ type: 'notice', text: 'open somewhere else — continuing in a copy' }, chat);
+    if (!(chat.thread?.innerHTML ?? '').includes('continuing in a copy')) {
+      failures.push('notice: a server notice is not rendered in the thread');
+    }
   } catch (err) {
     failures.push(`history render threw: ${err.message}`);
   }

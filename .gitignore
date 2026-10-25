@@ -1,4 +1,9 @@
-node_modules/
+# No trailing slash, deliberately: a worktree gets its dependencies as a SYMLINK
+# to the main checkout's (CLAUDE.md asks for that, because nothing gitignored comes
+# with a worktree and the suite cannot run without them), and `node_modules/` does
+# not match a symlink. So they showed up as untracked, one `git add -A` away from a
+# commit pointing at a path that exists on no other machine.
+node_modules
 .env
 dist/
 infra/cdk.out/

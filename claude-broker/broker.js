@@ -169,15 +169,130 @@ function keyFor(cwd, id) {
   return `${cwd}|${id}`;
 }
 
+/**
+ * The live session holding a conversation, whatever directory it was started in.
+ *
+ * The merge key is `(cwd, id)` because a page arriving to resume one knows both,
+ * and keying on the pair is what keeps two projects' conversations apart. But the
+ * conversation is the id: the same one can legitimately be asked for under two
+ * different directories, and then the pair misses and a second process starts on
+ * one transcript — the fork this daemon exists to prevent.
+ *
+ * It happens two ways, both observed. A session that moves into a worktree
+ * mid-conversation (`EnterWorktree`, which this box's instructions ask for
+ * whenever several sessions share a checkout) keeps the cwd it was keyed under
+ * while its transcript moves to the worktree's directory, so the next device
+ * resumes it under the worktree path. And the editor's panel resumes a
+ * conversation under the folder it has open, which is the project root even when
+ * the work has moved below it.
+ *
+ * So an explicit `--resume <id>` is answered by the process running that id, and
+ * the cwd decides nothing. Nothing is lost by that: a conversation is in exactly
+ * one process, and a page that asked for it by name wants that process.
+ */
+function liveBySessionId(sessionId) {
+  for (const session of sessions.values()) {
+    if (!session.exited && session.sessionId === sessionId) return session;
+  }
+  return null;
+}
+
+/**
+ * A conversation's id as its own argv states it, or null.
+ *
+ * Both spellings of both flags, because the choice is not ours: the extension
+ * writes `--resume=<id>` joined, a script writes `--session-id <id>` spaced, and
+ * `chat-service/session-manager.js` names every conversation it starts this way
+ * so that it can be found from outside the process holding it. `--resume` with no
+ * value means "pick one interactively" and names nothing.
+ */
+const SESSION_ID_IN_ARGV = /--(?:resume|session-id)[=\0]([0-9a-fA-F-]{8,64})(?:\0|$)/;
+
+/**
+ * Whether an argv belongs to a `claude` process, as opposed to something merely
+ * holding a claude path.
+ *
+ * The distinction is load-bearing here and nowhere else in this repository: the
+ * wrapper's own argv is `node <wrapper> /path/to/claude --resume=<id> …`, so a
+ * loose search for "claude" finds every brokered page as well as the process it
+ * is brokered to. Counting those as owners would make the second page of a shared
+ * conversation refuse to join the first — breaking the one property this daemon
+ * is for. So only argv[0] counts, which is the program actually running.
+ */
+function isClaudeArgv(argv) {
+  const [exe] = argv.split('\0');
+  return exe === 'claude' || exe.endsWith('/claude');
+}
+
+/**
+ * The pid of a `claude` outside this daemon that is already holding a session id,
+ * or null.
+ *
+ * Why this daemon has to look: it is not the only thing on the box that runs
+ * conversations. `chat-service` spawns its own `claude` for every chat in the
+ * phone UI, and those are not brokered — different service, different process
+ * tree, invisible over this socket. On 2026-10-25 a chat started in the phone UI
+ * was given a session id by the CLI, and 71 seconds later the editor's panel came
+ * up and resumed *that id* (the newest transcript in the folder it had open).
+ * Both processes then held one conversation for ten minutes: the phone's did the
+ * work, the panel's sat on the history it had read at startup, and when the user
+ * typed, the stale one answered — re-ran a survey the other had already done,
+ * overwrote its output file, and reported that "another session" was doing the
+ * job. It was itself.
+ *
+ * `/proc` and argv rather than a lock file, because the question is "is a process
+ * holding this conversation", and a pid in /proc is the only answer that cannot
+ * go stale: a lock file outlives a kill -9 and a reboot, and this guard sits in
+ * the path of opening the panel.
+ *
+ * Our own children are excluded by parentage, not by the session map, so a
+ * conversation this daemon has lost track of is still recognised as ours.
+ */
+function ownerOutside(sessionId) {
+  let entries;
+  try {
+    entries = fs.readdirSync('/proc');
+  } catch {
+    return null; // no /proc: nothing can be said, and the old behaviour stands
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    let argv;
+    try {
+      argv = fs.readFileSync(`/proc/${entry}/cmdline`, 'utf8');
+    } catch {
+      continue; // exited mid-sweep, or not ours to read
+    }
+    if (!argv.includes('claude') || !isClaudeArgv(argv)) continue;
+    if (SESSION_ID_IN_ARGV.exec(argv)?.[1] !== sessionId) continue;
+    let stat;
+    try {
+      stat = fs.readFileSync(`/proc/${entry}/stat`, 'utf8');
+    } catch {
+      continue;
+    }
+    // Field 4 of /proc/<pid>/stat is the ppid, and fields 1-2 can contain spaces
+    // and brackets, so it is read from after the last `)` — the standard way.
+    const ppid = Number(stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)[1]);
+    if (ppid === process.pid) continue; // one of ours
+    return Number(entry);
+  }
+  return null;
+}
+
 class Session {
-  constructor({ cwd, claude, args, env, key }) {
+  constructor({ cwd, claude, args, env, key, sessionId = null }) {
     this.cwd = cwd;
     this.key = key;
     this.clients = new Set();
     this.chunks = [];
     this.logBytes = 0;
     this.truncated = false;
-    this.sessionId = null;
+    // Known from argv when the page named what it was resuming, and only then —
+    // a new conversation, and a fork of one, are both the CLI's to name. Set here
+    // rather than waited for so that liveBySessionId can answer about this
+    // conversation before its first byte of output. See #sniffSessionId.
+    this.sessionId = sessionId;
     this.lastActivity = Date.now();
     /*
      * When a PERSON last had anything to do with this conversation: it was
@@ -238,6 +353,9 @@ class Session {
     this.spokeAt = null;
     // Only used to spot the init event; forwarding never waits on it.
     this.lineBuffer = '';
+    // Whether the CLI has named this conversation yet. Tracked separately from
+    // `sessionId`, which may already hold argv's guess at it. See #sniffSessionId.
+    this.initSeen = false;
 
     this.proc = spawn(claude, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
 
@@ -299,9 +417,15 @@ class Session {
    * that started a NEW conversation had no id to key on, so the session is
    * re-keyed here — that is what lets a second device, which arrives with
    * `--resume=<that id>`, find this live process instead of starting its own.
+   *
+   * Runs even when argv already named the session, because the CLI is the
+   * authority on what this conversation is called and argv is only the earliest
+   * guess at it. The two disagree twice: a fork is given a new id, and so is a
+   * `--resume` of an id the CLI cannot find. Trusting argv in either case would
+   * leave this keyed under a conversation that is not the one in the process.
    */
   #sniffSessionId(chunk) {
-    if (this.sessionId) return;
+    if (this.initSeen) return;
     this.lineBuffer += chunk.toString();
     const lines = this.lineBuffer.split('\n');
     this.lineBuffer = lines.pop() || '';
@@ -314,6 +438,7 @@ class Session {
         continue;
       }
       if (event.type === 'system' && event.session_id) {
+        this.initSeen = true;
         this.sessionId = event.session_id;
         const newKey = keyFor(this.cwd, event.session_id);
         if (newKey !== this.key) {
@@ -767,7 +892,11 @@ function open(hello, client) {
   }
 
   const wanted = hello.resume ? keyFor(hello.cwd, hello.resume) : null;
-  const existing = wanted ? sessions.get(wanted) : null;
+  // The pair first, then the id alone: see liveBySessionId for why the directory
+  // a conversation is asked for under is not the one it is running in.
+  const existing = wanted
+    ? sessions.get(wanted) || liveBySessionId(hello.resume)
+    : null;
 
   if (existing && !existing.exited) {
     if (existing.truncated) {
@@ -783,15 +912,55 @@ function open(hello, client) {
   // A new conversation, or one whose process is gone. `pending:` keys a session
   // that has no id yet; #sniffSessionId re-keys it the moment the CLI says what
   // the id is, which is what makes it findable by the next device.
-  const key = wanted || keyFor(hello.cwd, `pending:${process.hrtime.bigint()}`);
+  let key = wanted || keyFor(hello.cwd, `pending:${process.hrtime.bigint()}`);
+  let args = hello.args || [];
+
+  /*
+   * One conversation, one process. Nothing above found it here, so if something
+   * outside this daemon is already holding the id, resuming it would make this
+   * the second process appending to one transcript — see ownerOutside for what
+   * that did on 2026-10-25.
+   *
+   * Answered with a FORK rather than a refusal: `--fork-session` replays the same
+   * history into a new session id with its own transcript, so the page opens on
+   * the conversation it asked for and reads correctly, while the process already
+   * doing the work keeps sole ownership of the original. A refusal would send the
+   * wrapper down its fallback path, which forks the *transcript* — the bug — and
+   * a page that will not open is worse than either.
+   *
+   * The fork is keyed `pending:` deliberately. Its id is the CLI's to choose and
+   * is not known until the init event; keying it under the id it was forked FROM
+   * would hand the next page a different conversation than the one it named.
+   */
+  if (hello.resume && !args.includes('--fork-session')) {
+    const owner = ownerOutside(hello.resume);
+    if (owner !== null) {
+      // `--fork-session` is meaningless to the CLI without something to resume,
+      // and the wrapper only reports `resume` because it read it out of these
+      // args — but a client that says what it is resuming without passing the
+      // flag would otherwise be handed a command line the CLI refuses, and the
+      // page would not open at all. So the flag is made true rather than assumed.
+      const resuming = args.some((arg) => arg === '--resume' || arg.startsWith('--resume='));
+      args = [...args, ...(resuming ? [] : ['--resume', hello.resume]), '--fork-session'];
+      key = keyFor(hello.cwd, `pending:${process.hrtime.bigint()}`);
+      log(
+        `session ${hello.resume} is held by pid ${owner} outside this broker; ` +
+          'starting a fork of it rather than a second writer',
+      );
+    }
+  }
+
   let session;
   try {
     session = new Session({
       cwd: hello.cwd,
       claude: hello.claude,
-      args: hello.args || [],
+      args,
       env: hello.env || process.env,
       key,
+      // Null for a fork: it is a different conversation from the one named, and
+      // the CLI has yet to say what it is called.
+      sessionId: key === wanted ? hello.resume : null,
     });
   } catch (err) {
     client.write(`${JSON.stringify({ ok: false, why: err.message })}\n`);

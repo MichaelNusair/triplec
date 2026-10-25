@@ -41,7 +41,7 @@ process.env.PROJECTS_ROOT = PROJECTS;
 process.env.CLAUDE_HOME = CLAUDE_HOME;
 process.env.CLAUDE_BROKER_SOCKET = SOCKET;
 
-const { claudeStatus, firstPrompt, firstPromptFor } = await import('./claude-status.js');
+const { claudeStatus, firstPrompt, firstPromptFor, sessionOwner } = await import('./claude-status.js');
 
 let pass = 0;
 let fail = 0;
@@ -1120,6 +1120,37 @@ ok(
   missing.text === null && missing.chars === 0,
   'a conversation with no transcript at all answers nothing rather than failing',
 );
+
+section('Who is running a conversation, when it is not us:');
+/*
+ * Asked before resuming one, and the answer decides whether a chat continues a
+ * conversation or forks a copy of it. On 2026-10-25 nobody asked: a chat in the
+ * phone UI and the editor's panel held one conversation for ten minutes, the stale
+ * one answered when the user typed, and it overwrote the work the other had done.
+ * The fixture is the one that mattered that day — a process that named its
+ * conversation with `--session-id`, which is how this service now starts every
+ * chat, precisely so that this question has an answer.
+ */
+const OWNED = 'f6a7b8c9-5555-4000-8000-000000000000';
+const owning = spawn(FAKE_CLAUDE, [SLEEPER, '--session-id', OWNED], { stdio: 'ignore' });
+owning.unref();
+// The sweep is memoised for two seconds, so this polls rather than asking once.
+let ownerPid = null;
+for (let i = 0; i < 40 && ownerPid === null; i += 1) {
+  ownerPid = await sessionOwner(OWNED);
+  if (ownerPid === null) await new Promise((resolve) => setTimeout(resolve, 150));
+}
+ok(ownerPid === owning.pid, 'a process holding a session id is found, by the id it named');
+ok(
+  (await sessionOwner(OWNED, { ignorePids: [owning.pid] })) === null,
+  'and is not reported to the caller it belongs to, which would fork a chat from itself',
+);
+ok(
+  (await sessionOwner('a7b8c9d0-6666-4000-8000-000000000000')) === null,
+  'a conversation nothing is running has no owner',
+);
+ok((await sessionOwner(null)) === null, 'and a chat with no session to resume asks nothing');
+owning.kill();
 
 fs.rmSync(TMP, { recursive: true, force: true });
 console.log(`\n${pass}/${pass + fail} checks passed`);

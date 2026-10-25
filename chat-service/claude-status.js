@@ -391,6 +391,37 @@ function offBrokerSession(sessionId, pid, printing = false) {
 }
 
 /**
+ * Who is running a conversation, when it is not this service: a pid, or null.
+ *
+ * Asked before resuming one. A conversation has one process, and this service
+ * cannot join another's — so where the answer is a pid, the caller resumes a fork
+ * instead of becoming the second writer on one transcript. See `create` in
+ * session-manager.js, and `ownerOutside` in claude-broker/broker.js, which asks
+ * the same question from the other side.
+ *
+ * `ignorePids` is how a caller says which processes are its own. It has to pass
+ * them: this service now names every conversation it starts with `--session-id`,
+ * so its own processes answer this sweep as readily as anyone else's, and a chat
+ * that forked itself would be a new bug wearing the old one's clothes.
+ *
+ * Both halves of "is it still running" come from `/proc` rather than a lock file,
+ * for the reason the broker gives: a pid cannot go stale, and this sits in the
+ * path of opening a chat.
+ *
+ * The pid may be a brokered page's wrapper rather than the `claude` it is
+ * brokered to — see `resumingSessions`, which is deliberately loose about which
+ * of the two it reports. For this question they are the same answer: that
+ * conversation belongs to the panel, and this service cannot have it.
+ */
+export async function sessionOwner(sessionId, { ignorePids = [] } = {}) {
+  if (!sessionId) return null;
+  const mine = new Set(ignorePids);
+  const found = (await resumingSessions()).get(sessionId);
+  if (!found || mine.has(found.pid)) return null;
+  return found.pid;
+}
+
+/**
  * Read the last `bytes` of a file.
  *
  * The first line of the result is almost always a fragment, and that is fine:

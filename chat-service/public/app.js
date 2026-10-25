@@ -1561,6 +1561,15 @@ function handleEvent(msg, pane) {
       addBubble(pane, 'system', 'Stopped.');
       return;
 
+    // Something about this chat that is not an answer and not an error: the one
+    // that exists today says the conversation was already open elsewhere and has
+    // been forked. Announced as well as shown, because the device that needs to
+    // know is often not the one being looked at.
+    case 'notice':
+      addBubble(pane, 'system', msg.text);
+      if (pane !== activePane()) announce(pane, msg.text);
+      return;
+
     case 'error':
       setBusy(pane, false);
       addBubble(pane, 'error', msg.message);

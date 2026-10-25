@@ -28,7 +28,7 @@ import {
 } from './speak.js';
 import { mintSession, realtimeStatus } from './realtime.js';
 import { buildInfo, applyBuildStamp } from './build.js';
-import { claudeStatus, firstPromptFor } from './claude-status.js';
+import { claudeStatus, firstPromptFor, sessionOwner } from './claude-status.js';
 import {
   manifestForProject,
   chatManifest,
@@ -1165,8 +1165,20 @@ wss.on('connection', (ws) => {
           // restarting it, and the transcript alone would miss the turn in
           // flight — so replay the live tail on top of it.
           const live = msg.resumeSessionId
-            ? manager.getBySession(msg.cwd, msg.resumeSessionId)
+            ? manager.liveSession(msg.resumeSessionId, msg.cwd)
             : null;
+
+          /*
+           * Not ours, but somebody's: the editor's panel, a terminal, or a timer
+           * is running this conversation in a process this service cannot join.
+           * Resuming it anyway would put two processes on one transcript, which
+           * is how a chat came to overwrite its own work on 2026-10-25 — so the
+           * history is resumed into a fork instead, and the client is told, since
+           * the one thing that made that incident costly was that it was silent.
+           */
+          const owner = live
+            ? null
+            : await sessionOwner(msg.resumeSessionId, { ignorePids: manager.livePids() });
 
           // Resuming a stored session: show recent history before going live.
           // Sent as ONE batch rather than hundreds of frames — a phone building
@@ -1183,12 +1195,23 @@ wss.on('connection', (ws) => {
             });
           }
 
+          if (owner) {
+            send({
+              type: 'notice',
+              text:
+                'This chat is open somewhere else on this machine — the editor panel, '
+                + 'a terminal, or a scheduled run. Continuing here in a copy of it, so '
+                + 'the two cannot overwrite each other.',
+            });
+          }
+
           const conversation = manager.create({
             cwd: msg.cwd,
             model: msg.model,
             permissionMode: msg.permissionMode,
             effort: msg.effort,
             resumeSessionId: msg.resumeSessionId,
+            fork: Boolean(owner),
           });
           attach(conversation, false);
 
