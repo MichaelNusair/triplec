@@ -102,7 +102,7 @@
     "effortLevel is low|medium|high|xhigh|max, and every deploy writes it over",
     "whatever the box had — so this file is the answer, not the first deploy's."
   ],
-  "defaultModel": "us.anthropic.claude-opus-5",
+  "defaultModel": "us.anthropic.claude-opus-5-5",
   "permissionMode": "bypassPermissions",
   "effortLevel": "max",
 

@@ -96,6 +96,21 @@ const finish = async (h) => {
   h.dom.window.close();
 };
 
+/*
+ * What the box answers on /api/models: the models it offers, and the one a chat
+ * gets when the client asks for none. `default` is the deployment's own
+ * `defaultModel`, so these tests are written against an upgraded box — one whose
+ * default is no longer the model this client used to hard-code.
+ */
+const DEPLOYMENT_MODELS = {
+  default: 'us.anthropic.claude-opus-5-5',
+  models: [
+    { id: 'us.anthropic.claude-opus-5-5', label: 'Opus 5.5' },
+    { id: 'us.anthropic.claude-opus-5', label: 'Opus 5' },
+    { id: 'us.anthropic.claude-haiku-4-5', label: 'Haiku 4.5' },
+  ],
+};
+
 /**
  * What the box has on disk. `live`/`busy` come from `/api/projects` itself, which
  * is how the list looks right on its first paint instead of a poll interval later.
@@ -154,11 +169,16 @@ function projectsPayload() {
  *
  * `shell` is the HTML the server sent, which is not always the file on disk: a named
  * deployment has its titles rewritten on the way out (see namedShell below).
+ *
+ * `settings` is the same for the settings object — a device that has chosen a model,
+ * or one carrying a choice it made before this deployment's default moved. `models`
+ * is what the box answers on /api/models, which is where that default comes from.
  */
-function bootClient({ saved = null, live = [], shell = html } = {}) {
+function bootClient({ saved = null, settings = null, models = null, live = [], shell = html } = {}) {
   const dom = new JSDOM(shell, { runScripts: 'outside-only', url: 'https://claude.example.com/' });
   const w = dom.window;
   if (saved) w.localStorage.setItem('claude-chat-panes', JSON.stringify(saved));
+  if (settings) w.localStorage.setItem('claude-chat', JSON.stringify(settings));
 
   const sockets = [];
   const calls = [];
@@ -227,7 +247,7 @@ function bootClient({ saved = null, live = [], shell = html } = {}) {
     if (u.includes('/api/live')) return json({ sessions: box.live, at: Date.now() });
     if (u.includes('/api/projects')) return json(projectsPayload());
     if (u.includes('/api/auth-check')) return json({ ok: true });
-    return json({ models: [{ id: 'us.anthropic.claude-opus-5', label: 'Opus 5' }] });
+    return json(models || DEPLOYMENT_MODELS);
   };
 
   const thrown = [];
@@ -1021,6 +1041,87 @@ console.log('\nSays which deployment and which project a tab is:');
   await finish(h);
 }
 
+// --- 11. Which model a new chat starts on ------------------------------------
+/**
+ * The deployment decides, unless this device has said otherwise.
+ *
+ * Settings are saved as one object, so a device that changed its voice wrote a
+ * model down with it — and while the client held a default of its own, that froze
+ * every phone onto the model the app shipped with. Raising a deployment's
+ * `defaultModel` moved the CLI and the editor and silently missed the chat app,
+ * which is the surface it is read from. So a device that never chose a model sends
+ * none and follows the box; one that chose keeps its choice.
+ */
+console.log('\nStarts a new chat on the model the deployment is configured for:');
+{
+  const h = bootClient();
+  await settle();
+  h.hooks.openProject({ cwd: DEMO, project: 'demo' });
+  h.sockets[0].accept();
+  const start = h.sockets[0].sent[0];
+  check(
+    'a device that has never chosen a model names none',
+    start?.type === 'start' && !('model' in start),
+    JSON.stringify(start),
+  );
+  check(
+    'and the picker shows the deployment default, not the top of the list',
+    h.$('#select-model').value === DEPLOYMENT_MODELS.default,
+    h.$('#select-model').value,
+  );
+  check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
+  await finish(h);
+}
+{
+  // What every device that had opened the app was carrying: the default this client
+  // used to hard-code, saved alongside a voice that *was* chosen. The model is not
+  // a choice, so an upgraded deployment has to be free to move it — and the voice
+  // beside it must survive that.
+  const h = bootClient({
+    settings: { model: 'us.anthropic.claude-opus-5', voice: 'he-IL-AvriNeural' },
+  });
+  await settle();
+  h.hooks.openProject({ cwd: DEMO, project: 'demo' });
+  h.sockets[0].accept();
+  check(
+    'a stored copy of the old hard-coded default does not pin a chat to it',
+    !('model' in (h.sockets[0].sent[0] || {})),
+    JSON.stringify(h.sockets[0].sent[0]),
+  );
+  check(
+    'the picker follows the deployment too',
+    h.$('#select-model').value === DEPLOYMENT_MODELS.default,
+    h.$('#select-model').value,
+  );
+  check(
+    'and nothing else that device had chosen is touched',
+    h.hooks.state.settings.voice === 'he-IL-AvriNeural',
+    h.hooks.state.settings.voice,
+  );
+  check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
+  await finish(h);
+}
+{
+  // A deliberate choice, which is the case the migration above must not eat: a
+  // cheaper model picked on purpose stays picked, on this device and no other.
+  const h = bootClient({ settings: { model: 'us.anthropic.claude-haiku-4-5' } });
+  await settle();
+  h.hooks.openProject({ cwd: DEMO, project: 'demo' });
+  h.sockets[0].accept();
+  check(
+    'a chosen model is what a new chat starts on',
+    h.sockets[0].sent[0]?.model === 'us.anthropic.claude-haiku-4-5',
+    JSON.stringify(h.sockets[0].sent[0]),
+  );
+  check(
+    'and it is what the picker shows',
+    h.$('#select-model').value === 'us.anthropic.claude-haiku-4-5',
+    h.$('#select-model').value,
+  );
+  check('nothing threw', h.thrown.length === 0, h.thrown.join('; '));
+  await finish(h);
+}
+
 // --- results ----------------------------------------------------------------
 if (failures.length) {
   console.error(`\nFAIL: ${failures.length} check(s) failed`);
@@ -1035,6 +1136,7 @@ console.log(
   + 'conversation on screen and sends nowhere else; the live cap cools an idle '
   + 'project and never a working one; closing a tab stops nothing, and neither does '
   + 'switching which conversation a tab shows; a new chat keeps its draft '
-  + 'through being named; and the browser tab says which deployment and which '
-  + 'project you are looking at.',
+  + 'through being named; the browser tab says which deployment and which '
+  + 'project you are looking at; and a new chat starts on the model the '
+  + 'deployment is configured for unless this device chose another.',
 );

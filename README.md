@@ -391,7 +391,7 @@ that survives everything else actually needs. It touches nothing on the server.
 
 ## Defaults
 
-Opus 5 on Bedrock, `--permission-mode bypassPermissions`, `--effort max`. All
+Opus 5.5 on Bedrock, `--permission-mode bypassPermissions`, `--effort max`. All
 three are overridable per-chat in the settings sheet, and the deployment-wide
 defaults live in `triplec.config.json`. Changes apply to new chats — an
 existing conversation keeps the flags it started with, because they're process

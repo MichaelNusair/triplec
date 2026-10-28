@@ -1071,15 +1071,32 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    /*
+     * What the picker offers, and what a chat that names no model gets.
+     *
+     * `default` is this deployment's own `defaultModel` — the same value the CLI
+     * and the editor are given in ANTHROPIC_MODEL — rather than a model named in
+     * the client. That is the point of answering it here at all: a device that has
+     * never chosen a model follows the box it is talking to, so raising the default
+     * is a config change on one deployment instead of a code change shared by every
+     * deployment built from this repository.
+     *
+     * The configured default is forced into the list because the picker selects by
+     * matching an <option>: a model missing from the list leaves the select showing
+     * its first entry, which would then be reporting a model new chats do not use.
+     */
     if (pathname === '/api/models' && req.method === 'GET') {
-      json(res, 200, {
-        models: [
-          { id: 'us.anthropic.claude-opus-5', label: 'Opus 5' },
-          { id: 'us.anthropic.claude-sonnet-5', label: 'Sonnet 5' },
-          { id: 'us.anthropic.claude-opus-4-8', label: 'Opus 4.8' },
-          { id: 'us.anthropic.claude-haiku-4-5', label: 'Haiku 4.5' },
-        ],
-      });
+      const models = [
+        { id: 'us.anthropic.claude-opus-5-5', label: 'Opus 5.5' },
+        { id: 'us.anthropic.claude-opus-5', label: 'Opus 5' },
+        { id: 'us.anthropic.claude-sonnet-5', label: 'Sonnet 5' },
+        { id: 'us.anthropic.claude-opus-4-8', label: 'Opus 4.8' },
+        { id: 'us.anthropic.claude-haiku-4-5', label: 'Haiku 4.5' },
+      ];
+      if (!models.some((m) => m.id === DEFAULT_MODEL)) {
+        models.unshift({ id: DEFAULT_MODEL, label: DEFAULT_MODEL });
+      }
+      json(res, 200, { default: DEFAULT_MODEL, models });
       return;
     }
 

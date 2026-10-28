@@ -42,7 +42,9 @@ async function getGithubToken() {
 
 const PROJECTS_ROOT = process.env.PROJECTS_ROOT || '/workspace/projects';
 const CLAUDE_HOME = process.env.CLAUDE_HOME || '/workspace/claude';
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-opus-5';
+// ANTHROPIC_MODEL is the deployment's `defaultModel`, put in this service's unit
+// by bootstrap.sh. The literal is only what a bare `node server.js` runs on.
+const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-opus-5-5';
 const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'bypassPermissions';
 const DEFAULT_EFFORT = process.env.DEFAULT_EFFORT || 'max';
 

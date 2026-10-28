@@ -71,7 +71,12 @@ async function api(url, options) {
 // `const` is not hoisted, so defining this later puts it in a temporal dead
 // zone and throws a ReferenceError that kills the whole script at parse time.
 const DEFAULTS = {
-  model: 'us.anthropic.claude-opus-5',
+  // Empty means "whichever model this deployment is configured for", which the
+  // server answers on /api/models and gives the CLI and the editor as well. A
+  // model named here instead is a model frozen into every device's localStorage —
+  // settings are saved as one object, so changing a voice stored a model too, and
+  // raising a deployment's default then reached every surface except the phones.
+  model: '',
   permissionMode: 'bypassPermissions',
   effort: 'max',
   // Empty means "whichever voice fits the message", which the server decides per
@@ -84,9 +89,23 @@ const DEFAULTS = {
   speed: 1,
 };
 
+/*
+ * The model this client used to hard-code as its default, before the deployment's
+ * own `defaultModel` was the answer.
+ *
+ * Read once, to undo the freeze described above: a device carrying exactly this
+ * value is one that never chose a model, it just saved the settings object at some
+ * point, so it is handed back to the deployment. The cost is a device that
+ * deliberately picked this model, and only this one, follows the default again —
+ * one re-pick, against every phone otherwise stuck on a superseded model forever.
+ */
+const SUPERSEDED_DEFAULT_MODEL = 'us.anthropic.claude-opus-5';
+
 function loadSettings() {
   try {
-    return { ...DEFAULTS, ...JSON.parse(localStorage.getItem('claude-chat') || '{}') };
+    const settings = { ...DEFAULTS, ...JSON.parse(localStorage.getItem('claude-chat') || '{}') };
+    if (settings.model === SUPERSEDED_DEFAULT_MODEL) settings.model = DEFAULTS.model;
+    return settings;
   } catch {
     return { ...DEFAULTS };
   }
@@ -1401,7 +1420,10 @@ function connect(pane) {
         // worktree, and only the former can adopt the process already running it.
         cwd: pane.sessionCwd || pane.cwd,
         resumeSessionId: pane.sessionId,
-        model: state.settings.model,
+        // Omitted when nothing is chosen, rather than sent empty: the server then
+        // starts the chat on the deployment's default instead of this device's
+        // opinion of it. See DEFAULTS.
+        model: state.settings.model || undefined,
         permissionMode: state.settings.permissionMode,
         effort: state.settings.effort,
       }));
@@ -4998,12 +5020,14 @@ if (pushToggle) {
 (async function initModels() {
   try {
     const res = await api('/api/models');
-    const { models } = await res.json();
+    const { models, default: deploymentDefault } = await res.json();
     const select = $('#select-model');
     select.innerHTML = models
       .map((m) => `<option value="${m.id}">${escapeHtml(m.label)}</option>`)
       .join('');
-    select.value = state.settings.model;
+    // Nothing chosen shows the deployment's default, which is what a new chat
+    // would actually run — not the first option in the list.
+    select.value = state.settings.model || deploymentDefault || models[0]?.id || '';
     select.addEventListener('change', (e) => {
       state.settings.model = e.target.value;
       saveSettings();

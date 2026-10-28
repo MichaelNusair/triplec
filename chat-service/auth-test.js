@@ -138,9 +138,14 @@ console.log('\nRefuses to start when misconfigured:');
 }
 
 // --- 2. The gate, with a correctly configured server ------------------------
+// What this deployment's `defaultModel` is, as bootstrap.sh hands it to the
+// service. Deliberately a model the client's own list has never heard of — see
+// the /api/models checks below.
+const DEPLOYMENT_MODEL = 'us.anthropic.claude-test-only-model';
 const { child, ready, stderr } = await startServer({
   AUTH_PASSWORD: PASSWORD,
   SESSION_SECRET: SECRET,
+  ANTHROPIC_MODEL: DEPLOYMENT_MODEL,
 });
 if (!ready) {
   console.error('server failed to start:\n', stderr());
@@ -282,6 +287,25 @@ console.log('\nWith a valid session:');
 {
   const res = await fetch(`${BASE}/api/models`, { headers: { Cookie: cookie } });
   check('GET /api/models → 200', res.status === 200, `got ${res.status}`);
+
+  /*
+   * Which model a chat gets when the client names none, and it has to be this
+   * deployment's configured one rather than anything the client decides. The
+   * client used to hold its own default, so raising `defaultModel` on a box moved
+   * the CLI and the editor and left every phone that had opened the app starting
+   * chats on the model it was shipped with.
+   */
+  const models = await res.json();
+  check(
+    'reports the deployment default, not a model named in the client',
+    models.default === DEPLOYMENT_MODEL,
+    JSON.stringify(models.default),
+  );
+  check(
+    'and offers it, so the picker can show what a new chat really runs',
+    (models.models || []).some((m) => m.id === DEPLOYMENT_MODEL),
+    JSON.stringify(models.models),
+  );
 
   const check2 = await fetch(`${BASE}/api/auth-check`, { headers: { Cookie: cookie } });
   check('GET /api/auth-check → 204', check2.status === 204, `got ${check2.status}`);

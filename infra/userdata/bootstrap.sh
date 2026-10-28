@@ -691,12 +691,14 @@ MERGE
 rm -f /tmp/mobile-defaults.json
 chown -R "$USER_NAME:$USER_NAME" "$DATA_MNT/code-server-data/User"
 
-# The CLI reads its own settings file (separate from VS Code settings). Set the
-# same default there so terminal sessions and the chat service don't prompt
-# either. Merged, so existing permission rules are kept.
-python3 - "$DATA_MNT/claude/settings.json" "$PERMISSION_MODE" "$EFFORT_LEVEL" <<'CLAUDESETTINGS'
+# The CLI reads its own settings file (separate from VS Code settings). Write the
+# deployment's answers there too — permission mode, effort and model — so terminal
+# sessions and the chat service don't prompt either, and so none of the three is
+# decided by whatever this file was left holding. Merged, so existing permission
+# rules are kept.
+python3 - "$DATA_MNT/claude/settings.json" "$PERMISSION_MODE" "$EFFORT_LEVEL" "$DEFAULT_MODEL" <<'CLAUDESETTINGS'
 import json, os, sys
-target, permission_mode, effort = sys.argv[1], sys.argv[2], sys.argv[3]
+target, permission_mode, effort, model = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 current = {}
 if os.path.exists(target):
     try:
@@ -706,6 +708,15 @@ if os.path.exists(target):
 perms = current.get('permissions') or {}
 perms['defaultMode'] = permission_mode
 current['permissions'] = perms
+# The model a terminal and the editor panel actually run, and the reason setting
+# ANTHROPIC_MODEL in their units is not enough on its own: this file outranks the
+# environment, and it outlives the instance. A box found carrying `"model":
+# "opus"` here went on resolving that alias itself while the profile script, both
+# service units and triplec.config.json all named a specific model — so the
+# deployment's `defaultModel` has to be written where the CLI looks first. The
+# full Bedrock id rather than an alias, for the same reason: an alias is a moving
+# target nobody here chose.
+current['model'] = model
 # Assigned, not setdefault: this file lives on the persistent data volume, so it
 # survives every deploy. setdefault meant the value written by the *first* deploy
 # won, and effortLevel in triplec.config.json was silently ignored from then
@@ -716,7 +727,7 @@ current['effortLevel'] = effort
 os.makedirs(os.path.dirname(target), exist_ok=True)
 with open(target, 'w') as fh:
     json.dump(current, fh, indent=2)
-print(f'claude settings: defaultMode={permission_mode} effortLevel={effort}')
+print(f'claude settings: defaultMode={permission_mode} effortLevel={effort} model={model}')
 CLAUDESETTINGS
 chown -R "$USER_NAME:$USER_NAME" "$DATA_MNT/claude"
 

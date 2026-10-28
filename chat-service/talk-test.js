@@ -231,7 +231,10 @@ function boot({ realtime = REALTIME, speech = null, webrtc = true, minted = MINT
         projects: [{ name: 'demo', path: CWD, sessions: [{ sessionId: 'aaa', mtime: Date.now(), title: 'a chat' }] }],
       });
     }
-    return json({ models: [{ id: 'us.anthropic.claude-opus-5', label: 'Opus 5' }] });
+    return json({
+      default: 'us.anthropic.claude-opus-5-5',
+      models: [{ id: 'us.anthropic.claude-opus-5-5', label: 'Opus 5.5' }],
+    });
   };
 
   const thrown = [];

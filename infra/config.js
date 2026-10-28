@@ -142,7 +142,7 @@ const DEFAULTS = {
    */
   instanceAdminAccess: false,
 
-  defaultModel: 'us.anthropic.claude-opus-5',
+  defaultModel: 'us.anthropic.claude-opus-5-5',
   /** "bypassPermissions" | "acceptEdits" | "plan". See docs/SECURITY.md. */
   permissionMode: 'bypassPermissions',
   /** "low" | "medium" | "high" | "xhigh" | "max" — max is the highest there is. */

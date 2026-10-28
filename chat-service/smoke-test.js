@@ -76,7 +76,10 @@ w.fetch = (url, options = {}) => {
           },
         ],
       }
-    : { models: [{ id: 'us.anthropic.claude-opus-5', label: 'Opus 5' }] };
+    : {
+        default: 'us.anthropic.claude-opus-5-5',
+        models: [{ id: 'us.anthropic.claude-opus-5-5', label: 'Opus 5.5' }],
+      };
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 };
 

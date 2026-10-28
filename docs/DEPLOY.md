@@ -246,7 +246,7 @@ defaults and validation.
 | `instanceType` | `t4g.large` | 2 vCPU / 8 GiB, Graviton |
 | `workspaceVolumeSize` | `100` | GiB, retained on stack deletion |
 | `instanceAdminAccess` | `false` | Read SECURITY.md before enabling |
-| `defaultModel` | `us.anthropic.claude-opus-5` | Overridable per chat |
+| `defaultModel` | `us.anthropic.claude-opus-5-5` | The CLI, the editor and the chat app. Overridable per chat |
 | `permissionMode` | `bypassPermissions` | The main risk/UX tradeoff |
 | `gitUserName` / `gitUserEmail` | placeholder | Author on Claude's commits |
 | `deployFrom` | none | The machine full deploys run on. See above — set it |
