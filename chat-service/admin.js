@@ -558,8 +558,12 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
       const name = String(target || '');
       // Goes to `tmux kill-session -t`, so it is validated rather than trusted:
       // tmux target syntax has its own sigils, and a name is not a place to find
-      // out which ones.
-      if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new AdminBlocked('not a session name', { target });
+      // out which ones. One `/` is allowed, for a worktree slot's session —
+      // `claude-<project>/slot-3`, see scripts/cc-session.sh — and neither half may
+      // start with a dot, so nothing here reads like a path.
+      if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*(\/[A-Za-z0-9_-][A-Za-z0-9._-]*)?$/.test(name)) {
+        throw new AdminBlocked('not a session name', { target });
+      }
       if (!name.startsWith('claude-')) {
         throw new AdminBlocked('only sessions started by `cc` can be stopped here', { target });
       }
@@ -569,7 +573,10 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
           { target },
         );
       }
-      const res = await deps.run('tmux', ['kill-session', '-t', name]);
+      // `=`: exactly this session. A bare name is a prefix match when no session has
+      // exactly that name — a session that ended a moment ago would make this stop
+      // `claude-demo/slot-3` in place of `claude-demo`.
+      const res = await deps.run('tmux', ['kill-session', '-t', `=${name}`]);
       if (!res.ok) throw new AdminBlocked(`tmux refused: ${(res.err || '').slice(0, 200)}`, { target });
       return { stopped: true, kind, target: name };
     }

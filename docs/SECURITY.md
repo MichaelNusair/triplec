@@ -157,6 +157,16 @@ The allowlist direction matters: a new route added to `server.js` is gated
 unless someone deliberately opens it. The reverse — a denylist — is how the
 original bug happened.
 
+Two WebSockets exist, and both are authenticated in the same `upgrade` handler,
+before the handshake completes: `/ws`, the chat, which can start a `claude`; and
+`/ws/term`, the mux's terminal panes, which is a pseudo-terminal running `cc` —
+a shell, in plain terms, for whoever holds one. Any other path under `/ws` is
+dropped. The terminal takes a project name and a slot number and nothing else: the
+name goes through the same validation as every project route, the slot is an
+integer, and both reach `cc` as argv, never through a shell string.
+`auth-test.js` asserts the unauthenticated upgrade is a 401, and `term-test.js` that a
+path-shaped name or an out-of-range slot is refused before anything is spawned.
+
 The editor at `/editor/` is gated by code-server's own password, enforced by
 code-server itself, so it does not depend on the proxy being right. In `oidc`
 mode that is not sufficient on its own and the editor carries a second gate —

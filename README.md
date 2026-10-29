@@ -164,6 +164,7 @@ broker, no extension. It is the same tmux session on every device you attach fro
 ```bash
 cc                      # list live sessions and projects
 cc my-project           # start, or rejoin, a permanent session
+cc my-project/slot-3    # the same, in one of its worktree slots (see the mux, below)
 cc my-project --kill    # end it
 ```
 
@@ -178,7 +179,16 @@ of the panel.
 view. Down the side: every project, each with eight **worktree slots**, and a light
 on each one — orange while it works, a blue ring when it finished and nobody was
 looking (the tab title counts those, and desktop alerts are one switch away). In the
-middle: one to eight conversations side by side.
+middle: one to eight panes side by side.
+
+A pane is either a **chat** or a **terminal**. The sidebar's **New: Chat | Terminal**
+switch decides what a **+** opens, and each pane's header has a button that switches
+it between its slot's chat and its slot's terminal. A terminal pane is the real
+Claude Code CLI — the same TUI as `claude` on a laptop — in the permanent tmux
+session `cc` keeps for that slot, so `cc my-project/slot-3` from any other terminal
+joins the very same session. Scroll with the wheel or a finger; the pane's ⇱ button
+copies a link that opens it as a full-screen terminal on a phone, with Esc, Tab and
+arrow keys along the bottom.
 
 Each slot is its own checkout — `<project>/.claude/worktrees/slot-1` … `slot-8`, on
 branches of the same names — so eight agents on one project never edit the same
@@ -188,10 +198,11 @@ clean slot. A new chat brings its slot up to date with the default branch first,
 but only if nothing in it would be lost; otherwise it starts from what is there,
 and the pane says so.
 
-Nothing on the laptop owns these conversations: each pane is the ordinary chat in a
-frame, run by the same service as the phone. Shut the laptop mid-task and the task
-finishes; open the chat list on the phone and it is there, labelled with its slot.
-Closing a pane or the tab stops nothing.
+Nothing on the laptop owns any of it. A chat pane is the ordinary chat in a frame,
+run by the same service as the phone; a terminal pane is a tmux session, run by
+the box's tmux service. Shut the laptop mid-task and the task finishes. Pick it up
+on the phone from the chat list — labelled with its slot — or, for a terminal, from
+the link or with `cc`. Closing a pane or the tab stops nothing.
 
 ## What is running on the box
 

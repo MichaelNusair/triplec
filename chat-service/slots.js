@@ -25,7 +25,7 @@
  */
 import { execFile } from 'child_process';
 import { appendFile, mkdir, readFile, readdir, readlink, stat } from 'fs/promises';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
@@ -43,6 +43,16 @@ export function parseSlot(value) {
 
 export function slotPath(projectPath, n) {
   return join(projectPath, ...WORKTREES, slotName(n));
+}
+
+/**
+ * The project and slot a directory is, or null when it is not exactly a slot of a
+ * project directly under `root`.
+ */
+export function slotOf(cwd, root) {
+  const m = /^(.+)\/\.claude\/worktrees\/slot-([1-8])$/.exec(String(cwd || ''));
+  if (!m || dirname(m[1]) !== root) return null;
+  return { projectPath: m[1], n: Number(m[2]) };
 }
 
 // Same contract as the helper in session-manager.js: report, never throw, and never

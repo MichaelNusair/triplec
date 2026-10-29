@@ -1,0 +1,55 @@
+/* A terminal page. Mostly the emulator's own drawing; this is the frame around it. */
+
+body.term-page {
+  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+  background: var(--bg);
+}
+
+.term-bar {
+  display: flex; align-items: center; gap: 10px;
+  padding: max(8px, env(safe-area-inset-top)) 12px 8px;
+  background: var(--bg-raised); border-bottom: 1px solid var(--border);
+  font-size: 14px;
+}
+.term-back { color: var(--text); text-decoration: none; font-size: 22px; line-height: 1; padding: 0 4px; }
+.term-title { flex: 1; min-width: 0; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-status { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.term-status.trouble { color: var(--error); }
+
+/* The padding is on the emulator's own element, not the host: this page is
+   border-box, so padding on the host is counted as width by the fit addon, and the
+   last column hangs off the right edge. The addon subtracts the element's own. */
+.term-host { flex: 1; min-height: 0; }
+.term-host .xterm { height: 100%; padding: 4px 4px 0 6px; }
+/* Every glyph in its own cell. Ligatures and contextual alternates let the browser
+   draw "fe" or "fi" as one shape, which in a grid shows as a gap after the f. */
+.term-host .xterm, .term-host .xterm * {
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0;
+}
+
+.term-ended {
+  position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
+  max-width: 340px; padding: 16px 18px; border-radius: 12px;
+  background: var(--bg-raised); border: 1px solid var(--border); text-align: center;
+}
+.term-ended p { margin: 0 0 12px; }
+.term-ended.hidden { display: none; }
+
+/* The keys a phone keyboard lacks — Esc to interrupt Claude, Shift-Tab to change
+   mode, arrows for its menus. Only where there is no physical keyboard to have them. */
+.term-keys {
+  display: none; gap: 6px; padding: 6px 8px calc(6px + env(safe-area-inset-bottom));
+  background: var(--bg-raised); border-top: 1px solid var(--border);
+  overflow-x: auto;
+}
+.term-keys button {
+  flex: 0 0 auto; min-width: 44px; padding: 8px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit; font-size: 14px;
+}
+@media (pointer: coarse) { .term-keys { display: flex; } }
+
+/* Inside a mux pane: the pane's header already says where this is. */
+html.embed .term-bar { display: none; }
+html.embed .term-keys { display: none; }

@@ -38,6 +38,8 @@ import {
 import { vapidPublicKey, addSubscription, removeSubscription, listSubscriptions, notifyAll, topicFor, wasGone, describeDevice, recordReceipt, lastReceipt } from './push.js';
 import { startTurnWatcher } from './turn-watcher.js';
 import { createAdmin } from './admin.js';
+import { serveTerminal, vendorFile, withTerminals } from './terminal.js';
+import { ensureSlot, slotOf } from './slots.js';
 import {
   AUTH_MODE,
   assertAuthConfig,
@@ -421,13 +423,44 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // A terminal pane: a mux pane's frame, or a whole page on a phone. The terminal
+    // itself is the socket at /ws/term — see terminal.js.
+    if (pathname === '/term' || pathname === '/term.html') {
+      await serveStatic(req, res, '/term.html');
+      return;
+    }
+
+    // The terminal emulator, served from its npm package rather than copied into
+    // this repository, so its version is the lockfile's and nothing else's. Named
+    // files only — this is not a window onto node_modules.
+    if (pathname.startsWith('/vendor/') && req.method === 'GET') {
+      const file = await vendorFile(pathname.slice('/vendor/'.length));
+      if (!file) {
+        json(res, 404, { error: 'not found' });
+        return;
+      }
+      // Revalidated like the app's own scripts — the URL carries no version, and a
+      // stale emulator against a new page is a terminal that draws wrong — but
+      // answered 304 when nothing changed: it is half a megabyte, and a mux of eight
+      // terminal panes asks for it eight times.
+      const headers = { 'Content-Type': file.type, 'Cache-Control': 'no-cache', ETag: file.etag };
+      if (req.headers['if-none-match'] === file.etag) {
+        res.writeHead(304, headers);
+        res.end();
+        return;
+      }
+      res.writeHead(200, headers);
+      res.end(file.body);
+      return;
+    }
+
     if (pathname === '/api/slots' && req.method === 'GET') {
       const name = url.searchParams.get('project');
       if (!name) {
         json(res, 400, { error: 'project is required' });
         return;
       }
-      json(res, 200, await manager.slots(name));
+      json(res, 200, await withTerminals(await manager.slots(name)));
       return;
     }
 
@@ -1145,10 +1178,15 @@ const server = http.createServer(async (req, res) => {
 // be too late: `ws` completes the handshake first, and this socket is the one
 // that can start a `claude` process.
 const wss = new WebSocketServer({ noServer: true });
+// The mux's terminal panes: a real terminal on this box, so a shell for whoever holds
+// one — behind exactly the same gate as the chat's socket, checked in the same place.
+// Under /ws so nginx's existing `location /ws` (a prefix match) already proxies it,
+// upgrade headers and all. See terminal.js.
+const termWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', async (req, socket, head) => {
-  const { pathname } = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  if (pathname !== '/ws') {
+  const { pathname, searchParams } = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (pathname !== '/ws' && pathname !== '/ws/term') {
     socket.destroy();
     return;
   }
@@ -1164,6 +1202,23 @@ server.on('upgrade', async (req, socket, head) => {
     // yet to send a close frame over.
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     socket.destroy();
+    return;
+  }
+
+  if (pathname === '/ws/term') {
+    termWss.handleUpgrade(req, socket, head, (ws) => {
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
+      serveTerminal(ws, searchParams).catch((err) => {
+        console.error('terminal failed:', err.message);
+        try {
+          ws.send(JSON.stringify({ type: 'error', message: err.message }));
+          ws.close();
+        } catch {
+          /* already gone */
+        }
+      });
+    });
     return;
   }
 
@@ -1210,6 +1265,19 @@ wss.on('connection', (ws) => {
     try {
       switch (msg.type) {
         case 'start': {
+          // A mux pane restored from a laptop's saved layout can name a slot that
+          // has not been made yet, or was removed since. Made here, as a terminal's
+          // is, rather than failing as `spawn claude ENOENT` — which is how a
+          // missing working directory reads, and says nothing about the cause.
+          const slot = slotOf(msg.cwd, PROJECTS_ROOT);
+          if (slot && !(await stat(join(msg.cwd, '.git')).catch(() => null))) {
+            const made = await ensureSlot(slot.projectPath, slot.n);
+            if (!made.ok) {
+              send({ type: 'error', message: `could not make that slot: ${made.error}`, fatal: true });
+              return;
+            }
+          }
+
           // Is this session already running? If so we are joining it, not
           // restarting it, and the transcript alone would miss the turn in
           // flight — so replay the live tail on top of it.
@@ -1317,7 +1385,9 @@ wss.on('connection', (ws) => {
 // Drop sockets that stop responding to pings, so a phone that went to sleep on
 // a cell network doesn't leave a half-open connection behind.
 const heartbeat = setInterval(() => {
-  for (const ws of wss.clients) {
+  // A dead terminal socket matters more than a dead chat one: its relay holds a tmux
+  // client attached, and an attached client is what sizes the window.
+  for (const ws of [...wss.clients, ...termWss.clients]) {
     if (ws.isAlive === false) {
       ws.terminate();
       continue;

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#141413">
+<meta name="color-scheme" content="dark">
+<meta name="deployment" content="">
+<meta name="build" content="">
+<title>Terminal · TripleC</title>
+<link rel="icon" href="/chat/pwa-icons/icon-192.png">
+<link rel="stylesheet" href="/chat/vendor/xterm.css">
+<link rel="stylesheet" href="/chat/style.css">
+<link rel="stylesheet" href="/chat/term.css">
+</head>
+<body class="term-page">
+
+<!--
+  A terminal on this box: the real Claude Code CLI, in the tmux session `cc` would
+  open for this project or slot. Inside a mux pane (`?embed=1`) it is the whole
+  frame; on its own — the link a mux pane hands to a phone — it has a bar with
+  where it is and a row of the keys a phone keyboard does not have. See term.js.
+-->
+<header class="term-bar">
+  <a class="term-back" href="/chat/" aria-label="Back to the chats">‹</a>
+  <span id="term-title" class="term-title">Terminal</span>
+  <span id="term-status" class="term-status">connecting…</span>
+</header>
+
+<div id="term" class="term-host"></div>
+
+<div id="term-ended" class="term-ended hidden" role="status">
+  <p id="term-ended-text">This terminal's session has ended.</p>
+  <button type="button" id="term-restart" class="wide">Start Claude here again</button>
+</div>
+
+<nav id="term-keys" class="term-keys" aria-label="Keys a phone keyboard does not have">
+  <button type="button" data-key="esc">Esc</button>
+  <button type="button" data-key="tab">Tab</button>
+  <button type="button" data-key="stab">⇧Tab</button>
+  <button type="button" data-key="up">↑</button>
+  <button type="button" data-key="down">↓</button>
+  <button type="button" data-key="left">←</button>
+  <button type="button" data-key="right">→</button>
+  <button type="button" data-key="ctrlc">^C</button>
+</nav>
+
+<script src="/chat/vendor/xterm.js"></script>
+<script src="/chat/vendor/addon-fit.js"></script>
+<script src="/chat/term.js"></script>
+</body>
+</html>

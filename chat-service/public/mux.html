@@ -36,6 +36,15 @@
     <button type="button" data-layout="8" title="Four by two">8</button>
   </div>
 
+  <!-- What a + opens. A chat is the phone's chat app in a pane; a terminal is the
+       real Claude Code CLI, in the tmux session `cc` keeps for that slot. Each
+       pane's header switches between the two for its own slot. -->
+  <div class="mux-kinds" role="group" aria-label="New panes open as">
+    <span class="mux-kinds-label">New</span>
+    <button type="button" data-kind="chat" title="New panes open the chat">Chat</button>
+    <button type="button" data-kind="terminal" title="New panes open Claude Code in a terminal">Terminal</button>
+  </div>
+
   <input id="mux-filter" class="mux-filter" type="search" placeholder="Filter projects" autocomplete="off">
   <div id="mux-projects" class="mux-projects">
     <div class="mux-empty">Loading…</div>

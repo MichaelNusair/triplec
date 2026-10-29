@@ -11,6 +11,8 @@
     "@aws-sdk/client-bedrock-runtime": "^3.1132.0",
     "@aws-sdk/client-polly": "^3.1135.0",
     "@aws-sdk/client-secrets-manager": "^3.700.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {

@@ -496,7 +496,15 @@ console.log('\nTreats a tmux session as unrecoverable, because it is:');
   check('nothing was killed by any of that', s.killedSessions.length === 0, s.killedSessions.join(','));
 
   await a.kill({ kind: 'tmux', target: 'claude-demo', force: true });
-  check('force ends it', s.killedSessions.join(',') === 'claude-demo', s.killedSessions.join(','));
+  // `=`, so the name is matched exactly: a bare one is a prefix match in tmux, and
+  // with `claude-demo` already gone it would have ended `claude-demo/slot-3`.
+  check('force ends it, by its exact name', s.killedSessions.join(',') === '=claude-demo', s.killedSessions.join(','));
+
+  // A worktree slot's terminal, as `cc` and the mux name it.
+  await a.kill({ kind: 'tmux', target: 'claude-demo/slot-3', force: true });
+  check('a slot\'s session can be ended too', s.killedSessions.at(-1) === '=claude-demo/slot-3', s.killedSessions.join(','));
+  check('but not a name with two slashes',
+    (await refusal(a.kill({ kind: 'tmux', target: 'claude-demo/slot-3/x', force: true })))?.message.includes('not a session name'));
 
   check('an unknown kind is refused', Boolean(await refusal(a.kill({ kind: 'everything', target: '*', force: true }))));
 }

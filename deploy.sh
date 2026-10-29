@@ -421,6 +421,14 @@ step "Checking what a device is told, and what makes a phone buzz"
   cd chat-service
   node mux-test.js
 ) || { echo "mux and slot tests failed — not deploying." >&2; exit 1; }
+# The mux's terminal panes: a pty on this box behind a socket, so a shell. Gated here
+# is that `cc` opens exactly the session it names (a bare tmux target is a prefix
+# match), that the socket refuses without a session or a tmux server to own what it
+# starts, and the relay's sizes, hang-up and exit status on a real pty.
+(
+  cd chat-service
+  node term-test.js
+) || { echo "terminal tests failed — not deploying." >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 step "Checking the Claude broker"

@@ -290,8 +290,10 @@ session's confusion about whose work it is.
 ## Except a slot: `.claude/worktrees/slot-1` … `slot-8`
 
 Every project TripleC clones or creates has eight standing worktrees, one per
-conversation in TripleC's desktop view (`/chat/mux`), each on a branch of the same
-name. If your working directory is one of them, you are already isolated:
+pane in TripleC's desktop view (`/chat/mux`), each on a branch of the same name. A
+slot's agent is either a chat or the CLI in a terminal — the tmux session that
+`cc <project>/slot-N` opens. If your working directory is one of them, you are
+already isolated:
 
 - **Do not enter another worktree** and do not give yourself one. Work where you are.
 - **Never remove a slot** — not your own when you finish, and not one you find

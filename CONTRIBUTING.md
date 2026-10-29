@@ -31,13 +31,17 @@ Concretely:
 ## Running the checks
 
 ```bash
-npm test                                  # auth + client
+npm test                                  # every suite deploy.sh gates on
 cd infra && npx cdk synth --quiet         # stack compiles
-bash -n deploy.sh migrate.sh infra/userdata/bootstrap.sh
+bash -n deploy.sh migrate.sh scripts/cc-session.sh infra/userdata/bootstrap.sh
 ```
 
 `npm run test:auth` boots the real server and speaks HTTP and WebSocket to it. It
-should report 36/36 or better — never fewer checks than it did before your change.
+should report 112/112 or better — never fewer checks than it did before your change.
+The suites need `git`, `bash` and `python3`, and nothing else from the machine: the
+terminal tests fake `tmux` and `cc`, and the auth tests start their servers from an
+environment scrubbed of the deployment's own credentials, so running them from
+inside a chat session on the box gives the same answer as on a laptop.
 
 There is no staging environment and `nginx -t` can't run locally unless you have
 nginx installed. So in your PR, say what you actually verified. "Synthesizes and

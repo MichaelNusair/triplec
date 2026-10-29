@@ -39,6 +39,20 @@ function check(name, condition, detail = '') {
   }
 }
 
+/*
+ * The deployment's own auth settings, which a test server must never inherit.
+ *
+ * A Claude session started from the chat runs inside claude-chat.service, whose
+ * environment carries /etc/claude-auth.env — the live password, the cookie key,
+ * `CW_AUTH_MODE=oidc` and the real allowlist. Inherited, every "password mode"
+ * server here booted in oidc mode and a dozen checks failed for no reason in the
+ * code; worse, the "no allowlist → refuses to start" case would have been handed the
+ * real allowlist and passed or failed by accident. Each case says exactly what it
+ * configures, and nothing else gets in.
+ */
+const AUTH_ENV = /^(AUTH_PASSWORD|SESSION_SECRET|CW_AUTH_MODE|CW_OIDC_.*)$/;
+const ambient = Object.fromEntries(Object.entries(process.env).filter(([name]) => !AUTH_ENV.test(name)));
+
 /** Boot the real server as a child process, with auth configured. */
 async function startServer(env) {
   nextPort += 1;
@@ -48,7 +62,7 @@ async function startServer(env) {
   const child = spawn(process.execPath, ['server.js'], {
     cwd: import.meta.dirname,
     env: {
-      ...process.env,
+      ...ambient,
       PORT: String(PORT),
       // Cookies would otherwise be Secure-only and never sent over plain HTTP.
       CW_INSECURE_COOKIES: '1',
@@ -230,6 +244,11 @@ const guarded = [
   ['GET', '/mux'],
   ['GET', '/mux.html'],
   ['GET', '/mux.js'],
+  // The terminal page and the emulator it loads. Nothing secret in either, but the
+  // allowlist is what this file keeps short, and the only caller is a signed-in page.
+  ['GET', '/term'],
+  ['GET', '/term.js'],
+  ['GET', '/vendor/xterm.js'],
   ['GET', '/api/slots?project=x'],
   ['POST', '/api/slots/prepare'],
   // Which build is running. Not a secret worth widening the allowlist for — it
@@ -266,6 +285,14 @@ console.log('\nWebSocket upgrade requires a session:');
   // Specifically a 401: the socket must be refused at the handshake, before any
   // frame can ask for a `claude` process.
   check('unauthenticated /ws → rejected with 401', outcome.includes('401'), `got ${outcome}`);
+
+  // The mux's terminal: a pty on this box, which is a shell for whoever holds it.
+  // Refused at the same handshake, before a relay or a `cc` is ever started.
+  const term = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/term?project=demo&slot=1`);
+  check('unauthenticated /ws/term → rejected with 401', term.includes('401'), `got ${term}`);
+  // And anything else under /ws is not a socket at all.
+  const other = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/anything`);
+  check('an unknown socket path is dropped', !other.includes('opened'), `got ${other}`);
 }
 
 console.log('\nLogin:');

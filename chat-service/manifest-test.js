@@ -39,6 +39,10 @@ fs.mkdirSync(path.join(PROJECTS, 'other'), { recursive: true });
 
 // Read at import time by session-manager.js, which manifest.js validates through.
 process.env.PROJECTS_ROOT = PROJECTS;
+// Every case starts unnamed, and the ones about a deployment's name set one. A
+// session started from the chat runs inside claude-chat.service and inherits its
+// PWA_NAME, which otherwise renames every project's icon before the first check.
+delete process.env.PWA_NAME;
 
 const {
   projectManifest,
