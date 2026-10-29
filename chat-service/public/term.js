@@ -18,6 +18,9 @@
   const project = params.get('project') || '';
   const slot = Number(params.get('slot')) || 0;
   const place = slot ? `${project} · slot ${slot}` : project;
+  // A finger rather than a mouse: the keys, the compose line and tap-to-choose are
+  // for this, and nothing here changes for a desktop.
+  const COARSE = window.matchMedia('(pointer: coarse)').matches;
   if (EMBED) document.documentElement.classList.add('embed');
   document.title = `${place} · Terminal`;
   $('#term-title').textContent = place || 'Terminal';
@@ -36,7 +39,7 @@
   const term = new window.Terminal({
     cursorBlink: true,
     fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace',
-    fontSize: matchMedia('(pointer: coarse)').matches ? 12 : 13,
+    fontSize: COARSE ? 12 : 13,
     // tmux draws on the alternate screen, so the history is tmux's and scrolling is
     // asked of it — see onWheel. A scrollback here would only ever be empty.
     scrollback: 0,
@@ -191,35 +194,127 @@
     send({ type: 'scroll', lines });
   }, { capture: true, passive: false });
 
-  // And so does a finger, on a phone.
+  // And so does a finger, on a phone. A tap that does not move is a tap: on one
+  // of the numbered choices Claude Code draws, it chooses it — see chooseAt.
   let touchY = null;
-  $('#term').addEventListener('touchstart', (e) => { touchY = e.touches[0]?.clientY ?? null; }, { passive: true });
+  let touchStart = null;
+  $('#term').addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    touchY = t?.clientY ?? null;
+    touchStart = t && e.touches.length === 1 ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
+  }, { passive: true });
   $('#term').addEventListener('touchmove', (e) => {
     if (touchY === null || state.status !== 'attached') return;
     const y = e.touches[0].clientY;
+    if (touchStart && Math.hypot(e.touches[0].clientX - touchStart.x, y - touchStart.y) > 10) touchStart = null;
     const lines = Math.trunc((touchY - y) / 18);
     if (!lines) return;
     touchY = y;
     send({ type: 'scroll', lines });
   }, { passive: true });
+  $('#term').addEventListener('touchend', (e) => {
+    const start = touchStart;
+    touchStart = null;
+    if (!start || Date.now() - start.at > 600 || state.status !== 'attached') return;
+    const choice = choiceAt(start.y);
+    if (!choice) return;
+    // Not a tap on the terminal as well: that would open the keyboard over the menu.
+    e.preventDefault();
+    send({ type: 'input', data: choice });
+    flash(start.y);
+  }, { passive: false });
+
+  /*
+   * The choice under a finger, if it is on one.
+   *
+   * Claude Code's menus — the permission prompt, /model, the plan approval — are
+   * numbered lines with a ❯ on the selected one, and a number key picks that line.
+   * They look like buttons and are not, because a terminal has no buttons. So a tap
+   * on a numbered line is read as its number, but only when a ❯ marks a numbered
+   * line of the same menu: a numbered list in Claude's prose is not a menu, and a
+   * tap there typing a digit into the prompt would be a surprise.
+   */
+  const OPTION = /^[\s│┃|]*(?:[❯›>▶]\s*)?(\d{1,2})[.)]\s+\S/;
+  const SELECTED = /^[\s│┃|]*[❯›▶]\s*\d{1,2}[.)]\s+\S/;
+  function choiceAt(clientY) {
+    const buffer = term.buffer?.active;
+    const screen = term.element?.querySelector('.xterm-screen');
+    if (!buffer || !screen || !term.rows) return null;
+    const rect = screen.getBoundingClientRect();
+    if (!rect.height || clientY < rect.top || clientY >= rect.bottom) return null;
+    const row = Math.floor((clientY - rect.top) / (rect.height / term.rows));
+    const text = (r) => buffer.getLine(buffer.viewportY + r)?.translateToString(true) || '';
+    const match = OPTION.exec(text(row));
+    if (!match) return null;
+    // The same menu: the selected line's number is in the same column, and no blank
+    // line comes between them.
+    const column = (line) => line.search(/\d/);
+    const at = column(text(row));
+    for (const step of [-1, 1]) {
+      for (let r = row; r >= 0 && r < term.rows && Math.abs(r - row) <= 12; r += step) {
+        const line = text(r);
+        if (!line.trim()) break;
+        if (SELECTED.test(line) && column(line) === at) return match[1];
+      }
+    }
+    return null;
+  }
+
+  // A tapped choice is acknowledged where the finger was, before the redraw lands.
+  function flash(clientY) {
+    const screen = term.element?.querySelector('.xterm-screen');
+    if (!screen) return;
+    const rect = screen.getBoundingClientRect();
+    const h = rect.height / term.rows;
+    const mark = document.createElement('div');
+    mark.className = 'term-tap';
+    mark.style.top = `${rect.top + Math.floor((clientY - rect.top) / h) * h}px`;
+    mark.style.height = `${h}px`;
+    document.body.appendChild(mark);
+    setTimeout(() => mark.remove(), 350);
+  }
 
   const KEYS = {
     esc: '\x1b', tab: '\t', stab: '\x1b[Z', up: '\x1b[A', down: '\x1b[B', left: '\x1b[D', right: '\x1b[C', ctrlc: '\x03',
+    enter: '\r', bksp: '\x7f', d1: '1', d2: '2', d3: '3',
   };
   for (const button of document.querySelectorAll('#term-keys [data-key]')) {
-    // pointerdown + preventDefault, so tapping a key does not take the focus away
-    // from the terminal and close the phone's keyboard.
+    // pointerdown + preventDefault, so tapping a key leaves the focus where it was:
+    // the phone's keyboard stays open if it was, and is not opened if it was not.
     button.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       send({ type: 'input', data: KEYS[button.dataset.key] });
-      term.focus();
     });
+  }
+
+  // The compose line: typed as text, with the phone's autocorrect and dictation,
+  // then Enter. Sent apart, because the CLI takes a burst ending in a return as a
+  // paste and puts a newline in its prompt instead of submitting it. Empty, it is
+  // just Enter.
+  $('#term-compose').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const line = $('#term-line');
+    const text = line.value;
+    line.value = '';
+    if (text) send({ type: 'input', data: text });
+    setTimeout(() => send({ type: 'input', data: '\r' }), text ? 80 : 0);
+  });
+
+  // iOS keeps the layout viewport when its keyboard opens, so the keys and the
+  // compose line would sit under it. The visible part is what the page fits to.
+  if (COARSE && !EMBED && window.visualViewport) {
+    const fitView = () => {
+      document.documentElement.style.setProperty('--term-vh', `${window.visualViewport.height}px`);
+      window.scrollTo(0, 0);
+    };
+    window.visualViewport.addEventListener('resize', fitView);
+    fitView();
   }
 
   $('#term-restart').addEventListener('click', () => {
     term.reset();
     connect();
-    term.focus();
+    if (!COARSE) term.focus();
   });
 
   // --- inside the mux --------------------------------------------------------
@@ -247,9 +342,10 @@
     setStatus('error', 'no project');
   } else {
     connect();
-    term.focus();
+    // Not on a phone: the keyboard would open over the screen before it is drawn.
+    if (!COARSE) term.focus();
   }
 
   // For term-test.js and mux-test.js, which drive this in jsdom.
-  window.__termForTest = { state, term, connect, send };
+  window.__termForTest = { state, term, connect, send, choiceAt };
 })();

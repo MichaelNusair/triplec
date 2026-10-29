@@ -923,7 +923,23 @@ deliberate restart, chosen at a moment when losing the running work is acceptabl
 `/chat/mux` is the laptop's view: every project down the side with its eight
 worktree slots, a light on each (orange working, blue ring finished while nobody
 looked, amber another surface has a process there), and one to eight panes side by
-side. Linked from the chat list's tab bar on a wide window with a mouse.
+side. Linked from the chat list's tab bar.
+
+**On a phone** (≤760px, the width app.js calls narrow) it is one pane at a time:
+mux.css hides every pane but the focused one, the sidebar becomes a drawer behind ☰,
+and `renderTabs` puts a tab per pane in a bar on top. Which panes exist is still the
+layout's, and the layout is per device (localStorage), so a phone's never touches a
+laptop's. Opening something there does not hand the frame the keyboard. Nothing in
+that is a desktop rule: the desktop styles are untouched, and a touch screen only
+adds `@media (hover: none)`, which shows the slot rows' hover-only `+`.
+
+**On a touch screen the terminal page** (embedded or not) has the keys a phone lacks,
+a compose line that types its text and then, separately, Enter (sent together the
+CLI reads a paste and puts a newline in its prompt), and **tap-to-choose**:
+`choiceAt` reads the tapped row from xterm's buffer and, if it is a numbered option
+in the same menu as a `❯`-marked one, sends its digit. A numbered list in prose is
+not a menu, so a tap there types nothing. It never calls `term.focus()` by itself,
+which on a phone would open the keyboard over the screen.
 
 A pane is a **chat** or a **terminal** — the sidebar's "New" switch picks what a `+`
 opens, and each pane's header switches its own slot between the two. Both kinds are

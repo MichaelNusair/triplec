@@ -2,7 +2,7 @@
 
 body.term-page {
   display: flex; flex-direction: column;
-  height: 100vh; height: 100dvh;
+  height: 100vh; height: 100dvh; height: var(--term-vh, 100dvh);
   background: var(--bg);
 }
 
@@ -48,8 +48,39 @@ body.term-page {
   flex: 0 0 auto; min-width: 44px; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit; font-size: 14px;
 }
-@media (pointer: coarse) { .term-keys { display: flex; } }
+.term-keys { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.term-keys::-webkit-scrollbar { display: none; }
 
-/* Inside a mux pane: the pane's header already says where this is. */
+.term-compose {
+  display: none; gap: 6px; padding: 6px 8px 0;
+  background: var(--bg-raised); border-top: 1px solid var(--border);
+}
+.term-compose input {
+  flex: 1; min-width: 0; padding: 9px 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text);
+  font: inherit; font-size: 16px; /* 16px, or iOS zooms in on focus */
+}
+.term-compose button {
+  flex: 0 0 auto; min-width: 48px; border-radius: 10px; border: 1px solid var(--accent-dim);
+  background: var(--accent); color: #141413; font: inherit; font-size: 18px; font-weight: 600;
+}
+/* The compose line sits on top of the keys, so the keys lose their own top border. */
+.term-compose + .term-keys { border-top: 0; }
+
+@media (pointer: coarse) {
+  .term-keys, .term-compose { display: flex; }
+}
+
+/* Inside a mux pane: the pane's header already says where this is. The keys stay
+   for a finger — a mux on a phone has no more of an Esc key than this page does. */
 html.embed .term-bar { display: none; }
-html.embed .term-keys { display: none; }
+html.embed .term-keys, html.embed .term-compose { display: none; }
+@media (pointer: coarse) {
+  html.embed .term-keys, html.embed .term-compose { display: flex; }
+  html.embed .term-keys { padding-bottom: 6px; }
+}
+
+.term-tap {
+  position: fixed; left: 0; right: 0; pointer-events: none;
+  background: rgba(217, 119, 87, .3);
+}

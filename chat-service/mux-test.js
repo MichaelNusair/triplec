@@ -319,6 +319,54 @@ console.log('mux page');
   w.close();
 }
 
+console.log('mux, on a phone');
+{
+  const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'mux.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/mux' });
+  const w = dom.window;
+  const path = '/workspace/projects/demo';
+  const cwd = (n) => `${path}/.claude/worktrees/slot-${n}`;
+  w.fetch = (url) => {
+    const reply = (body) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    if (String(url).startsWith('/api/projects')) return reply({ projects: [{ name: 'demo', path, sessions: [] }] });
+    if (String(url).startsWith('/api/slots/prepare')) return reply({ ok: true, cwd: cwd(5), base: 'main', fetched: true, refreshed: true });
+    if (String(url).startsWith('/api/slots')) {
+      return reply({ name: 'demo', path, enabled: true, slots: Array.from({ length: 8 }, (_, i) => ({
+        n: i + 1, cwd: cwd(i + 1), created: true, branch: `slot-${i + 1}`, dirty: 0, unpushed: 0, sessions: [], busy: false, held: false, elsewhere: 0,
+      })) });
+    }
+    return reply({ sessions: [] });
+  };
+  w.matchMedia = (q) => ({ matches: /max-width/.test(q), addEventListener() {} });
+  w.Notification = undefined;
+  w.localStorage.setItem('triplec-mux', JSON.stringify({ layout: 2, expanded: ['demo'] }));
+  const errors = [];
+  w.addEventListener('error', (e) => errors.push(e.message));
+  w.eval(js);
+  await new Promise((r) => setTimeout(r, 100));
+  const mux = w.__muxForTest;
+  const doc = w.document;
+
+  check('the mux boots on a phone', errors.length === 0, errors.join('; '));
+  check('with nothing open, it opens on the drawer', doc.body.classList.contains('side-open'));
+  check('a tab per pane', doc.querySelectorAll('#mux-tabs .mux-tab').length === 2);
+  doc.querySelector(`.mux-slot[data-cwd="${cwd(5)}"] .mux-slot-main`).click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('picking a slot closes the drawer and opens it in the pane', !doc.body.classList.contains('side-open')
+    && mux.state.panes[0].cwd === cwd(5));
+  check("the pane's tab says where it is", /demo · slot 5/.test(doc.querySelectorAll('.mux-tab')[0].textContent));
+  doc.querySelectorAll('.mux-tab')[1].click();
+  check('a tab focuses its pane, which is the one on screen', mux.state.focus === 1
+    && mux.state.panes[1].el.classList.contains('focused') && !mux.state.panes[0].el.classList.contains('focused'));
+  check("…and the empty one offers the drawer", Boolean(mux.state.panes[1].el.querySelector('.mux-placeholder-open')));
+  mux.state.panes[1].el.querySelector('.mux-placeholder-open').click();
+  check('which opens it', doc.body.classList.contains('side-open'));
+  doc.querySelector('#mux-scrim').click();
+  check('and a tap beside it closes it', !doc.body.classList.contains('side-open'));
+  w.close();
+}
+
 console.log('chat, embedded');
 {
   const html = readFileSync(join(here, 'public', 'index.html'), 'utf8');

@@ -150,3 +150,93 @@ body.mux {
    because it is the one control here whose meaning is not obvious from a glyph. */
 .mux-pane-btn.mux-pane-kind { width: auto; padding: 0 8px; font-size: 11.5px; }
 .mux-pane[data-kind="terminal"] .mux-pane-body { background: #141413; }
+
+/* --- a phone ---
+   Not a smaller desktop: one pane at a time, full screen, with the sidebar as a
+   drawer over it and a tab per pane in a bar on top. Which panes exist is still the
+   layout's to say, so the layout buttons decide how many tabs there are. Panes off
+   screen keep their frames, so switching tabs costs no reload. */
+.mux-mobilebar, .mux-scrim { display: none; }
+
+@media (max-width: 760px) {
+  body.mux {
+    display: flex; flex-direction: column;
+    height: 100vh; height: 100dvh;
+    font-size: 15px;
+  }
+
+  .mux-mobilebar {
+    display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+    padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left));
+    background: var(--bg-raised); border-bottom: 1px solid var(--border);
+  }
+  .mux-menu {
+    flex: 0 0 auto; width: 44px; height: 40px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg-input); color: var(--text); font: inherit; font-size: 18px; cursor: pointer;
+  }
+  .mux-tabs {
+    flex: 1; min-width: 0; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .mux-tabs::-webkit-scrollbar { display: none; }
+  .mux-tab {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 6px; max-width: 46vw; height: 40px;
+    padding: 0 12px; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--bg-input); color: var(--text-dim); font: inherit; font-size: 13px; cursor: pointer;
+  }
+  .mux-tab .mux-dot { margin-top: 0; }
+  .mux-tab-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mux-tab.active { color: var(--text); border-color: var(--accent); background: var(--bg); }
+  .mux-tab.attention { border-color: var(--mux-attention); }
+
+  /* The drawer. */
+  .mux-side {
+    position: fixed; z-index: 40; top: 0; bottom: 0; left: 0;
+    width: min(88vw, 340px);
+    padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom);
+    transform: translateX(-102%); transition: transform .2s ease;
+    box-shadow: 0 0 24px rgba(0, 0, 0, .5);
+  }
+  body.mux.side-open .mux-side { transform: none; }
+  .mux-scrim { position: fixed; inset: 0; z-index: 39; background: rgba(0, 0, 0, .5); }
+  body.mux.side-open .mux-scrim { display: block; }
+  @media (prefers-reduced-motion: reduce) { .mux-side { transition: none; } }
+
+  /* One pane, the focused one. The inline grid template is the desktop layout's. */
+  .mux-grid {
+    flex: 1; display: flex !important; padding: 0; gap: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .mux-pane { flex: 1; border: 0; border-radius: 0; }
+  .mux-pane:not(.focused) { display: none; }
+  .mux-pane.attention { box-shadow: none; }
+
+  /* The tab already says which pane and which project; the header keeps the slot,
+     the title and the controls, at a size a thumb can hit. */
+  .mux-pane-head { gap: 4px; padding: 4px 4px 4px 10px; font-size: 13px; }
+  .mux-pane-sub { display: none; }
+  .mux-pane-btn { width: 40px; height: 36px; font-size: 15px; }
+  .mux-pane-btn.mux-pane-kind { padding: 0 10px; font-size: 12.5px; }
+
+  .mux-layouts button, .mux-kinds button { padding: 9px 0; font-size: 13px; }
+  .mux-filter { padding: 10px; font-size: 16px; } /* 16px, or iOS zooms in on focus */
+  .mux-project-name { padding: 11px 4px; }
+  .mux-add { width: 40px; height: 40px; font-size: 20px; }
+  .mux-slot-main { padding: 9px 6px 9px 26px; }
+  .mux-slot-title { font-size: 14px; }
+  .mux-foot-btn { padding: 10px; font-size: 14px; }
+  .mux-link { padding: 6px 2px; font-size: 14px; }
+}
+
+/* No hover on a touch screen, so a control that only appears on hover never would. */
+@media (hover: none) {
+  .mux-add.small { opacity: 1; }
+}
+@media (hover: none) and (max-width: 760px) {
+  .mux-add.small { width: 40px; height: 40px; font-size: 18px; }
+}
+.mux-placeholder-open { display: none; margin-top: 14px; }
+@media (max-width: 760px) {
+  .mux-placeholder-open { display: block; }
+  .mux-pane-label { display: none; }
+}

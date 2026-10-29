@@ -2265,8 +2265,10 @@ input.addEventListener('keydown', (e) => {
   // Enter sends on desktop; Shift+Enter makes a newline. On phones the
   // on-screen keyboard's return key inserts a newline as usual.
   // A mux pane is a desktop window however narrow its frame is, and its width is
-  // the frame's, not the screen's.
-  const desktop = EMBED || window.matchMedia('(min-width: 760px)').matches;
+  // the frame's, not the screen's — unless the mux is on a phone, whose return key
+  // makes a newline here as everywhere else in the app.
+  const desktop = (EMBED && !window.matchMedia('(pointer: coarse)').matches)
+    || window.matchMedia('(min-width: 760px)').matches;
   if (e.key === 'Enter' && !e.shiftKey && desktop) {
     e.preventDefault();
     sendMessage();

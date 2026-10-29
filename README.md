@@ -180,7 +180,7 @@ of the panel.
 
 ## Several agents at once, on a big screen: the mux
 
-`/chat/mux` (the **Mux** tab in the chat list, on a laptop) is a cmux-style desktop
+`/chat/mux` (the **Mux** tab in the chat list) is a cmux-style desktop
 view. Down the side: every project, each with eight **worktree slots**, and a light
 on each one — orange while it works, a blue ring when it finished and nobody was
 looking (the tab title counts those, and desktop alerts are one switch away). In the
@@ -208,6 +208,12 @@ run by the same service as the phone; a terminal pane is a tmux session, run by
 the box's tmux service. Shut the laptop mid-task and the task finishes. Pick it up
 on the phone from the chat list — labelled with its slot — or, for a terminal, from
 the link or with `cc`. Closing a pane or the tab stops nothing.
+
+On a phone the mux is one pane at a time: the projects and slots are a drawer behind
+☰, and a tab per pane runs along the top. In a terminal, tap one of Claude Code's
+numbered choices ("1. Yes", "2. No") to pick it; the bar along the bottom has Esc,
+Enter, the arrows, 1–3 and Shift-Tab, and a line of ordinary text input — with the
+phone's autocorrect and dictation — that is typed into the terminal and then Enter.
 
 ## What is running on the box
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
 <meta name="color-scheme" content="dark">
 <meta name="deployment" content="">
 <meta name="build" content="">
@@ -12,6 +12,16 @@
 <link rel="stylesheet" href="/chat/mux.css">
 </head>
 <body class="mux">
+
+<!--
+  On a phone there is room for one pane, so the sidebar is a drawer and this bar
+  is what stays: the way to the drawer, and a tab per pane. Hidden on a desktop.
+-->
+<header class="mux-mobilebar">
+  <button type="button" id="mux-menu" class="mux-menu" aria-label="Projects and slots" aria-controls="mux-side" aria-expanded="false">☰</button>
+  <nav id="mux-tabs" class="mux-tabs" aria-label="Panes"></nav>
+</header>
+<div id="mux-scrim" class="mux-scrim"></div>
 
 <!--
   The desktop surface: every project's worktree slots down the side, and the

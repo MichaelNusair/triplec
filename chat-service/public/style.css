@@ -734,12 +734,8 @@ html.embed #conv-bar { display: none !important; }
 html.embed .bar { padding: 6px 10px; }
 html.embed .bar .icon-btn { width: 32px; height: 32px; }
 
-/* The way into the mux, from the list. Only where it can be used: a desktop
-   window, which a phone never is. */
-.tab-mux { display: none; }
-@media (min-width: 1100px) and (pointer: fine) {
-  .tab-mux { display: block; }
-}
+/* The way into the mux, from the list. On a phone the mux shows one pane at a
+   time with the slots in a drawer — see mux.css. */
 
 /* --- what this install does not have --------------------------------------
  * A class on <html> per feature the server says is off (initFeatures in app.js),

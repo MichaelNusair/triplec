@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content">
 <meta name="theme-color" content="#141413">
 <meta name="color-scheme" content="dark">
 <meta name="deployment" content="">
@@ -34,15 +34,29 @@
   <button type="button" id="term-restart" class="wide">Start Claude here again</button>
 </div>
 
+<!-- Only where there is no physical keyboard. A phone's own keyboard has no Esc,
+     Tab or arrows, and typing into a terminal gets none of its autocorrect or
+     dictation, so there is a line of plain text input as well: what is typed there
+     goes to Claude as if typed into the terminal, then Enter. -->
+<form id="term-compose" class="term-compose" autocomplete="off">
+  <input id="term-line" type="text" enterkeyhint="send" autocapitalize="sentences"
+         placeholder="Type to Claude…" aria-label="Type to the terminal">
+  <button type="submit" aria-label="Send, then Enter">⏎</button>
+</form>
 <nav id="term-keys" class="term-keys" aria-label="Keys a phone keyboard does not have">
   <button type="button" data-key="esc">Esc</button>
+  <button type="button" data-key="enter" aria-label="Enter">⏎</button>
+  <button type="button" data-key="up" aria-label="Up">↑</button>
+  <button type="button" data-key="down" aria-label="Down">↓</button>
+  <button type="button" data-key="d1">1</button>
+  <button type="button" data-key="d2">2</button>
+  <button type="button" data-key="d3">3</button>
+  <button type="button" data-key="stab" aria-label="Shift-Tab">⇧Tab</button>
   <button type="button" data-key="tab">Tab</button>
-  <button type="button" data-key="stab">⇧Tab</button>
-  <button type="button" data-key="up">↑</button>
-  <button type="button" data-key="down">↓</button>
-  <button type="button" data-key="left">←</button>
-  <button type="button" data-key="right">→</button>
-  <button type="button" data-key="ctrlc">^C</button>
+  <button type="button" data-key="left" aria-label="Left">←</button>
+  <button type="button" data-key="right" aria-label="Right">→</button>
+  <button type="button" data-key="bksp" aria-label="Backspace">⌫</button>
+  <button type="button" data-key="ctrlc" aria-label="Control-C">^C</button>
 </nav>
 
 <script src="/chat/vendor/xterm.js"></script>

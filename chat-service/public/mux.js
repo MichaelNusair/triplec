@@ -36,6 +36,10 @@
   const LIVE_POLL_MS = 5000;
   const SLOTS_POLL_MS = 15000;
   const PROJECTS_POLL_MS = 60000;
+  // A phone: one pane on screen, the sidebar a drawer. The same width app.js calls
+  // narrow, and the one mux.css switches at.
+  const PHONE = window.matchMedia?.('(max-width: 760px)') || { matches: false };
+  const phone = () => PHONE.matches;
 
   const state = {
     projects: [],              // /api/projects
@@ -354,7 +358,10 @@
       add.title = `New ${kindLabel(state.newKind)} in a free slot of ${project.name}`;
       add.setAttribute('aria-label', add.title);
       add.textContent = '+';
-      add.addEventListener('click', () => newInFreeSlot(project.name));
+      add.addEventListener('click', () => {
+        closeSide();
+        newInFreeSlot(project.name);
+      });
       head.append(toggle, add);
       group.appendChild(head);
 
@@ -411,6 +418,7 @@
     $('.mux-slot-title', main).textContent = title;
     $('.mux-slot-facts', main).textContent = facts.join(' · ');
     main.addEventListener('click', () => {
+      closeSide();
       if (onScreen >= 0) {
         focusPane(onScreen);
         return;
@@ -426,7 +434,10 @@
     fresh.title = `New ${kindLabel(state.newKind)} in ${slotLabel(place.n)}`;
     fresh.setAttribute('aria-label', fresh.title);
     fresh.textContent = '+';
-    fresh.addEventListener('click', () => startIn(state.focus, project.name, place));
+    fresh.addEventListener('click', () => {
+      closeSide();
+      startIn(state.focus, project.name, place);
+    });
 
     row.append(main, fresh);
     return row;
@@ -532,7 +543,9 @@
     }
     save();
     renderGrid();
-    focusPane(index);
+    // On a phone, handing the frame the keyboard opens it over half of what was
+    // just opened. A tap in the pane does that when it is wanted.
+    focusPane(index, { input: !phone() });
   }
 
   function frameSrc(pane) {
@@ -637,7 +650,9 @@
   function placeholder(index) {
     const div = document.createElement('div');
     div.className = 'mux-placeholder';
-    div.innerHTML = `<p>Pane ${index + 1}</p><p class="mux-hint">Pick a slot on the left, or press + next to a project to start in a free one.</p>`;
+    div.innerHTML = `<p>Pane ${index + 1}</p><p class="mux-hint">Pick a slot on the left, or press + next to a project to start in a free one.</p>`
+      + '<button type="button" class="wide mux-placeholder-open">Projects and slots</button>';
+    $('.mux-placeholder-open', div).addEventListener('click', openSide);
     return div;
   }
 
@@ -684,6 +699,42 @@
       paintPane(pane);
     });
     for (const el of [...grid.children]) if (!keep.has(el)) el.remove();
+    renderTabs();
+  }
+
+  /** The phone's bar: a tab per pane, since only one of them is on screen. */
+  function renderTabs() {
+    const bar = $('#mux-tabs');
+    if (!bar) return;
+    const tabs = visiblePanes().map((pane, index) => {
+      const tab = document.createElement('button');
+      tab.type = 'button';
+      tab.className = 'mux-tab';
+      tab.classList.toggle('active', index === state.focus);
+      tab.classList.toggle('attention', pane.attention);
+      tab.setAttribute('aria-pressed', String(index === state.focus));
+      const dot = pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle';
+      tab.innerHTML = `<span class="mux-dot ${dot}"></span><span class="mux-tab-text"></span>`;
+      const where = pane.project
+        ? `${pane.project} · ${pane.slot ? `slot ${pane.slot}` : 'main'}${pane.kind === 'terminal' ? ' ❯' : ''}`
+        : 'empty';
+      $('.mux-tab-text', tab).textContent = `${index + 1} · ${where}`;
+      tab.title = pane.title || where;
+      tab.addEventListener('click', () => focusPane(index, { input: false }));
+      return tab;
+    });
+    bar.replaceChildren(...tabs);
+    if (phone()) bar.children[state.focus]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+  }
+
+  // --- the drawer, on a phone ------------------------------------------------
+  function openSide() {
+    document.body.classList.add('side-open');
+    $('#mux-menu')?.setAttribute('aria-expanded', 'true');
+  }
+  function closeSide() {
+    document.body.classList.remove('side-open');
+    $('#mux-menu')?.setAttribute('aria-expanded', 'false');
   }
 
   function paintPane(pane) {
@@ -712,6 +763,7 @@
     const note = $('.mux-pane-note', el);
     note.textContent = pane.note;
     note.classList.toggle('hidden', !pane.note);
+    renderTabs();
   }
 
   /**
@@ -845,6 +897,16 @@
     });
   }
 
+  $('#mux-menu')?.addEventListener('click', () => {
+    if (document.body.classList.contains('side-open')) closeSide();
+    else openSide();
+  });
+  $('#mux-scrim')?.addEventListener('click', closeSide);
+  // Back on a desktop width, a drawer left open would be a sidebar with a scrim on it.
+  PHONE.addEventListener?.('change', () => {
+    if (!phone()) closeSide();
+  });
+
   $('#mux-filter').addEventListener('input', (e) => {
     state.filter = e.target.value.trim();
     renderSidebar();
@@ -870,6 +932,10 @@
   // Alt+1…8 focuses a pane, from anywhere on this page. Inside a frame the chat or
   // the terminal has the keyboard, which is where it should be while typing.
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.body.classList.contains('side-open')) {
+      closeSide();
+      return;
+    }
     if (!e.altKey || e.ctrlKey || e.metaKey) return;
     const n = Number(e.key);
     if (n >= 1 && n <= paneCount()) {
@@ -889,6 +955,19 @@
   load();
   paintAlerts();
   renderGrid();
+  // iOS keeps the layout viewport when its keyboard opens, so a chat's composer or a
+  // terminal's keys would sit under it. On a phone the page is the visible part.
+  if (window.visualViewport) {
+    const fitView = () => {
+      document.body.style.height = phone() ? `${window.visualViewport.height}px` : '';
+      if (phone()) window.scrollTo(0, 0);
+    };
+    window.visualViewport.addEventListener('resize', fitView);
+    PHONE.addEventListener?.('change', fitView);
+    fitView();
+  }
+  // A phone opened on an empty pane has nothing to show but the way to something.
+  if (phone() && !state.panes[state.focus]?.cwd) openSide();
   loadProjects().then(pollLive);
   setInterval(pollLive, LIVE_POLL_MS);
   setInterval(() => {
@@ -901,7 +980,7 @@
   // For mux-test.js, which drives this in jsdom without a server behind it.
   window.__muxForTest = {
     state, openIn, closePane, focusPane, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
-    newInFreeSlot, switchKind, pollTerminals,
+    newInFreeSlot, switchKind, pollTerminals, openSide, closeSide,
     // The name the first tests knew it by: a new chat, in a free slot.
     newChatInFreeSlot: (name) => newInFreeSlot(name, 'chat'),
   };

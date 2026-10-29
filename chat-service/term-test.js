@@ -397,6 +397,74 @@ console.log('terminal page');
   w.close();
 }
 
+console.log('terminal page, on a phone');
+{
+  const html = readFileSync(join(here, 'public', 'term.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'term.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/term?embed=1&project=demo&slot=3' });
+  const w = dom.window;
+  Object.defineProperty(w, 'parent', { get: () => ({ postMessage() {} }) });
+  // What Claude Code draws for a permission prompt, as the buffer holds it.
+  const screen = [
+    'Claude wants to run: npm test',
+    '',
+    '│ Do you want to proceed?            │',
+    '│ ❯ 1. Yes                           │',
+    "│   2. Yes, and don't ask again      │",
+    '│   3. No, and tell Claude what to do │',
+    '',
+    'Steps:',
+    '1. First install the tools',
+    '2. Then run them',
+  ];
+  const fake = { focused: 0 };
+  w.Terminal = function Terminal() {
+    Object.assign(this, {
+      cols: 80, rows: 30,
+      loadAddon() {}, open() {}, focus() { fake.focused++; }, reset() {}, write() {},
+      onData() {}, onBinary() {}, onBell() {}, onResize() {},
+      buffer: { active: { viewportY: 0, getLine: (i) => (i < screen.length ? { translateToString: () => screen[i] } : undefined) } },
+      element: { querySelector: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300 }) }) },
+    });
+  };
+  w.FitAddon = { FitAddon: function FitAddon() { this.fit = () => {}; } };
+  w.ResizeObserver = function ResizeObserver() { this.observe = () => {}; };
+  w.matchMedia = (q) => ({ matches: /coarse/.test(q), addEventListener() {} });
+  const sockets = [];
+  w.WebSocket = function FakeSocket() {
+    this.readyState = 1;
+    this.sent = [];
+    this.addEventListener = () => {};
+    this.send = (m) => this.sent.push(m);
+    sockets.push(this);
+  };
+  w.WebSocket.OPEN = 1;
+  w.fetch = () => Promise.resolve({ status: 204 });
+  const errors = [];
+  w.addEventListener('error', (e) => errors.push(e.message));
+  w.eval(js);
+  const t = w.__termForTest;
+  const inputs = () => sockets[0].sent.filter((m) => typeof m === 'string').map((m) => JSON.parse(m)).filter((m) => m.type === 'input').map((m) => m.data);
+
+  check('the page boots without an error', errors.length === 0, errors.join('; '));
+  check('it does not open the keyboard by itself', fake.focused === 0);
+  // Rows are 10px tall: 300px over 30 rows.
+  check("a tap on a menu's numbered line is that number", t.choiceAt(45) === '2' && t.choiceAt(35) === '1');
+  check('a tap on a numbered list in prose is not', t.choiceAt(85) === null);
+  check('a tap on any other line is not', t.choiceAt(5) === null);
+
+  w.document.querySelector('[data-key="enter"]').dispatchEvent(new w.Event('pointerdown', { bubbles: true, cancelable: true }));
+  check('the keys have an Enter', inputs().at(-1) === '\r');
+  check('…and pressing one leaves the keyboard alone', fake.focused === 0);
+
+  w.document.querySelector('#term-line').value = 'run the tests';
+  w.document.querySelector('#term-compose').dispatchEvent(new w.Event('submit', { cancelable: true }));
+  await sleep(150);
+  check('the compose line is typed, then Enter, apart', inputs().slice(-2).join('|') === 'run the tests|\r', inputs().join('|'));
+  check('…and is emptied', w.document.querySelector('#term-line').value === '');
+  w.close();
+}
+
 console.log('terminal panes in the mux');
 {
   const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
