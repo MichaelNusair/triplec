@@ -40,15 +40,15 @@
   </div>
   <nav class="tabbar">
     <button class="tab active">Chats</button>
-    <a class="tab" href="/editor/" target="_blank" rel="noopener">Editor</a>
+    <a class="tab" href="/editor/" target="_blank" rel="noopener" data-feature="editor">Editor</a>
     <!-- The desktop surface: several conversations side by side, one per worktree
          slot. Shown only on a wide window with a mouse — see .tab-mux. -->
-    <a class="tab tab-mux" href="/chat/mux">Mux</a>
+    <a class="tab tab-mux" href="/chat/mux" data-feature="mux">Mux</a>
     <!-- A full navigation rather than a screen in this shell: the page you open
          when the chat is misbehaving must not depend on the chat's own JS. It is
          reached through /chat/ so that nginx already routes it — see
          chat-service/admin.js. -->
-    <a class="tab" href="/chat/admin">Box</a>
+    <a class="tab" href="/chat/admin" data-feature="admin">Box</a>
   </nav>
 </section>
 
@@ -144,14 +144,14 @@
   </div>
 
   <div id="composer" class="composer">
-    <button id="btn-mic" class="mic-btn" aria-label="Dictate">
+    <button id="btn-mic" class="mic-btn" aria-label="Dictate" data-feature="dictation">
       <svg viewBox="0 0 24 24"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3m5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.9V21h2v-3.1A7 7 0 0 0 19 11z"/></svg>
     </button>
     <!-- Start dictation over from nothing. Deliberately its own control and not a
          long-press on the mic: it is reached when dictation is behaving oddly, and
          the mic is the button that is already not doing what was expected. What it
          clears is offered back as Undo, so a mis-tap costs nothing. -->
-    <button id="btn-mic-reset" class="mic-reset-btn" aria-label="Reset dictation"
+    <button id="btn-mic-reset" class="mic-reset-btn" data-feature="dictation" aria-label="Reset dictation"
             title="Reset dictation — release the mic, forget the transcript, clear the box">
       <svg viewBox="0 0 24 24"><path d="M12 5V2L8 6l4 4V7a5 5 0 1 1-5 5H5a7 7 0 1 0 7-7z"/></svg>
     </button>
@@ -175,8 +175,10 @@
     </label>
     <label>Permissions
       <select id="select-permission">
-        <option value="bypassPermissions">Full autonomy (default)</option>
+        <option value="">This machine's default</option>
+        <option value="bypassPermissions">Full autonomy</option>
         <option value="acceptEdits">Auto-accept edits</option>
+        <option value="manual">Ask before each action</option>
         <option value="plan">Plan first, then confirm</option>
       </select>
     </label>
@@ -207,20 +209,20 @@
       Keep the screen awake while the app is open
     </label>
     <p class="hint" id="keep-awake-hint"></p>
-    <label class="opt-row">
+    <label class="opt-row" data-feature="polish">
       <input type="checkbox" id="opt-polish" checked>
       Punctuate dictation when I stop talking
     </label>
-    <p class="hint" id="polish-hint"></p>
+    <p class="hint" id="polish-hint" data-feature="polish"></p>
     <!-- Unchecked in the markup, unlike the two above: this one reflects a
          permission the OS has granted, so its real state is only known once
          app.js has asked. Starting it checked would show "on" for a second on
          every phone that has never enabled it. -->
-    <label class="opt-row">
+    <label class="opt-row" data-feature="push">
       <input type="checkbox" id="opt-push">
       Notify me when a session outside the app finishes
     </label>
-    <p class="hint" id="push-hint"></p>
+    <p class="hint" id="push-hint" data-feature="push"></p>
     <!-- Which build is answering, and whether this tab is still it. Last in the
          sheet because it is the one thing here that is not a setting: it is read,
          not changed. Ruled off for the same reason. See paintBuild in app.js. -->
@@ -242,7 +244,7 @@
   <div class="sheet-body">
     <h2 id="project-sheet-title">Project</h2>
     <div id="project-sheet-body">Checking…</div>
-    <button type="button" id="btn-project-remove" class="wide danger hidden">
+    <button type="button" id="btn-project-remove" class="wide danger hidden" data-feature="retire">
       Push &amp; delete from this machine
     </button>
     <button type="button" data-close-project class="wide subtle">Close</button>

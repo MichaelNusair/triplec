@@ -10,6 +10,17 @@
  * said the proxy handled that while the proxy config had no such rule. See
  * auth.js.
  */
+// First: host.js loads the secrets file into the environment, and everything
+// below — auth.js above all — reads its configuration from there.
+import {
+  HOST_MODE,
+  BIND_ADDRESS,
+  CLAUDE_AUTH_MODE,
+  assertBindAddress,
+  audit,
+  feature,
+  features,
+} from './host.js';
 import http from 'http';
 import { readFile, stat } from 'fs/promises';
 import { join, extname, normalize, sep } from 'path';
@@ -52,11 +63,15 @@ import {
   recordFailure,
   recordSuccess,
   clientIp,
+  passwordLoginEnabled,
+  trustedIdentity,
 } from './auth.js';
 
 // Fail fast and loudly: a misconfigured deployment must not boot into an open
 // state. This throws before the listener is created.
 assertAuthConfig();
+// And refuse an address that would put this past the proxy that terminates TLS.
+const LISTEN_ADDRESS = assertBindAddress(BIND_ADDRESS);
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 9997);
@@ -87,6 +102,33 @@ const json = (res, code, body) => {
     'Content-Length': Buffer.byteLength(payload),
   });
   res.end(payload);
+};
+
+/**
+ * Which feature a route belongs to, or null for the core every install has.
+ *
+ * A feature that is off has no routes at all: the answer is the same 404 an
+ * unknown path gets, so whether a part of the product exists on this install is
+ * decided here, by the server, and not by which buttons a client chose to draw.
+ * `polish` is the exception, handled at its route: dictation still works without
+ * it, it just arrives as the raw transcript.
+ */
+function routeFeature(pathname) {
+  if (pathname === '/api/transcribe' || pathname === '/api/voice-status'
+    || pathname.startsWith('/api/speak') || pathname.startsWith('/api/realtime')) return 'voice';
+  if (pathname.startsWith('/api/push/')) return 'push';
+  if (pathname === '/mux' || pathname === '/mux.html' || pathname === '/term' || pathname === '/term.html'
+    || pathname.startsWith('/vendor/') || pathname === '/api/slots' || pathname.startsWith('/api/slots/')
+    || pathname === '/ws/term') return 'mux';
+  if (pathname === '/admin' || pathname === '/admin.html' || pathname.startsWith('/api/admin/')) return 'admin';
+  if (pathname === '/api/projects/remove') return 'retire';
+  if (pathname.startsWith('/editor') || pathname.startsWith('/p/') || pathname === '/editor') return 'editor';
+  return null;
+}
+
+const featureOff = (pathname) => {
+  const name = routeFeature(pathname);
+  return name !== null && !feature(name);
 };
 
 /**
@@ -251,7 +293,7 @@ function denyUnauthenticated(req, res) {
 }
 
 async function handleLogin(req, res) {
-  if (AUTH_MODE !== 'password') {
+  if (!passwordLoginEnabled()) {
     // With an identity provider in front, a local password would be a second,
     // weaker door into the same box.
     json(res, 400, { error: 'password login is disabled; this deployment uses OIDC' });
@@ -285,19 +327,38 @@ async function handleLogin(req, res) {
     // Logged without the attempted value: writing guesses to the journal turns
     // a log leak into a credential leak, and near-misses are still secrets.
     console.warn(`failed login from ${ip}`);
+    audit('signin_failure', { method: 'password', ip });
     json(res, 401, { error: 'incorrect password' });
     return;
   }
 
   recordSuccess(ip);
   console.log(`login from ${ip}`);
-  res.writeHead(204, { 'Set-Cookie': sessionCookie(), 'Cache-Control': 'no-store' });
+  audit('signin', { method: 'password', ip });
+  res.writeHead(204, { 'Set-Cookie': sessionCookie(req), 'Cache-Control': 'no-store' });
   res.end();
+}
+
+/**
+ * The path as the routes below expect it.
+ *
+ * On the workspace box nginx strips the chat's /chat/ prefix before a request gets
+ * here and owns the bare domain. A host install may have nothing in front that
+ * does either — Tailscale Serve proxies straight to this port — so in host mode the
+ * service does both itself: /chat/… is the chat, and the bare root sends you there,
+ * because the app is only installable from inside its manifest's /chat/ scope.
+ */
+function routedPath(pathname) {
+  if (!HOST_MODE) return { pathname, redirect: null };
+  if (pathname === '/' || pathname === '/chat') return { pathname, redirect: '/chat/' };
+  if (pathname.startsWith('/chat/')) return { pathname: pathname.slice('/chat'.length), redirect: null };
+  return { pathname, redirect: null };
 }
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  const { pathname } = url;
+  const routed = routedPath(url.pathname);
+  const { pathname } = routed;
 
   try {
     if (pathname === '/healthz') {
@@ -305,10 +366,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (routed.redirect) {
+      res.writeHead(302, { Location: `${routed.redirect}${url.search}`, 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+
     // Lets the client show the right thing on a 401: a password form, or a
     // "sign in with your identity provider" bounce. Reveals no secret.
     if (pathname === '/api/auth-mode' && req.method === 'GET') {
-      json(res, 200, { mode: AUTH_MODE });
+      json(res, 200, { mode: AUTH_MODE, password: passwordLoginEnabled() });
       return;
     }
 
@@ -332,9 +399,30 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // A part of the product this install does not have: no route, not a hidden one.
+    if (featureOff(pathname)) {
+      json(res, 404, { error: 'not found' });
+      return;
+    }
+
     if (pathname === '/api/logout' && req.method === 'POST') {
-      res.writeHead(204, { 'Set-Cookie': clearedCookie() });
+      audit('signout', {});
+      res.writeHead(204, { 'Set-Cookie': clearedCookie(req) });
       res.end();
+      return;
+    }
+
+    // What this install is made of, for the client to draw only what exists. The
+    // server enforces the same answer itself (featureOff above); this is so a page
+    // does not offer a button whose route is a 404.
+    if (pathname === '/api/features' && req.method === 'GET') {
+      json(res, 200, {
+        features: features(),
+        host: HOST_MODE,
+        claudeAuth: CLAUDE_AUTH_MODE,
+        defaultModel: DEFAULT_MODEL || '',
+        defaultPermissionMode: process.env.DEFAULT_PERMISSION_MODE || 'bypassPermissions',
+      });
       return;
     }
 
@@ -348,7 +436,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (pathname === '/api/projects' && req.method === 'GET') {
-      json(res, 200, { projects: await manager.listProjects(), defaultModel: DEFAULT_MODEL });
+      json(res, 200, { projects: await manager.listProjects(), defaultModel: DEFAULT_MODEL || '' });
       return;
     }
 
@@ -667,6 +755,11 @@ const server = http.createServer(async (req, res) => {
      */
     if (pathname === '/api/polish' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req, 64 * 1024)).toString() || '{}');
+      // Off: the transcript goes into the message exactly as it was heard.
+      if (!feature('polish')) {
+        json(res, 200, { text: String(body.text ?? ''), changed: false });
+        return;
+      }
       const names = (await manager.listProjects().catch(() => [])).map((p) => p.name);
       const { text, changed } = await polish(body.text, { vocabulary: names });
       json(res, 200, { text, changed });
@@ -1151,17 +1244,34 @@ const server = http.createServer(async (req, res) => {
      * its first entry, which would then be reporting a model new chats do not use.
      */
     if (pathname === '/api/models' && req.method === 'GET') {
-      const models = [
-        { id: 'us.anthropic.claude-opus-5-5', label: 'Opus 5.5' },
-        { id: 'us.anthropic.claude-opus-5', label: 'Opus 5' },
-        { id: 'us.anthropic.claude-sonnet-5', label: 'Sonnet 5' },
-        { id: 'us.anthropic.claude-opus-4-8', label: 'Opus 4.8' },
-        { id: 'us.anthropic.claude-haiku-4-5', label: 'Haiku 4.5' },
-      ];
-      if (!models.some((m) => m.id === DEFAULT_MODEL)) {
+      // Bedrock wants its own ids; every other provider takes the CLI's aliases,
+      // and a host on `claude /login` with no defaultModel starts on the CLI's own
+      // choice — the empty id, which the client sends as "no model".
+      const models = CLAUDE_AUTH_MODE === 'bedrock'
+        ? [
+          { id: 'us.anthropic.claude-opus-5-5', label: 'Opus 5.5' },
+          { id: 'us.anthropic.claude-opus-5', label: 'Opus 5' },
+          { id: 'us.anthropic.claude-sonnet-5', label: 'Sonnet 5' },
+          { id: 'us.anthropic.claude-opus-4-8', label: 'Opus 4.8' },
+          { id: 'us.anthropic.claude-haiku-4-5', label: 'Haiku 4.5' },
+        ]
+        : [
+          { id: '', label: 'Claude Code default' },
+          { id: 'opus', label: 'Opus' },
+          { id: 'sonnet', label: 'Sonnet' },
+          { id: 'haiku', label: 'Haiku' },
+        ];
+      if (DEFAULT_MODEL && !models.some((m) => m.id === DEFAULT_MODEL)) {
         models.unshift({ id: DEFAULT_MODEL, label: DEFAULT_MODEL });
       }
-      json(res, 200, { default: DEFAULT_MODEL, models });
+      json(res, 200, { default: DEFAULT_MODEL || '', models });
+      return;
+    }
+
+    // An API path nothing above answered. A 404 the caller can read, rather than the
+    // app's HTML shell, which is what the single-page fallback below would send.
+    if (pathname.startsWith('/api/')) {
+      json(res, 404, { error: 'not found' });
       return;
     }
 
@@ -1185,8 +1295,10 @@ const wss = new WebSocketServer({ noServer: true });
 const termWss = new WebSocketServer({ noServer: true });
 
 server.on('upgrade', async (req, socket, head) => {
-  const { pathname, searchParams } = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-  if (pathname !== '/ws' && pathname !== '/ws/term') {
+  const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  const { searchParams } = parsed;
+  const { pathname } = routedPath(parsed.pathname);
+  if ((pathname !== '/ws' && pathname !== '/ws/term') || featureOff(pathname)) {
     socket.destroy();
     return;
   }
@@ -1225,9 +1337,15 @@ server.on('upgrade', async (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
 });
 
-wss.on('connection', (ws) => {
+wss.on('connection', (ws, req) => {
   let conv = null;
   let onEvent = null;
+  // Who is answering permission prompts on this socket, for the audit trail. Read
+  // again rather than trusted from the upgrade: the same check, same answer.
+  let who = AUTH_MODE === 'password' ? 'password-session' : null;
+  if (AUTH_MODE === 'trusted-header') {
+    trustedIdentity(req).then((login) => { who = login || 'password-session'; }).catch(() => {});
+  }
 
   const send = (msg) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
@@ -1251,6 +1369,8 @@ wss.on('connection', (ws) => {
            permissionMode: conv.permissionMode, busy: conv.busy,
            sessionId: conv.sessionId });
     if (replay) for (const event of conv.history) send(event);
+    // A question still waiting for an answer is asked of every device that arrives.
+    for (const event of conv.pendingPermissionEvents()) send(event);
   };
 
   ws.on('message', async (raw) => {
@@ -1322,14 +1442,22 @@ wss.on('connection', (ws) => {
             });
           }
 
-          const conversation = manager.create({
-            cwd: msg.cwd,
-            model: msg.model,
-            permissionMode: msg.permissionMode,
-            effort: msg.effort,
-            resumeSessionId: msg.resumeSessionId,
-            fork: Boolean(owner),
-          });
+          let conversation;
+          try {
+            conversation = manager.create({
+              cwd: msg.cwd,
+              model: msg.model,
+              permissionMode: msg.permissionMode,
+              effort: msg.effort,
+              resumeSessionId: msg.resumeSessionId,
+              fork: Boolean(owner),
+            });
+          } catch (err) {
+            if (err.code !== 'ELIMIT') throw err;
+            send({ type: 'error', message: err.message, fatal: true, limit: true });
+            return;
+          }
+          announcePermissions(conversation);
           attach(conversation, false);
 
           if (live) {
@@ -1367,6 +1495,26 @@ wss.on('connection', (ws) => {
           return;
         }
 
+        // The answer to a permission_request: approve or deny one tool call.
+        case 'permission': {
+          if (!conv) {
+            send({ type: 'error', message: 'no active conversation' });
+            return;
+          }
+          const decision = msg.decision === 'allow' ? 'allow' : 'deny';
+          const answer = conv.answerPermission(String(msg.requestId || ''), decision, { by: who });
+          if (!answer) {
+            // Answered from another device a moment ago, or withdrawn by the CLI.
+            send({ type: 'permission_resolved', requestId: msg.requestId, decision: 'stale' });
+          }
+          return;
+        }
+
+        // The client's half of the application ping below. Nothing to do: arriving
+        // is the point.
+        case 'pong':
+          return;
+
         default:
           send({ type: 'error', message: `unknown message type: ${msg.type}` });
       }
@@ -1381,6 +1529,48 @@ wss.on('connection', (ws) => {
     if (conv && onEvent) conv.off('event', onEvent);
   });
 });
+
+/*
+ * A phone that is not looking at the chat still has to hear that the chat is
+ * waiting on it. A permission request stops the turn dead until somebody answers,
+ * and the person who could is usually the one with the phone in a pocket — so it
+ * goes out as a push, once per request, to every subscribed device. Hooked once
+ * per conversation, whichever socket started or joined it.
+ */
+const announced = new WeakSet();
+function announcePermissions(conversation) {
+  if (!feature('push') || announced.has(conversation)) return;
+  announced.add(conversation);
+  conversation.on('permission', (conv, pending) => {
+    const project = conv.cwd.split('/').filter(Boolean).pop();
+    notifyAll(
+      {
+        title: `${project}: approval needed`,
+        body: `${pending.toolName}${pending.description ? ` — ${pending.description}` : ''}`.slice(0, 180),
+        tag: `cw-permission-${conv.sessionId || conv.id}`,
+      },
+      { topic: topicFor(`permission-${conv.sessionId || conv.id}`) },
+    ).catch(() => {});
+  });
+}
+
+/*
+ * An application-level ping on every chat socket, every 25 seconds.
+ *
+ * The protocol pings below keep proxies from timing a connection out, but a
+ * browser never sees them: from inside a page a dead socket and a quiet one look
+ * the same. A message the page does see lets it notice silence — and reconnect,
+ * then reattach and replay — instead of sitting on a socket a proxy closed an
+ * hour into a long, quiet turn.
+ */
+const APP_PING_MS = Number(process.env.TRIPLEC_APP_PING_MS) || 25_000;
+const appPing = setInterval(() => {
+  const ping = JSON.stringify({ type: 'ping', at: Date.now() });
+  for (const ws of wss.clients) {
+    if (ws.readyState === ws.OPEN) ws.send(ping);
+  }
+}, APP_PING_MS);
+appPing.unref?.();
 
 // Drop sockets that stop responding to pings, so a phone that went to sleep on
 // a cell network doesn't leave a half-open connection behind.
@@ -1410,12 +1600,20 @@ heartbeat.unref?.();
  * and a signal handler here would only put a scan — possibly one waiting out an
  * unreachable push service — between systemd and a restart during every deploy.
  */
-startTurnWatcher({ liveSessions: () => manager.liveSummary() });
+if (feature('push')) startTurnWatcher({ liveSessions: () => manager.liveSummary() });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`chat service on 127.0.0.1:${PORT} (projects: ${PROJECTS_ROOT})`);
+server.listen(PORT, LISTEN_ADDRESS, () => {
+  console.log(`chat service on ${LISTEN_ADDRESS}:${PORT} (projects: ${PROJECTS_ROOT})`);
+  audit('service_start', {
+    host: HOST_MODE,
+    claudeAuth: CLAUDE_AUTH_MODE,
+    auth: AUTH_MODE,
+    features: Object.entries(features()).filter(([, on]) => on).map(([name]) => name).join(','),
+    defaultPermissionMode: process.env.DEFAULT_PERMISSION_MODE || 'bypassPermissions',
+  });
   // "0 device(s) subscribed, watching for turns to end" was true and read as healthy.
   // Nothing is being watched for in that state, so it says what it will do instead.
+  if (!feature('push')) return;
   listSubscriptions()
     .then((devices) => console.log(devices.length
       ? `push: ${devices.length} device(s) subscribed, watching for turns to end`

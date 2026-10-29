@@ -1,0 +1,31 @@
+{
+  "mode": "host",
+  "user": "",
+  "home": "",
+  "installDir": "~/.local/share/triplec",
+  "configDir": "~/.config/triplec",
+  "stateDir": "~/.local/state/triplec",
+  "projectsRoot": "~/projects",
+  "claudeHome": "~/.claude",
+  "projects": [
+    { "name": "example", "path": "~/src/example", "slots": { "count": 8, "postCreate": "" } }
+  ],
+  "listen": { "nginxPort": 8080, "appPort": 9997, "bind": "127.0.0.1", "allowPublicBind": false },
+  "features": { "editor": false, "voice": false, "polish": false, "push": true, "mux": true, "admin": true, "retire": false },
+  "claude": {
+    "authMode": "login",
+    "defaultModel": "",
+    "permissionMode": "manual",
+    "effort": "high",
+    "loginShellPath": true,
+    "vertex": { "projectId": "", "region": "" }
+  },
+  "auth": {
+    "mode": "password",
+    "singleOwner": true,
+    "trustedHeader": { "header": "Tailscale-User-Login", "allowedEmails": [], "peerUid": 0, "allowPassword": true }
+  },
+  "secrets": { "backend": "file" },
+  "maxLiveSessions": 8,
+  "pwa": { "name": "" }
+}

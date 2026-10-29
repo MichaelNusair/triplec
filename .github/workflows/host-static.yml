@@ -1,0 +1,35 @@
+# Host mode's static checks: the installer scripts lint clean, the config rules
+# hold, and the shipped example is a valid config. No systemd, no network beyond
+# apt — the end-to-end run is deploy/host/test/container-test.sh, which needs a
+# privileged docker this runner does not give a container job.
+name: host-static
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  host-static:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: Install shellcheck and node
+        run: |
+          apt-get update -qq
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
+            shellcheck nodejs git ca-certificates
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: |
+          shellcheck deploy/host/*.sh deploy/host/test/*.sh scripts/host-conformance.sh
+      - name: config rules
+        run: node deploy/host/config-test.mjs
+      - name: the example config validates
+        run: node deploy/host/config.mjs validate deploy/host/triplec.host.example.json
+      - name: conformance (static)
+        run: bash scripts/host-conformance.sh --static

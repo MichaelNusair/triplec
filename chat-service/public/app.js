@@ -77,7 +77,10 @@ const DEFAULTS = {
   // settings are saved as one object, so changing a voice stored a model too, and
   // raising a deployment's default then reached every surface except the phones.
   model: '',
-  permissionMode: 'bypassPermissions',
+  // Empty for the same reason: the machine's own default, which a host install sets
+  // to a mode that asks before acting. A mode named here would be sent with every
+  // new chat and quietly override that.
+  permissionMode: '',
   effort: 'max',
   // Empty means "whichever voice fits the message", which the server decides per
   // message — a Hebrew answer read by a Hebrew voice with nothing set. A named
@@ -1035,6 +1038,7 @@ function makePane({ cwd, project, title, sessionId, sessionCwd }) {
     streamingEl: null,     // the assistant bubble currently being appended to
     typingEl: null,
     toolEls: new Map(),    // tool_use id -> card element, so results can attach
+    permissionEls: new Map(), // permission request id -> its approve/deny card
     echoedMessages: new Set(), // locally-rendered sends, to drop the server echo
     reconnectDelay: 500,
     draft: '',
@@ -1246,6 +1250,7 @@ function teardownPane(pane) {
   pane.thread?.remove();
   pane.thread = null;
   pane.toolEls.clear();
+  pane.permissionEls.clear();
   pane.echoedMessages.clear();
   pane.streamingEl = null;
   pane.typingEl = null;
@@ -1496,6 +1501,41 @@ function connect(pane) {
   // process handle for a conversation this device is no longer showing.
   const stale = () => pane.ws !== ws || pane.closed;
 
+  /*
+   * Silence is a dead socket, once the server has shown it pings. A proxy with an
+   * idle timeout — an hour, on a VM's own — closes a connection without telling the
+   * page, and a turn that is quiet for that long then never shows its end. The
+   * server pings every 25s; three missed is a close, and the close handler below
+   * reconnects and reattaches, which replays what was missed.
+   */
+  //
+  // Armed by the first ping rather than here: a server that never pings (an older
+  // one) gets no watchdog, and neither does a socket that never got that far.
+  pane.lastHeard = Date.now();
+  pane.sawPing = false;
+  clearInterval(pane.watchdog);
+  pane.watchdog = null;
+  pane.armWatchdog = () => {
+    if (pane.watchdog) return;
+    pane.watchdog = setInterval(() => {
+      if (stale() || ws.readyState !== WebSocket.OPEN) {
+        clearInterval(pane.watchdog);
+        pane.watchdog = null;
+        return;
+      }
+      if (Date.now() - pane.lastHeard > 75_000) {
+        clearInterval(pane.watchdog);
+        pane.watchdog = null;
+        ws.close();
+      }
+    }, 15_000);
+  };
+  ws.addEventListener('close', () => {
+    if (pane.ws !== ws) return;
+    clearInterval(pane.watchdog);
+    pane.watchdog = null;
+  });
+
   ws.addEventListener('open', () => {
     if (stale()) return;
     pane.reconnectDelay = 500;
@@ -1512,6 +1552,7 @@ function connect(pane) {
       if (pane.sessionId) {
         if (pane.thread) pane.thread.innerHTML = '';
         pane.toolEls.clear();
+        pane.permissionEls.clear();
         pane.streamingEl = null;
         pane.typingEl = null;
       }
@@ -1525,7 +1566,7 @@ function connect(pane) {
         // starts the chat on the deployment's default instead of this device's
         // opinion of it. See DEFAULTS.
         model: state.settings.model || undefined,
-        permissionMode: state.settings.permissionMode,
+        permissionMode: state.settings.permissionMode || undefined,
         effort: state.settings.effort,
       }));
     }
@@ -1533,6 +1574,7 @@ function connect(pane) {
 
   ws.addEventListener('message', (e) => {
     if (stale()) return;
+    pane.lastHeard = Date.now();
     let msg;
     try {
       msg = JSON.parse(e.data);
@@ -1673,6 +1715,29 @@ function handleEvent(msg, pane) {
 
     case 'tool_result':
       attachToolResult(pane, msg);
+      return;
+
+    case 'permission_request':
+      addPermissionCard(pane, msg);
+      // Asked of the person, so it is announced like a finished turn is: a
+      // background tab lights up rather than waiting silently.
+      if (pane !== activePane()) announce(pane, `${msg.toolName} needs your approval`);
+      return;
+
+    case 'permission_resolved':
+      resolvePermissionCard(pane, msg);
+      return;
+
+    // The server's application ping. Answered, and noted, so the watchdog in
+    // connect() can tell a quiet conversation from a socket a proxy dropped.
+    case 'ping':
+      pane.sawPing = true;
+      pane.armWatchdog?.();
+      try {
+        pane.ws?.send(JSON.stringify({ type: 'pong', at: msg.at }));
+      } catch {
+        /* closing; the close handler reconnects */
+      }
       return;
 
     case 'turn_complete':
@@ -1824,9 +1889,13 @@ const TOOL_ICONS = {
   WebFetch: '🌐', WebSearch: '🌐', Task: '🤖', TodoWrite: '☑️', NotebookEdit: '📓',
 };
 
-function toolSummary(name, input) {
+function toolSummary(name, input, base = '') {
   if (!input) return '';
-  if (input.file_path) return input.file_path.replace(/^\/workspace\/projects\/[^/]+\//, '');
+  // Relative to the chat's own directory, wherever this deployment keeps projects.
+  if (input.file_path) {
+    const root = String(base || '').replace(/\/+$/, '');
+    return root && input.file_path.startsWith(`${root}/`) ? input.file_path.slice(root.length + 1) : input.file_path;
+  }
   if (input.command) return input.command;
   if (input.pattern) return input.pattern;
   if (input.url) return input.url;
@@ -1843,7 +1912,7 @@ function makeToolCard(pane, { id, name, input }, track = true) {
     <div class="tool-head">
       <span class="tool-icon">${TOOL_ICONS[name] || '🔧'}</span>
       <span class="tool-name">${escapeHtml(name)}</span>
-      <span class="tool-arg">${escapeHtml(toolSummary(name, input))}</span>
+      <span class="tool-arg">${escapeHtml(toolSummary(name, input, pane.sessionCwd || pane.cwd))}</span>
       <span class="tool-chev">›</span>
     </div>
     <div class="tool-body">
@@ -1863,6 +1932,72 @@ function addToolCard(pane, msg) {
   const stick = atBottom(pane);
   pane.thread.appendChild(makeToolCard(pane, msg));
   scrollDown(pane, stick);
+}
+
+/*
+ * A tool call waiting for a person: the CLI stopped and asked, and nothing happens
+ * in this conversation until somebody taps one of these. See pendingPermissions in
+ * session-manager.js — every device attached is shown the same card, the first
+ * answer wins, and the others are told it was answered.
+ */
+function addPermissionCard(pane, msg) {
+  hideTyping(pane);
+  pane.streamingEl = null;
+  if (!pane.thread || pane.permissionEls.has(msg.requestId)) return;
+  const stick = atBottom(pane);
+  const card = document.createElement('div');
+  card.className = 'permission';
+  card.dataset.requestId = msg.requestId;
+  const summary = toolSummary(msg.toolName, msg.input, pane.sessionCwd || pane.cwd);
+  card.innerHTML = `
+    <div class="permission-head">
+      <span class="tool-icon">${TOOL_ICONS[msg.toolName] || '🔧'}</span>
+      <strong>${escapeHtml(msg.toolName)}</strong> needs your approval
+    </div>
+    ${msg.description ? `<div class="permission-why">${escapeHtml(msg.description)}</div>` : ''}
+    ${summary ? `<pre class="permission-arg">${escapeHtml(summary)}</pre>` : ''}
+    <div class="permission-actions">
+      <button type="button" class="permission-deny">Deny</button>
+      <button type="button" class="permission-allow">Approve</button>
+    </div>
+    <div class="permission-state" hidden></div>`;
+  const answer = (decision) => {
+    if (!pane.ws || pane.ws.readyState !== WebSocket.OPEN) {
+      toast('Not connected — reconnecting, then try again.');
+      return;
+    }
+    for (const b of card.querySelectorAll('button')) b.disabled = true;
+    pane.ws.send(JSON.stringify({ type: 'permission', requestId: msg.requestId, decision }));
+  };
+  card.querySelector('.permission-allow').addEventListener('click', () => answer('allow'));
+  card.querySelector('.permission-deny').addEventListener('click', () => answer('deny'));
+  pane.permissionEls.set(msg.requestId, card);
+  pane.thread.appendChild(card);
+  scrollDown(pane, stick);
+  setSub(pane, 'waiting for your approval');
+}
+
+const PERMISSION_OUTCOMES = {
+  allow: 'Approved',
+  deny: 'Denied',
+  cancelled: 'Withdrawn — the turn ended or was stopped',
+  stale: 'Already answered on another device',
+};
+
+function resolvePermissionCard(pane, msg) {
+  const card = pane.permissionEls.get(msg.requestId);
+  if (!card) return;
+  // A stale answer from this device after another one decided changes nothing: the
+  // card already says what the decision was.
+  if (msg.decision === 'stale' && card.classList.contains('resolved')) return;
+  card.classList.add('resolved', `resolved-${msg.decision}`);
+  for (const b of card.querySelectorAll('button')) b.disabled = true;
+  card.querySelector('.permission-actions').hidden = true;
+  const state = card.querySelector('.permission-state');
+  state.hidden = false;
+  state.textContent = PERMISSION_OUTCOMES[msg.decision] || msg.decision;
+  if (msg.decision !== 'stale') pane.permissionEls.delete(msg.requestId);
+  if (pane.busy) setSub(pane, 'working…');
 }
 
 function attachToolResult(pane, { toolUseId, content, isError }) {
@@ -2225,6 +2360,13 @@ const micBtn = $('#btn-mic');
 const micResetBtn = $('#btn-mic-reset');
 const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+/*
+ * What this install is made of (GET /api/features), or null until it is known and
+ * on a server too old to say — in which case everything is assumed, which is what
+ * every deployment was before installs could leave things out.
+ */
+let hostFeatures = null;
+
 /**
  * Which dictation engine to use.
  *
@@ -2235,6 +2377,9 @@ const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecogni
  * kept because it needs no server at all, and `record` transcribes only on stop.
  */
 function pickDictationMode() {
+  // No voice on this install: the box transcribes nothing, so the only engine left is
+  // the browser's own, and with none of that either there is no microphone at all.
+  if (hostFeatures && !hostFeatures.voice) return SpeechRecognition ? 'live' : null;
   const hasAudio = Boolean(
     navigator.mediaDevices?.getUserMedia &&
     (window.AudioContext || window.webkitAudioContext),
@@ -5128,6 +5273,43 @@ if (pushToggle) {
     }
   });
 }
+
+/*
+ * Draw only what exists. A feature that is off has no routes on the server, so a
+ * button for it would be a button that 404s: each element that belongs to one
+ * carries data-feature, and a class on <html> per missing feature hides them all
+ * (style.css). Asked once; the answer cannot change without a restart.
+ */
+const PERMISSION_LABELS = {
+  bypassPermissions: 'full autonomy',
+  acceptEdits: 'auto-accept edits',
+  manual: 'ask before each action',
+  plan: 'plan first',
+  auto: 'auto',
+  dontAsk: "don't ask",
+};
+
+(async function initFeatures() {
+  try {
+    const res = await api('/api/features');
+    if (!res.ok) return;
+    const body = await res.json();
+    hostFeatures = body.features || null;
+    for (const [name, on] of Object.entries(hostFeatures || {})) {
+      document.documentElement.classList.toggle(`no-${name}`, !on);
+    }
+    if (hostFeatures && !hostFeatures.voice) {
+      voice.mode = pickDictationMode();
+      if (!voice.mode) document.documentElement.classList.add('no-dictation');
+    }
+    const machine = $('#select-permission option[value=""]');
+    if (machine && body.defaultPermissionMode) {
+      machine.textContent = `This machine's default (${PERMISSION_LABELS[body.defaultPermissionMode] || body.defaultPermissionMode})`;
+    }
+  } catch {
+    /* an older server: everything it has is shown, as before */
+  }
+})();
 
 (async function initModels() {
   try {

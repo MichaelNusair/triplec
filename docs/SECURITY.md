@@ -31,7 +31,8 @@ What the design defends against:
 What it explicitly does **not** defend against:
 
 - A person who legitimately logs in. They have a shell. There are no per-user
-  permissions, no audit trail of who did what, and no way to give someone
+  permissions, no audit trail of who did what (host mode adds one — see *Host
+  mode on a developer VM*), and no way to give someone
   read-only access. Do not share the password with anyone you would not give
   SSH access to.
 - Prompt injection reaching the shell. If Claude reads a hostile file, issue, or
@@ -140,6 +141,34 @@ One trade to know about: the ALB's session cookie caps at 7 days, where password
 mode issues 30. You re-authenticate weekly.
 
 Requires an OAuth app with your provider. See [DEPLOY.md](DEPLOY.md).
+
+### `trusted-header` (host mode, over a tailnet)
+
+For a host install reached from a phone through Tailscale Serve. Serve proxies a
+tailnet user's request to the chat service on loopback and adds a
+`Tailscale-User-Login` header naming them; the service accepts that identity only
+if all of these hold, checked in `trustedIdentity()` in `chat-service/auth.js`:
+
+1. the peer is a loopback address;
+2. **the socket on the other end belongs to the configured uid** — `0`, which is
+   `tailscaled`'s — read from the kernel's own socket table (`/proc/net/tcp`),
+   which the caller cannot write;
+3. the login is on `CW_TRUSTED_EMAILS`, which has exactly one entry when
+   `CW_SINGLE_OWNER` is set (the host profile's default).
+
+The second check is the one that matters on a developer VM, and the reason this
+mode is not "trust the header from 127.0.0.1". Such a VM often runs its own HTTPS
+proxy that maps one hostname per port to `127.0.0.1:<port>` and forwards whatever
+headers the caller sent — so every loopback port is reachable from that proxy's
+network, and a header that arrives from loopback proves nothing about who wrote
+it. Requests through that proxy come from nginx worker sockets (not root) and are
+refused; TripleC's own nginx site also blanks the three `Tailscale-User-*` headers.
+Point Serve **at the app port**, not at nginx, or the socket the service sees is
+nginx's and the header is (correctly) ignored.
+
+`CW_TRUSTED_ALLOW_PASSWORD=1` keeps the password login available beside it, for
+the path through the VM's proxy from a laptop. Every acceptance and every refusal
+is written to the audit log (see below).
 
 ## What is gated
 
@@ -389,6 +418,62 @@ Event history at best and nothing you can attest to.
 The workspace volume survives instance termination, so you can replace the
 instance without losing work — but if you believe code on the volume was
 modified, diff it against your remotes before trusting it.
+
+## Host mode on a developer VM
+
+Everything above is about the AWS deployment, where TripleC owns the instance. In
+host mode (`deploy/host/install.sh`, see [HOST.md](HOST.md)) it is installed onto
+a machine that already belongs to a developer, as that developer, and it inherits
+everything that machine can do. That changes the blast radius more than any
+setting here can.
+
+**A compromised session is the developer, on that VM, with that VM's network.**
+Anyone past the login — or any prompt injection a session runs into — acts with
+the developer's own credentials (`claude /login`, `gh`, SSH keys, cloud CLIs
+already logged in) and the VM's own network routes. If the VM is peered into
+networks that reach staging or **production databases**, and its service account
+holds a database-client role there, then a browser-reachable shell on that VM is
+a browser-reachable path to those databases. Nothing in TripleC narrows that: it
+creates no credentials and changes no IAM, but it does not take any away either.
+
+What host mode does about it, by default:
+
+- **Asks before acting.** The host profile defaults to `manual` (or
+  `acceptEdits`), not `bypassPermissions`. Every tool call the CLI wants approval
+  for is relayed to the chat as an approve/deny card, shown on every device
+  attached, and the decision is audited. Hooks still run in every mode, so a
+  repository's own write gates keep working in TripleC sessions exactly as they
+  do over SSH.
+- **Loopback only.** The service refuses to bind anything else unless
+  `allowPublicBind` is set. TLS is the VM proxy's or Tailscale's.
+- **One owner.** `singleOwner` requires exactly one identity in
+  `trusted-header` (and `oidc`) mode; password mode is one secret by definition.
+- **An audit trail.** Sign-in successes and failures, session start and stop
+  with the permission mode used, and every permission request and decision, as
+  `{"audit":"triplec",…}` JSON lines on stdout — so in the journal under
+  `triplec-chat`, and in whatever ships the journal off the box. No secret value
+  is ever written; field names that look like one are redacted regardless.
+- **No credential or IAM footprint.** The installer uses sudo only for packages,
+  its systemd units and its one nginx site file. It never writes sudoers, SSH
+  config, cloud CLI config, firewall rules, peering or IAM, and it records a
+  checksum snapshot of those before its first run so the conformance script can
+  prove it.
+- **Fewer surfaces.** Features are flags; an off feature has no routes. A
+  cautious profile turns off the editor (a second shell surface), retire (the
+  only route that deletes a directory) and the dictation clean-up.
+
+What it does not do, and what to decide before installing it on a machine with
+production reach:
+
+- It cannot tell a legitimate approval from a careless one. Approving a command
+  on a phone is still approving it.
+- It does not sandbox the CLI from the VM's network. If a VM can reach a
+  production database, a session can. The strongest mitigation is not to give a
+  pilot VM that reach — run it without the production peering and without the
+  production database-client grant — and that is a decision for whoever owns the
+  network, not a setting here.
+- `bypassPermissions` remains available per chat. The audit log records which
+  mode every session used.
 
 ## Reporting a vulnerability
 

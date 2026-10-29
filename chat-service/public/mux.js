@@ -479,7 +479,9 @@
     let cwd = place.cwd;
     let note = '';
     if (place.n) {
-      toast(`Getting ${name} ${slotLabel(place.n)} ready…`, 6000);
+      // A slot made just now runs the project's set-up command first, which can take
+      // minutes, so the toast stays up until the answer arrives.
+      toast(`Getting ${name} ${slotLabel(place.n)} ready…`, place.created === false ? 600000 : 6000);
       try {
         const res = await api('/api/slots/prepare', {
           method: 'POST',
@@ -492,6 +494,14 @@
         // Said in the pane, because it is about what the new agent is starting from.
         if (result.kept) note = `Started on ${result.branch} as it was: ${result.kept}.`;
         else if (result.refreshed && !result.fetched) note = `Up to date with ${result.base} as this machine last fetched it.`;
+        // A new slot's set-up command (slots.postCreate) that failed. The slot is a
+        // working checkout regardless; whoever starts here decides whether it matters.
+        const setup = result.postCreate;
+        if (setup?.state === 'failed') {
+          const tail = String(setup.output || '').trim().split('\n').slice(-3).join(' ⏎ ');
+          note = `${note ? `${note} ` : ''}This slot's set-up command failed (exit ${setup.exitCode ?? '?'}): `
+            + `${tail || 'no output'}. The slot is usable as it is.`;
+        }
       } catch (err) {
         toast(`Couldn't prepare ${slotLabel(place.n)}: ${err.message}`);
         return;

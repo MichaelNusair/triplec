@@ -29,6 +29,11 @@ because we have not started charging for it.
 You need an AWS account, a Route53 hosted zone, and Bedrock model access. Full
 walkthrough in [docs/DEPLOY.md](docs/DEPLOY.md).
 
+**Already have a Linux VM?** Host mode installs TripleC onto an existing Ubuntu
+24.04 machine as its developer — no AWS, your own `claude /login`, your
+repositories and hooks where they already are, reached through the VM's own HTTPS
+proxy or a tailnet. See [docs/HOST.md](docs/HOST.md).
+
 > **Read [docs/SECURITY.md](docs/SECURITY.md) before you expose this.** It
 > deploys a web page that runs shell commands on a machine you own — that's the
 > product, not a side effect. Anyone who logs in has a shell. Deploy it as a

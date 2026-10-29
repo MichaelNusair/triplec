@@ -23,22 +23,25 @@
  * fast-forwarded to the default branch — only when it is clean and holds no commit
  * of its own. A slot with anything in it is left exactly as it is, and says so.
  */
-import { execFile } from 'child_process';
-import { appendFile, mkdir, readFile, readdir, readlink, stat } from 'fs/promises';
-import { dirname, join } from 'path';
+import { execFile, spawn } from 'child_process';
+import { appendFile, mkdir, readFile, readdir, readlink, stat, writeFile } from 'fs/promises';
+import { dirname, isAbsolute, join, resolve } from 'path';
 import { promisify } from 'util';
+import { MAX_SLOTS, hasRegistry, projectFor, slotConfigFor } from './projects.js';
 
 const execFileAsync = promisify(execFile);
 
-export const SLOT_COUNT = 8;
+// The most a project can have, which is what the mux has panes for. A project can be
+// configured with fewer (`slots.count` in a registry); see slotConfigFor.
+export const SLOT_COUNT = MAX_SLOTS;
 const WORKTREES = ['.claude', 'worktrees'];
 
 export const slotName = (n) => `slot-${n}`;
 
 /** A slot number from anything a client sends, or null. */
-export function parseSlot(value) {
+export function parseSlot(value, count = SLOT_COUNT) {
   const n = Number(value);
-  return Number.isInteger(n) && n >= 1 && n <= SLOT_COUNT ? n : null;
+  return Number.isInteger(n) && n >= 1 && n <= Math.min(count, SLOT_COUNT) ? n : null;
 }
 
 export function slotPath(projectPath, n) {
@@ -51,8 +54,16 @@ export function slotPath(projectPath, n) {
  */
 export function slotOf(cwd, root) {
   const m = /^(.+)\/\.claude\/worktrees\/slot-([1-8])$/.exec(String(cwd || ''));
-  if (!m || dirname(m[1]) !== root) return null;
-  return { projectPath: m[1], n: Number(m[2]) };
+  if (!m) return null;
+  const n = Number(m[2]);
+  // With a registry a project is wherever it was registered, not a child of a root.
+  if (hasRegistry()) {
+    const project = projectFor(m[1]);
+    if (!project || project.path !== m[1] || n > project.slots.count) return null;
+    return { projectPath: m[1], n };
+  }
+  if (dirname(m[1]) !== root) return null;
+  return { projectPath: m[1], n };
 }
 
 // Same contract as the helper in session-manager.js: report, never throw, and never
@@ -131,7 +142,7 @@ async function excludeSlots(projectPath) {
  * which would fail, and which would also be the wrong answer: that branch may hold
  * the commits of whoever worked there last.
  */
-export async function ensureSlot(projectPath, n, { base = null } = {}) {
+export async function ensureSlot(projectPath, n, { base = null, postCreate = true } = {}) {
   const path = slotPath(projectPath, n);
   if (await exists(join(path, '.git'))) return { ok: true, created: false };
   if (await exists(path)) {
@@ -147,14 +158,120 @@ export async function ensureSlot(projectPath, n, { base = null } = {}) {
     ? await git(projectPath, ['worktree', 'add', path, branch])
     : await git(projectPath, ['worktree', 'add', '--no-track', '-b', branch, path,
       base || (await baseRef(projectPath))]);
-  return add.ok ? { ok: true, created: true } : { ok: false, created: false, error: add.err.slice(0, 300) };
+  if (!add.ok) return { ok: false, created: false, error: add.err.slice(0, 300) };
+  // A new checkout of a repository that needs installing before it builds, or before
+  // its own commit hooks will run, gets the project's set-up command. In the
+  // background: the slot is usable the moment it exists, and prepareSlot is what
+  // waits for the command when a person is about to start working there.
+  if (postCreate) startPostCreate(projectPath, n);
+  return { ok: true, created: true };
+}
+
+// --- the set-up command a new slot runs ------------------------------------------
+
+const POST_CREATE_TIMEOUT_MS = Number(process.env.TRIPLEC_POST_CREATE_TIMEOUT_MS || 30 * 60 * 1000);
+const OUTPUT_TAIL = 4000;
+// One chain per project, so a project created with eight slots installs its
+// dependencies eight times in a row rather than eight times at once.
+const queues = new Map();
+const runs = new Map();
+
+/**
+ * Where a slot's set-up result is kept: in the worktree's own administrative
+ * directory inside the repository's .git, which git deletes when the worktree is
+ * pruned. So a slot recreated after a removal runs its command again, which is the
+ * right answer — it is a new checkout.
+ */
+async function postCreateFile(projectPath, n) {
+  const dotGit = await readFile(join(slotPath(projectPath, n), '.git'), 'utf8').catch(() => '');
+  const m = /^gitdir:\s*(.+)$/m.exec(dotGit);
+  if (!m) return null;
+  const dir = isAbsolute(m[1].trim()) ? m[1].trim() : resolve(slotPath(projectPath, n), m[1].trim());
+  return join(dir, 'triplec-post-create.json');
+}
+
+/** What the last set-up run in a slot did, or null when there is none to report. */
+export async function postCreateStatus(projectPath, n) {
+  const live = runs.get(slotPath(projectPath, n));
+  if (live) return live.status;
+  const file = await postCreateFile(projectPath, n);
+  if (!file) return null;
+  try {
+    return JSON.parse(await readFile(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function startPostCreate(projectPath, n) {
+  const { postCreate: command } = slotConfigFor(projectPath);
+  const path = slotPath(projectPath, n);
+  if (!command || runs.has(path)) return runs.get(path)?.promise || null;
+  const status = { state: 'queued', command, startedAt: null, finishedAt: null, exitCode: null, output: '' };
+  const previous = queues.get(projectPath) || Promise.resolve();
+  const promise = previous.then(() => runPostCreate(projectPath, n, command, status));
+  queues.set(projectPath, promise.catch(() => {}));
+  runs.set(path, { status, promise });
+  promise.finally(() => runs.delete(path)).catch(() => {});
+  return promise;
+}
+
+/**
+ * Run the command in the slot with the service's own environment — which in host
+ * mode carries the developer's login-shell PATH — and record what happened.
+ *
+ * Never rejects. A set-up command that fails leaves a slot that is still a working
+ * checkout, and the person about to use it is the one who should decide whether it
+ * matters; the pane says what failed and shows the end of its output.
+ */
+async function runPostCreate(projectPath, n, command, status) {
+  const path = slotPath(projectPath, n);
+  status.state = 'running';
+  status.startedAt = new Date().toISOString();
+  const result = await new Promise((done) => {
+    let output = '';
+    const keep = (chunk) => {
+      output = (output + chunk.toString()).slice(-OUTPUT_TAIL);
+    };
+    let child;
+    try {
+      child = spawn('/bin/sh', ['-c', command], {
+        cwd: path,
+        env: { ...process.env, TRIPLEC_SLOT: String(n), TRIPLEC_PROJECT_PATH: projectPath, GIT_TERMINAL_PROMPT: '0' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+    } catch (err) {
+      done({ code: null, output: err.message });
+      return;
+    }
+    const timer = setTimeout(() => {
+      keep(`\n[timed out after ${Math.round(POST_CREATE_TIMEOUT_MS / 1000)}s]`);
+      child.kill('SIGTERM');
+    }, POST_CREATE_TIMEOUT_MS);
+    timer.unref?.();
+    child.stdout.on('data', keep);
+    child.stderr.on('data', keep);
+    child.on('error', (err) => keep(`\n${err.message}`));
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      done({ code, output });
+    });
+  });
+  status.state = result.code === 0 ? 'ok' : 'failed';
+  status.exitCode = result.code;
+  status.output = result.output;
+  status.finishedAt = new Date().toISOString();
+  console.log(`slots: set-up command in ${path} ${status.state} (exit ${result.code})`);
+  const file = await postCreateFile(projectPath, n);
+  if (file) await writeFile(file, `${JSON.stringify(status)}\n`).catch(() => {});
+  return status;
 }
 
 /**
  * Every slot a project should have. Reported per slot rather than thrown, because a
  * project with seven slots is a working project — the caller adds it as a step.
  */
-export async function ensureSlots(projectPath, { count = SLOT_COUNT } = {}) {
+export async function ensureSlots(projectPath, { count = slotConfigFor(projectPath).count } = {}) {
   if (!(await canHaveSlots(projectPath))) return { ok: false, skipped: true, created: 0 };
   await excludeSlots(projectPath);
   const base = await baseRef(projectPath);
@@ -222,7 +339,8 @@ export async function claudeCwds({ proc = '/proc' } = {}) {
 export async function listSlots(projectPath, { live = [], others = [] } = {}) {
   if (!(await canHaveSlots(projectPath))) return { enabled: false, slots: [] };
   const slots = [];
-  for (let n = 1; n <= SLOT_COUNT; n++) {
+  const { count } = slotConfigFor(projectPath);
+  for (let n = 1; n <= count; n++) {
     const path = slotPath(projectPath, n);
     const inside = (cwd) => cwd === path || String(cwd).startsWith(`${path}/`);
     const created = await exists(join(path, '.git'));
@@ -238,9 +356,10 @@ export async function listSlots(projectPath, { live = [], others = [] } = {}) {
       busy: mine.some((s) => s.busy),
       held: mine.length > 0 || theirs.length > 0,
       elsewhere: theirs.length,
+      postCreate: created ? await postCreateStatus(projectPath, n) : null,
     });
   }
-  return { enabled: true, slots };
+  return { enabled: true, count, slots };
 }
 
 /**
@@ -267,6 +386,13 @@ export async function prepareSlot(projectPath, n, { env = {}, fetch = true } = {
   const path = slotPath(projectPath, n);
   const base = await baseRef(projectPath);
 
+  // Someone is about to work here, so a set-up command still running — this one, or
+  // one started when the project arrived — is waited for. Its failure is reported,
+  // not raised: the slot is a checkout either way.
+  const pending = runs.get(path)?.promise;
+  if (pending) await pending;
+  const postCreate = await postCreateStatus(projectPath, n);
+
   let fetched = false;
   if (fetch && base.startsWith('origin/')) {
     fetched = (await git(path, ['fetch', '--quiet', 'origin'], { timeout: 30_000, env })).ok;
@@ -287,5 +413,5 @@ export async function prepareSlot(projectPath, n, { env = {}, fetch = true } = {
     refreshed = (await git(path, ['merge', '--ff-only', '--quiet', base])).ok;
     if (!refreshed) kept = `${state.branch || 'its branch'} could not be fast-forwarded to ${base}`;
   }
-  return { ok: true, cwd: path, created: made.created, base, fetched, refreshed, kept, ...(await slotState(path)) };
+  return { ok: true, cwd: path, created: made.created, base, fetched, refreshed, kept, postCreate, ...(await slotState(path)) };
 }

@@ -28,6 +28,8 @@ import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import { projectPathFor } from './session-manager.js';
 import { canHaveSlots, ensureSlot, parseSlot, slotPath } from './slots.js';
+import { HOST_MODE } from './host.js';
+import { hasRegistry, slotConfigFor } from './projects.js';
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -35,7 +37,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 // Overridable for term-test.js, which has no tmux and no `cc` on the deploy box.
 const RELAY = process.env.TERM_RELAY || join(here, 'term-relay.py');
 const PYTHON = process.env.TERM_PYTHON || 'python3';
-const CC = process.env.CC_SCRIPT || '/usr/local/bin/cc';
+// Where the installer put `cc`: /usr/local/bin on the workspace box, ~/.local/bin on
+// a host install, which says so in CC_SCRIPT.
+const CC = process.env.CC_SCRIPT || (HOST_MODE ? join(process.env.HOME || '', '.local', 'bin', 'cc') : '/usr/local/bin/cc');
 const TMUX = process.env.TMUX_BIN || 'tmux';
 
 /**
@@ -47,8 +51,9 @@ const TMUX = process.env.TMUX_BIN || 'tmux';
  */
 export function terminalTarget(project, slotValue) {
   const path = projectPathFor(project);
-  const slot = Number(slotValue) === 0 || slotValue === '0' ? 0 : parseSlot(slotValue);
-  if (slot === null) throw new Error('slot must be 0, for the project itself, or 1 to 8');
+  const { count } = slotConfigFor(path);
+  const slot = Number(slotValue) === 0 || slotValue === '0' ? 0 : parseSlot(slotValue, count);
+  if (slot === null) throw new Error(`slot must be 0, for the project itself, or 1 to ${count}`);
   const name = slot ? `${project}/slot-${slot}` : project;
   return { project, slot, projectPath: path, dir: slot ? slotPath(path, slot) : path, name, session: `claude-${name}` };
 }
@@ -173,10 +178,15 @@ export async function serveTerminal(ws, query) {
   const rows = clampSize(query.get('rows'), 30);
   // `-I`: the relay is ours, and nothing in the environment or the working directory
   // gets to change which Python modules it loads.
-  const relay = spawn(PYTHON, ['-I', RELAY, String(cols), String(rows), CC, target.name], {
+  // With a registry a project's directory is not `$PROJECTS_ROOT/<name>`, so `cc` is
+  // handed the directory itself and told the name to give the session — the same
+  // `claude-<name>` this side looks for, rather than one built from the path.
+  const ccArg = hasRegistry() ? target.dir : target.name;
+  const relay = spawn(PYTHON, ['-I', RELAY, String(cols), String(rows), CC, ccArg], {
     cwd: target.dir,
     env: {
       ...process.env,
+      CC_SESSION_NAME: target.name,
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       LANG: process.env.LANG || 'C.UTF-8',

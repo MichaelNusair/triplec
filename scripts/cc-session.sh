@@ -74,6 +74,30 @@ else
   dir="$PROJECTS/$name"
 fi
 
+# A project registry (a host install whose repositories were there first) names
+# projects that are not directories under $PROJECTS. Asked only when the
+# name did not resolve the ordinary way, so the workspace box never reads it.
+if [ ! -d "$dir" ] && [ -n "${TRIPLEC_PROJECTS_FILE:-}" ] && [ -r "$TRIPLEC_PROJECTS_FILE" ]; then
+  project="${name%%/*}"
+  registered="$(python3 -I -c 'import json,sys
+for p in json.load(open(sys.argv[1])):
+    if p.get("name") == sys.argv[2]:
+        print(p["path"])' "$TRIPLEC_PROJECTS_FILE" "$project" 2>/dev/null || true)"
+  if [ -n "$registered" ]; then
+    if [ "$project" = "$name" ]; then dir="$registered"; else dir="$registered/.claude/worktrees/${name#*/}"; fi
+  fi
+fi
+
+# The caller already knows the session's name — the chat service's terminal panes,
+# which hand over a registered project's directory and need the session called what
+# the project is called, not what its directory is called.
+if [ -n "${CC_SESSION_NAME:-}" ]; then
+  case "$CC_SESSION_NAME" in
+    */*/*|.*|*/.*|/*|*/|*[!A-Za-z0-9._/-]*) printf 'Not a session name: %s\n' "$CC_SESSION_NAME" >&2; exit 1 ;;
+  esac
+  name="$CC_SESSION_NAME"
+fi
+
 if [ ! -d "$dir" ]; then
   printf 'No such project or slot: %s\n\nAvailable:\n' "$name" >&2
   ls -1 "$PROJECTS" 2>/dev/null | sed 's/^/  /' >&2
@@ -121,7 +145,7 @@ fi
 # fragile, and refusing to open Claude would be the worse outcome.
 server_pid="$(tmux display-message -p '#{pid}' 2>/dev/null || true)"
 if [ -n "$server_pid" ] && [ -r "/proc/$server_pid/cgroup" ] &&
-  ! grep -q claude-tmux "/proc/$server_pid/cgroup"; then
+  ! grep -qE 'claude-tmux|triplec-tmux' "/proc/$server_pid/cgroup"; then
   printf '\033[1;33mNote:\033[0m this tmux server is not claude-tmux.service, so a deploy or a\n' >&2
   printf '      code-server restart will end this session. Check: systemctl status claude-tmux\n' >&2
 fi

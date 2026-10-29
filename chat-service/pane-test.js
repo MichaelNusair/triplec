@@ -1123,6 +1123,45 @@ console.log('\nStarts a new chat on the model the deployment is configured for:'
 }
 
 // --- results ----------------------------------------------------------------
+console.log('\nAsks before a tool runs, and lets any device answer once:');
+{
+  const h = bootClient({ settings: { permissionMode: '' } });
+  await settle();
+  const a = h.hooks.openConversation({ cwd: DEMO, project: 'demo', sessionId: 'aaa', title: 'the one still running' });
+  const sa = h.sockets[0];
+  joinConversation(sa, { sessionId: 'aaa', busy: true });
+  const start = sa.sent.find((m) => m.type === 'start');
+  check('a device with no mode chosen sends none, so the machine\'s default applies',
+    start && start.permissionMode === undefined, JSON.stringify(start));
+
+  sa.deliver({
+    type: 'permission_request', requestId: 'req-1', toolName: 'Bash',
+    description: 'Create a file', input: { command: 'touch approved.txt' },
+  });
+  const card = a.thread.querySelector('.permission');
+  check('a permission request is drawn as a card in the thread', Boolean(card) && /needs your approval/.test(card.textContent));
+  check('showing what would run', card && card.textContent.includes('touch approved.txt'));
+  sa.deliver({ type: 'permission_request', requestId: 'req-1', toolName: 'Bash', input: {} });
+  check('the same request delivered twice is one card', a.thread.querySelectorAll('.permission').length === 1);
+
+  card.querySelector('.permission-allow').click();
+  const answer = sa.sent.find((m) => m.type === 'permission');
+  check('approve sends the decision for that request', answer && answer.requestId === 'req-1' && answer.decision === 'allow', JSON.stringify(answer));
+  check('and the buttons cannot be pressed twice', [...card.querySelectorAll('button')].every((b) => b.disabled));
+  sa.deliver({ type: 'permission_resolved', requestId: 'req-1', decision: 'allow' });
+  check('the card then says what was decided', /Approved/.test(card.querySelector('.permission-state').textContent));
+
+  sa.deliver({ type: 'permission_request', requestId: 'req-2', toolName: 'Write', input: { file_path: `${DEMO}/notes.md` } });
+  const second = [...a.thread.querySelectorAll('.permission')].pop();
+  check('a file path is shown relative to the chat\'s directory', second.textContent.includes('notes.md') && !second.textContent.includes(DEMO));
+  sa.deliver({ type: 'permission_resolved', requestId: 'req-2', decision: 'deny' });
+  check('an answer from another device closes the card here too',
+    /Denied/.test(second.querySelector('.permission-state').textContent) && [...second.querySelectorAll('button')].every((b) => b.disabled));
+
+  sa.deliver({ type: 'ping', at: 1 });
+  check('an application ping is answered', sa.sent.some((m) => m.type === 'pong'));
+}
+
 if (failures.length) {
   console.error(`\nFAIL: ${failures.length} check(s) failed`);
   for (const f of failures) console.error(`  - ${f}`);
@@ -1140,3 +1179,5 @@ console.log(
   + 'project you are looking at; and a new chat starts on the model the '
   + 'deployment is configured for unless this device chose another.',
 );
+// The client's socket watchdog is an interval, and jsdom keeps it alive; the run is over.
+process.exit(0);

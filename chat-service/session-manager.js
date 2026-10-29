@@ -8,21 +8,40 @@
  */
 import { spawn, execFile } from 'child_process';
 import { readdir, readFile, stat, mkdir, realpath, writeFile, rm } from 'fs/promises';
-import { join } from 'path';
+import { basename, dirname, join } from 'path';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { promisify } from 'util';
-import { ensureSlots, listSlots, prepareSlot, claudeCwds, parseSlot } from './slots.js';
+import { ensureSlots, listSlots, prepareSlot, claudeCwds, parseSlot, slotPath } from './slots.js';
 import {
-  SecretsManagerClient,
-  GetSecretValueCommand,
-} from '@aws-sdk/client-secrets-manager';
+  PROJECTS_ROOT,
+  CLAUDE_HOME,
+  DEFAULT_MODEL,
+  MAX_LIVE_SESSIONS,
+  audit,
+  claudeEnv,
+  feature,
+} from './host.js';
+import {
+  assertSafeName,
+  hasRegistry,
+  listProjectDirs,
+  isUnderProjects,
+  projectFor,
+  projectLabel,
+  projectPathFor,
+  registered,
+  slotConfigFor,
+} from './projects.js';
 
 const execFileAsync = promisify(execFile);
-const WORKSPACE_USER = process.env.WORKSPACE_USER || 'coder';
 
 // Resolved on demand and cached: `gh` needs the token in its environment, and
 // keeping it out of any file means nothing in the workspace can read it back.
+//
+// Only where GITHUB_SECRET_ARN is set, which is the AWS deployment. Everywhere else
+// git and gh use the machine's own login — `gh auth login`, an SSH key — and the SDK
+// is never loaded, so a host with no AWS account has no AWS call to fail.
 let cachedGithubToken = null;
 async function getGithubToken() {
   if (cachedGithubToken !== null) return cachedGithubToken;
@@ -32,6 +51,7 @@ async function getGithubToken() {
     return cachedGithubToken;
   }
   try {
+    const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
     const client = new SecretsManagerClient({ region: process.env.AWS_REGION || 'us-east-1' });
     const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
     cachedGithubToken = JSON.parse(res.SecretString || '{}').token || '';
@@ -41,11 +61,9 @@ async function getGithubToken() {
   return cachedGithubToken;
 }
 
-const PROJECTS_ROOT = process.env.PROJECTS_ROOT || '/workspace/projects';
-const CLAUDE_HOME = process.env.CLAUDE_HOME || '/workspace/claude';
 // ANTHROPIC_MODEL is the deployment's `defaultModel`, put in this service's unit
-// by bootstrap.sh. The literal is only what a bare `node server.js` runs on.
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || 'us.anthropic.claude-opus-5-5';
+// by bootstrap.sh. Without one, host.js answers a Bedrock id on Bedrock and null —
+// the CLI's own default — for every other provider.
 const DEFAULT_PERMISSION_MODE = process.env.DEFAULT_PERMISSION_MODE || 'bypassPermissions';
 const DEFAULT_EFFORT = process.env.DEFAULT_EFFORT || 'max';
 
@@ -56,13 +74,28 @@ const DEFAULT_EFFORT = process.env.DEFAULT_EFFORT || 'max';
 // /private/tmp) changes the directory name. Resolve before mangling or the
 // lookup silently finds nothing.
 async function mangleCwd(cwd) {
-  let resolved = cwd;
-  try {
-    resolved = await realpath(cwd);
-  } catch {
-    /* directory may not exist yet; fall back to the literal path */
+  return (await resolvedPath(cwd)).replace(/[/.]/g, '-');
+}
+
+/**
+ * `realpath`, for a directory that may not exist: the nearest ancestor that does is
+ * resolved and the rest is appended. A slot the VM's worktree reaper removed is the
+ * case — its transcripts are still recorded under its resolved path, and a symlink
+ * anywhere above it would otherwise change the name they are looked up by.
+ */
+async function resolvedPath(cwd) {
+  const tail = [];
+  let dir = cwd;
+  for (;;) {
+    try {
+      return join(await realpath(dir), ...tail.reverse());
+    } catch {
+      const parent = dirname(dir);
+      if (parent === dir) return cwd;
+      tail.push(basename(dir));
+      dir = parent;
+    }
   }
-  return resolved.replace(/[/.]/g, '-');
 }
 
 /** Where Claude Code records the conversations held in a directory. */
@@ -111,6 +144,21 @@ async function projectPlaces(cwd) {
     const path = join(root, entry.name);
     places.push({ cwd: path, dir: await transcriptDir(path), worktree: entry.name });
   }
+  /*
+   * And the slots that are not there right now. A machine can remove a clean,
+   * pushed worktree on its own schedule — a reaper for idle ones — and a slot is
+   * recreated the moment it is opened again, but its conversations were recorded
+   * while it existed and are still on disk. Listing only the directories that exist
+   * would make a slot's history vanish whenever the reaper ran, and reappear when
+   * somebody happened to open that slot.
+   */
+  const { count } = slotConfigFor(cwd);
+  for (let n = 1; n <= count; n++) {
+    const path = slotPath(cwd, n);
+    if (places.some((p) => p.cwd === path)) continue;
+    const dir = await transcriptDir(path);
+    if (await stat(dir).catch(() => null)) places.push({ cwd: path, dir, worktree: basename(path) });
+  }
   return places;
 }
 
@@ -145,26 +193,10 @@ function truncate(text, max = 70) {
   return clean.length > max ? `${clean.slice(0, max)}…` : clean;
 }
 
-/**
- * Validate a project name and turn it into a path under PROJECTS_ROOT.
- *
- * The character class is the whole defence: with no `/` and no leading dot,
- * `join` cannot be talked out of the projects root. Reaching any caller of this
- * requires a valid session — and a logged-in user already has a shell here — but
- * one of these callers deletes a directory tree, so the name it is handed must
- * not be able to name a directory somewhere else.
- */
-function assertSafeName(name) {
-  if (typeof name !== 'string' || !/^[A-Za-z0-9._-]+$/.test(name)) {
-    throw new Error('name may only contain letters, numbers, dot, dash and underscore');
-  }
-  if (name.startsWith('.') || name.length > 100) throw new Error('invalid project name');
-  return name;
-}
-
-function projectPathFor(name) {
-  return join(PROJECTS_ROOT, assertSafeName(name));
-}
+// Project names, and the directory each one is, are projects.js's: a projects root
+// on the workspace box, a registry on a host that had its repositories first. One of
+// the callers below deletes a directory tree by name, so the name it is handed has
+// been through assertSafeName and, with a registry, must be a registered one.
 
 /**
  * Accept the forms people actually paste — `owner/repo`, a browser URL, an SSH
@@ -385,15 +417,38 @@ const PERMISSION_MODES = new Set([
   'manual',
 ]);
 
+// What the CLI used to call `manual`, and still reports itself as in its init event.
+const PERMISSION_ALIASES = { default: 'manual' };
+const permissionModeOf = (mode) => PERMISSION_ALIASES[mode] || mode;
+
+/**
+ * What a permission request looks like on a phone, and nothing more.
+ *
+ * The input is the tool's own — a whole file for a Write — so it is cut down to
+ * what a person needs to decide: the command, the path, the start of the content.
+ * The full input stays here and is what an approval sends back.
+ */
+function permissionPreview(request) {
+  const input = request.input && typeof request.input === 'object' ? request.input : {};
+  const preview = {};
+  for (const [key, value] of Object.entries(input)) {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    preview[key] = text && text.length > 2000 ? `${text.slice(0, 2000)}…` : text;
+  }
+  return preview;
+}
+
 class Conversation extends EventEmitter {
   constructor({ id, cwd, model, permissionMode, effort, resumeSessionId, fork = false }) {
     super();
     this.id = id;
     this.cwd = cwd;
-    this.model = model || DEFAULT_MODEL;
-    this.permissionMode = PERMISSION_MODES.has(permissionMode)
-      ? permissionMode
-      : DEFAULT_PERMISSION_MODE;
+    // Null is a real answer: no `--model`, so the CLI picks its own default. That is
+    // what a host on `claude /login` gets unless its install names a model.
+    this.model = model || DEFAULT_MODEL || null;
+    this.permissionMode = PERMISSION_MODES.has(permissionModeOf(permissionMode))
+      ? permissionModeOf(permissionMode)
+      : permissionModeOf(DEFAULT_PERMISSION_MODE);
     this.effort = ['low', 'medium', 'high', 'xhigh', 'max'].includes(effort)
       ? effort
       : DEFAULT_EFFORT;
@@ -442,6 +497,19 @@ class Conversation extends EventEmitter {
     this.partialText = '';
     this.lastActivity = Date.now();
     this.exited = false;
+    /*
+     * Tool calls waiting for a person to approve or deny them, by the CLI's request
+     * id. The CLI is started with `--permission-prompt-tool stdio`, so in any mode
+     * that asks — `manual`, `acceptEdits` for a shell command, `plan` — it sends a
+     * `can_use_tool` control request on stdout and waits for the answer on stdin.
+     * Without this the same request was answered "no" by nobody, and the turn ended
+     * with "needs approval" and no way to give it.
+     *
+     * Kept out of `history`: a request that has been answered is not something a
+     * device joining later should be asked again. A pending one is handed to every
+     * device that attaches until somebody answers it.
+     */
+    this.pendingPermissions = new Map();
   }
 
   start() {
@@ -451,8 +519,11 @@ class Conversation extends EventEmitter {
       '--output-format', 'stream-json',
       '--include-partial-messages',
       '--verbose',
-      '--model', this.model,
+      ...(this.model ? ['--model', this.model] : []),
       '--permission-mode', this.permissionMode,
+      // Ask this service, over the same stdio, whenever a tool needs approval. See
+      // pendingPermissions.
+      '--permission-prompt-tool', 'stdio',
       '--effort', this.effort,
     ];
     if (this.resumeSessionId) args.push('--resume', this.resumeSessionId);
@@ -466,10 +537,9 @@ class Conversation extends EventEmitter {
     this.proc = spawn('claude', args, {
       cwd: this.cwd,
       env: {
-        ...process.env,
-        HOME: process.env.CODER_HOME || '/home/coder',
-        CLAUDE_CODE_USE_BEDROCK: '1',
-        ANTHROPIC_MODEL: this.model,
+        // The user's home and the provider this deployment uses — Bedrock on the
+        // workspace box, the developer's own `claude /login` on a host. See host.js.
+        ...claudeEnv({ model: this.model }),
         TERM: 'dumb',
         // Prevent the CLI from thinking it's nested inside another agent.
         CLAUDECODE: '',
@@ -491,7 +561,9 @@ class Conversation extends EventEmitter {
     this.proc.on('exit', (code) => {
       this.exited = true;
       this.busy = false;
+      this.#dropPermissions('the conversation ended');
       this.#emit({ type: 'exit', code });
+      this.emit('exited', this, code);
     });
 
     this.proc.on('error', (err) => {
@@ -529,6 +601,20 @@ class Conversation extends EventEmitter {
     this.lastActivity = Date.now();
 
     switch (event.type) {
+      case 'control_request':
+        this.#onControlRequest(event);
+        return;
+
+      case 'control_cancel_request': {
+        // The CLI withdrew a question — an interrupt, usually. Every device showing
+        // it has to stop offering an answer nobody is waiting for.
+        const id = event.request_id;
+        if (this.pendingPermissions.delete(id)) {
+          this.#emit({ type: 'permission_resolved', requestId: id, decision: 'cancelled' }, false);
+        }
+        return;
+      }
+
       case 'system':
         if (event.subtype === 'init') {
           // A fresh session gets its id here. Register it under the manager's
@@ -618,6 +704,113 @@ class Conversation extends EventEmitter {
     }
   }
 
+  #onControlRequest(event) {
+    const request = event.request || {};
+    /*
+     * A multiple-choice question is a tool call too, once the CLI has someone to ask
+     * — but its answer is the choice, which an approve/deny card cannot carry, and
+     * approving it unchanged would hand the model a question nobody answered. Before
+     * the relay the tool did not exist in these chats at all, so it is refused with
+     * the instruction that keeps the conversation going the way it always has.
+     */
+    if (request.subtype === 'can_use_tool' && request.tool_name === 'AskUserQuestion') {
+      this.#write({
+        type: 'control_response',
+        response: {
+          subtype: 'success',
+          request_id: event.request_id,
+          response: {
+            behavior: 'deny',
+            message: 'This chat cannot show multiple-choice questions. Ask the question in your reply, '
+              + 'as plain text with the options listed, and the user will answer in their next message.',
+          },
+        },
+      });
+      return;
+    }
+    if (request.subtype !== 'can_use_tool') {
+      // Nothing else is registered by this host, so nothing else should arrive. An
+      // unanswered control request would hang the turn, so it is refused instead.
+      this.#write({
+        type: 'control_response',
+        response: { subtype: 'error', request_id: event.request_id, error: `unsupported: ${request.subtype}` },
+      });
+      return;
+    }
+    const pending = {
+      requestId: event.request_id,
+      toolName: request.tool_name || request.display_name || 'a tool',
+      toolUseId: request.tool_use_id || null,
+      description: typeof request.description === 'string' ? request.description.slice(0, 500) : '',
+      blockedPath: typeof request.blocked_path === 'string' ? request.blocked_path : null,
+      input: request.input && typeof request.input === 'object' ? request.input : {},
+      at: Date.now(),
+    };
+    this.pendingPermissions.set(pending.requestId, pending);
+    this.emit('permission', this, pending);
+    this.#emit(this.#permissionEvent(pending), false);
+  }
+
+  #permissionEvent(pending) {
+    return {
+      type: 'permission_request',
+      requestId: pending.requestId,
+      toolName: pending.toolName,
+      toolUseId: pending.toolUseId,
+      description: pending.description,
+      blockedPath: pending.blockedPath,
+      input: permissionPreview(pending),
+      at: pending.at,
+    };
+  }
+
+  /** The questions still waiting, as events, for a device that just attached. */
+  pendingPermissionEvents() {
+    return [...this.pendingPermissions.values()].map((p) => this.#permissionEvent(p));
+  }
+
+  /**
+   * Answer one permission request. `allow` runs the tool with the input it asked
+   * for; anything else denies it, with a message the model is told.
+   *
+   * The first answer wins: two phones showing one request can both tap, and the
+   * second tap finds nothing pending and is told so rather than answering twice.
+   */
+  answerPermission(requestId, decision, { by = null } = {}) {
+    const pending = this.pendingPermissions.get(requestId);
+    if (!pending) return null;
+    this.pendingPermissions.delete(requestId);
+    const allow = decision === 'allow';
+    this.#write({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: requestId,
+        response: allow
+          ? { behavior: 'allow', updatedInput: pending.input }
+          : { behavior: 'deny', message: 'The user denied this from the TripleC chat.' },
+      },
+    });
+    this.lastActivity = Date.now();
+    const answer = { requestId, decision: allow ? 'allow' : 'deny', toolName: pending.toolName, by };
+    this.emit('permissionAnswered', this, answer, pending);
+    this.#emit({ type: 'permission_resolved', requestId, decision: answer.decision }, false);
+    return answer;
+  }
+
+  #dropPermissions(reason) {
+    for (const id of this.pendingPermissions.keys()) {
+      this.#emit({ type: 'permission_resolved', requestId: id, decision: 'cancelled', reason }, false);
+    }
+    this.pendingPermissions.clear();
+  }
+
+  #write(message) {
+    if (this.exited || !this.proc?.stdin.writable) return false;
+    this.proc.stdin.write(`${JSON.stringify(message)}\n`);
+    return true;
+  }
+
   #emit(msg, persist = true) {
     if (persist) {
       this.history.push(msg);
@@ -665,6 +858,7 @@ class Conversation extends EventEmitter {
       // SIGINT maps to the CLI's own cancel handling.
       this.proc.kill('SIGINT');
       this.busy = false;
+      this.#dropPermissions('interrupted');
       this.#emit({ type: 'interrupted' });
     }
   }
@@ -720,17 +914,17 @@ export class SessionManager {
   }
 
   async listProjects() {
-    await mkdir(PROJECTS_ROOT, { recursive: true });
-    const entries = await readdir(PROJECTS_ROOT, { withFileTypes: true });
+    if (!hasRegistry()) await mkdir(PROJECTS_ROOT, { recursive: true });
     const projects = [];
 
-    for (const entry of entries) {
-      if (!entry.isDirectory() || entry.name.startsWith('.')) continue;
-      const cwd = join(PROJECTS_ROOT, entry.name);
+    for (const entry of await listProjectDirs()) {
+      // A registered project whose directory is not there (yet) is not listed: there
+      // is nothing to open, and creating it is what POST /api/projects is for.
+      if (hasRegistry() && !(await stat(entry.path).catch(() => null))?.isDirectory()) continue;
       projects.push({
         name: entry.name,
-        path: cwd,
-        sessions: await this.listSessions(cwd),
+        path: entry.path,
+        sessions: await this.listSessions(entry.path),
       });
     }
     projects.sort((a, b) => {
@@ -879,7 +1073,7 @@ export class SessionManager {
     if (!/^[A-Za-z0-9_-]+$/.test(String(sessionId))) {
       throw new Error('invalid session id');
     }
-    if (!String(cwd).startsWith(PROJECTS_ROOT)) {
+    if (!isUnderProjects(cwd)) {
       throw new Error('cwd must be inside the projects root');
     }
 
@@ -991,13 +1185,32 @@ export class SessionManager {
    * resuming a copy of it. The copy wins; see the constructor's `fork`.
    */
   create({ cwd, model, permissionMode, effort, resumeSessionId, fork = false }) {
-    if (!cwd.startsWith(PROJECTS_ROOT)) {
+    if (!isUnderProjects(cwd)) {
       throw new Error('cwd must be inside the projects root');
     }
+    // For the audit trail. The root itself is a place a chat can start but no project.
+    const project = projectFor(cwd) || { name: projectLabel(cwd) };
 
     if (resumeSessionId) {
       const existing = this.liveSession(resumeSessionId, cwd);
       if (existing) return existing;
+    }
+
+    /*
+     * A ceiling on processes, not on chats. Each live conversation is a `claude`
+     * holding a few hundred MB, and on a developer VM those share memory with
+     * the developer's own builds, containers and test runs. Joining a live one
+     * (above) never counts against it; starting a new process does.
+     */
+    const live = [...this.conversations.values()].filter((c) => !c.exited).length;
+    if (live >= MAX_LIVE_SESSIONS) {
+      const err = new Error(
+        `${live} chats are already running on this machine, which is its limit ` +
+          `(maxLiveSessions ${MAX_LIVE_SESSIONS}). Stop one from the admin page, or ` +
+          'close one you are done with, and try again.',
+      );
+      err.code = 'ELIMIT';
+      throw err;
     }
 
     const id = randomUUID();
@@ -1008,7 +1221,34 @@ export class SessionManager {
     // yet, and it is indexed when `system/init` says what the CLI called it.
     this.#index(conv);
     conv.on('sessionId', (c, previous) => this.#index(c, previous));
+    conv.on('exited', (c, code) => {
+      audit('session_stop', { conversationId: c.id, sessionId: c.sessionId, project: project.name, cwd: c.cwd, exitCode: code });
+    });
+    conv.on('permissionAnswered', (c, answer) => {
+      audit('permission_decision', {
+        conversationId: c.id,
+        sessionId: c.sessionId,
+        project: project.name,
+        tool: answer.toolName,
+        decision: answer.decision,
+        by: answer.by || undefined,
+      });
+    });
+    conv.on('permission', (c, pending) => {
+      audit('permission_request', { conversationId: c.id, sessionId: c.sessionId, project: project.name, tool: pending.toolName });
+    });
     conv.start();
+    audit('session_start', {
+      conversationId: id,
+      sessionId: conv.sessionId,
+      project: project.name,
+      cwd,
+      permissionMode: conv.permissionMode,
+      model: conv.model || 'cli-default',
+      resumed: Boolean(resumeSessionId),
+      fork: conv.fork,
+      pid: conv.proc?.pid,
+    });
     return conv;
   }
 
@@ -1032,9 +1272,7 @@ export class SessionManager {
     return [...this.conversations.values()].map((conv) => ({
       id: conv.id,
       cwd: conv.cwd,
-      project: conv.cwd.startsWith(`${PROJECTS_ROOT}/`)
-        ? conv.cwd.slice(PROJECTS_ROOT.length + 1)
-        : conv.cwd,
+      project: projectLabel(conv.cwd),
       sessionId: conv.sessionId,
       model: conv.model,
       permissionMode: conv.permissionMode,
@@ -1078,10 +1316,11 @@ export class SessionManager {
    * *busy* one is allowed is decided by the route, not here: this layer has no way
    * to ask the user anything.
    */
-  stopConversation(id) {
+  stopConversation(id, { by = 'admin' } = {}) {
     const conv = this.conversations.get(id);
     if (!conv) return null;
     const wasBusy = conv.busy;
+    audit('session_stop_requested', { conversationId: id, sessionId: conv.sessionId, cwd: conv.cwd, busy: wasBusy, by });
     conv.stop();
     this.#forget(conv);
     return { id, cwd: conv.cwd, sessionId: conv.sessionId, wasBusy };
@@ -1099,6 +1338,11 @@ export class SessionManager {
    * from a fully wired one, and the UI says which happened.
    */
   async createProject(name, { github = false, private: isPrivate = true, description = '' } = {}) {
+    // With a registry, a project is something the machine's owner declared, so the
+    // only one that can be created is a registered name whose directory is missing.
+    if (hasRegistry() && !registered(assertSafeName(name))) {
+      throw new Error(`"${name}" is not in this machine's project registry, so it cannot be created here`);
+    }
     const path = projectPathFor(name);
     try {
       await stat(path);
@@ -1308,8 +1552,9 @@ export class SessionManager {
   /** Create a slot if it is missing and refresh it if that is safe. See slots.js. */
   async prepareSlot(name, slot) {
     const path = projectPathFor(name);
-    const n = parseSlot(slot);
-    if (!n) throw new Error('slot must be a number from 1 to 8');
+    const { count } = slotConfigFor(path);
+    const n = parseSlot(slot, count);
+    if (!n) throw new Error(`slot must be a number from 1 to ${count}`);
     const info = await stat(path).catch(() => null);
     if (!info?.isDirectory()) throw new Error(`no project named "${name}"`);
     const token = await getGithubToken();
@@ -1336,6 +1581,9 @@ export class SessionManager {
    * to a commit that then gets deleted along with the only repository that has it.
    */
   async removeProject(name, { force = false } = {}) {
+    // The route is not there when retire is off; this is the same refusal one layer
+    // down, so nothing that calls the manager directly can delete a project either.
+    if (!feature('retire')) throw new Error('removing projects is not enabled on this machine');
     const status = await this.projectStatus(name);
     const { path } = status;
     const steps = [];
@@ -1481,14 +1729,24 @@ export class SessionManager {
     // project of its own. Both names go through the same validation, because both
     // are caller-supplied and both end up as a path component.
     let parent = PROJECTS_ROOT;
+    let path;
     if (into) {
       parent = projectPathFor(into);
       const info = await stat(parent).catch(() => null);
       if (!info?.isDirectory()) throw new Error(`no project named "${into}"`);
+      // Reuses the project-name rules deliberately: no slash and no leading dot is
+      // exactly what keeps `join` from writing outside the directory chosen above.
+      path = join(parent, assertSafeName(target));
+    } else if (hasRegistry()) {
+      // A clone becomes a project only at a path the registry already names for it.
+      if (!registered(assertSafeName(target))) {
+        throw new Error(`"${target}" is not in this machine's project registry, so it cannot be cloned here`);
+      }
+      path = projectPathFor(target);
+      parent = dirname(path);
+    } else {
+      path = join(parent, assertSafeName(target));
     }
-    // Reuses the project-name rules deliberately: no slash and no leading dot is
-    // exactly what keeps `join` from writing outside the directory chosen above.
-    const path = join(parent, assertSafeName(target));
 
     if (await stat(path).catch(() => null)) {
       throw new Error(
@@ -1508,7 +1766,7 @@ export class SessionManager {
 
     let clone;
     if (token) {
-      clone = await git(parent, ['clone', '--recurse-submodules', url, target], {
+      clone = await git(parent, ['clone', '--recurse-submodules', url, basename(path)], {
         timeout,
         env: { GH_TOKEN: token, GITHUB_TOKEN: token },
       });
@@ -1525,7 +1783,7 @@ export class SessionManager {
         if (viaGh.ok) clone = viaGh;
       }
     } else {
-      clone = await git(parent, ['clone', '--recurse-submodules', url, target], { timeout });
+      clone = await git(parent, ['clone', '--recurse-submodules', url, basename(path)], { timeout });
     }
 
     if (!clone.ok) {
@@ -1575,11 +1833,7 @@ export class SessionManager {
       },
     );
 
-    const present = new Set(
-      (await readdir(PROJECTS_ROOT, { withFileTypes: true }).catch(() => []))
-        .filter((e) => e.isDirectory())
-        .map((e) => e.name),
-    );
+    const present = new Set((await listProjectDirs()).map((p) => p.name));
 
     return JSON.parse(stdout || '[]').map((r) => ({
       slug: r.nameWithOwner,

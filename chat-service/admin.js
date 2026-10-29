@@ -46,13 +46,29 @@ import { promisify } from 'util';
 import os from 'os';
 import { brokerSessions as liveBrokerSessions } from './claude-status.js';
 import { buildInfo } from './build.js';
+import { HOST_MODE, PROJECTS_ROOT, feature } from './host.js';
+import { projectLabel } from './projects.js';
 
 const execFileAsync = promisify(execFile);
 
-/** The units the deployment is made of. Order is the order they are shown in. */
-const UNITS = ['claude-chat', 'code-server', 'claude-broker', 'claude-tmux', 'nginx'];
+/**
+ * The units the deployment is made of. Order is the order they are shown in.
+ *
+ * A host install names its own (deploy/host/install.sh) so they cannot be mistaken
+ * for the workspace box's, and has the editor's two only when the editor is part
+ * of it — a unit that was never installed is not a unit that is down.
+ */
+const UNIT = HOST_MODE
+  ? { chat: 'triplec-chat', editor: 'code-server', broker: 'claude-broker', tmux: 'triplec-tmux' }
+  : { chat: 'claude-chat', editor: 'code-server', broker: 'claude-broker', tmux: 'claude-tmux' };
+const UNITS = [
+  UNIT.chat,
+  ...(HOST_MODE && !feature('editor') ? [] : [UNIT.editor, UNIT.broker]),
+  ...(HOST_MODE && !feature('mux') ? [] : [UNIT.tmux]),
+  'nginx',
+];
 
-const DATA_MOUNT = process.env.PROJECTS_ROOT || '/workspace/projects';
+const DATA_MOUNT = PROJECTS_ROOT;
 
 /**
  * A refusal the UI can act on, rather than a crash. Same shape as the one
@@ -208,8 +224,7 @@ async function cwdOf(deps, pid) {
   }
 }
 
-const projectOf = (cwd) =>
-  cwd && cwd.startsWith(`${DATA_MOUNT}/`) ? cwd.slice(DATA_MOUNT.length + 1) : cwd || null;
+const projectOf = (cwd) => (cwd ? projectLabel(cwd) : null);
 
 /**
  * The editor panel's conversations: children of the broker, one per conversation.
@@ -318,7 +333,7 @@ async function tmuxSessions(deps, table, tmuxServerPid) {
   // The durability of every one of these depends on the server's cgroup, so it is
   // reported alongside them rather than left to be discovered by a deploy.
   const cgroup = tmuxServerPid ? await readCgroup(deps, tmuxServerPid) : null;
-  for (const session of sessions) session.serverInOwnUnit = cgroup === null ? null : cgroup.includes('claude-tmux');
+  for (const session of sessions) session.serverInOwnUnit = cgroup === null ? null : cgroup.includes(UNIT.tmux);
   return sessions;
 }
 
@@ -359,9 +374,9 @@ function findings({ units, chat, broker, tmux, memory, disk }) {
         // The broker being down is not a visible failure — it is a silent
         // regression to one Claude per browser page, which is why it is called out
         // rather than left to be inferred from a dot.
-        detail: name === 'claude-broker'
+        detail: name === UNIT.broker
           ? 'the editor panel forks a separate Claude per page load while this is down'
-          : name === 'claude-tmux'
+          : name === UNIT.tmux
             ? 'the next `cc` will start a tmux server inside code-server, and a deploy will kill its sessions'
             : null,
       });
@@ -428,7 +443,7 @@ function findings({ units, chat, broker, tmux, memory, disk }) {
   if (strayTmux) {
     out.push({
       level: 'error',
-      text: 'the tmux server is not claude-tmux.service',
+      text: `the tmux server is not ${UNIT.tmux}.service`,
       detail: 'its sessions are in code-server\'s cgroup, so the next deploy will kill them',
     });
   }
@@ -456,8 +471,8 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
       processTable(deps),
       Promise.all(UNITS.map((name) => unitState(deps, name))),
     ]);
-    const brokerUnit = units.find((u) => u.name === 'claude-broker');
-    const tmuxUnit = units.find((u) => u.name === 'claude-tmux');
+    const brokerUnit = units.find((u) => u.name === UNIT.broker) || { name: UNIT.broker, active: false, state: 'not installed' };
+    const tmuxUnit = units.find((u) => u.name === UNIT.tmux) || { name: UNIT.tmux, active: false, state: 'not installed' };
 
     const byPid = new Map(table.map((p) => [p.pid, p]));
     // The chat's own conversations come from memory — this service owns them — and
@@ -536,7 +551,7 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
       // number, and the process wearing it now may not be the one the page was
       // looking at when it rendered — so membership is proved again here, against
       // the broker we expect, immediately before the signal.
-      const [table, unit] = await Promise.all([processTable(deps), unitState(deps, 'claude-broker')]);
+      const [table, unit] = await Promise.all([processTable(deps), unitState(deps, UNIT.broker)]);
       const proc = table.find((p) => p.pid === pid);
       if (!proc) throw new AdminBlocked('that process has already gone', { target });
       if (!unit.mainPid || proc.ppid !== unit.mainPid) {
@@ -592,7 +607,7 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
    * the classification comes from argv rather than from a guess about age or size.
    */
   async function reap() {
-    const [table, unit] = await Promise.all([processTable(deps), unitState(deps, 'claude-broker')]);
+    const [table, unit] = await Promise.all([processTable(deps), unitState(deps, UNIT.broker)]);
     if (!unit.mainPid) return { stopped: 0, freedKb: 0 };
     let stopped = 0;
     let freedKb = 0;

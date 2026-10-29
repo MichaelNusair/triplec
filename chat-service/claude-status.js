@@ -35,6 +35,7 @@
  */
 import net from 'net';
 import { open, readdir, readFile, realpath, stat } from 'fs/promises';
+import { isUnderProjects } from './projects.js';
 import { join } from 'path';
 // isSyntheticUserText is the one piece of chat-service that is really about
 // transcripts rather than about the chat: the CLI writes skill loaders, hook
@@ -864,7 +865,7 @@ export async function firstPrompt(file, windows = HEAD_WINDOWS) {
  * machinery in its first megabyte — and is not the same as a route that failed.
  */
 export async function firstPromptFor(cwd, sessionId) {
-  if (!String(cwd || '').startsWith(PROJECTS_ROOT)) {
+  if (!isUnderProjects(cwd)) {
     throw new Error('cwd must be inside the projects root');
   }
   if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(sessionId || ''))) {
@@ -992,7 +993,7 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
   // `cwd` arrives from a browser and ends up in a filesystem path. Reaching this
   // needs a valid session, and anyone with one already has a shell here, so this
   // is hygiene rather than a boundary — but the same hygiene as loadTranscript.
-  if (!String(cwd || '').startsWith(PROJECTS_ROOT)) {
+  if (!isUnderProjects(cwd)) {
     throw new Error('cwd must be inside the projects root');
   }
 

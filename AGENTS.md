@@ -194,6 +194,7 @@ itself is not something you will do on an internet-facing deployment.
 
 ```bash
 npm run test:auth      # must be 95/95 or better; never fewer checks than before
+npm run test:host      # 84/84; host mode against a fake CLI — providers, relay, registry, trusted-header
 npm run test:client
 npm run test:panes     # several projects at once; what closing a tab must not do
 npm run test:overlay   # 106/106; the editor overlay: chords, drafts, clipboard, speech
@@ -346,7 +347,19 @@ What is above is the part specific to this repository.
 
 ```
 chat-service/            The chat backend + PWA client. The security boundary.
-  auth.js                Password + OIDC verification, cookies, throttling.
+  auth.js                Password, OIDC and trusted-header (tailnet) verification,
+                         cookies, throttling. trusted-header believes a header only
+                         from a loopback socket owned by tailscaled's uid.
+  host.js                Everything that differs between the AWS box and host mode
+                         (TRIPLEC_MODE=host): user, home, paths, feature flags, the
+                         Claude provider env, the login-shell PATH, the bind guard,
+                         the session cap, the secrets file and the audit log. The
+                         only file allowed to name `coder` or /workspace.
+  projects.js            Which directories are projects: every one under
+                         PROJECTS_ROOT, or an explicit registry (host mode). Every
+                         "is this cwd a project?" check goes through projectFor.
+  host-test.js           Host mode end to end against a fake CLI, check names
+                         keyed to the host-mode requirement IDs.
   auth-test.js           End-to-end auth tests. Run these.
   server.js              HTTP routes, static files, WebSocket upgrade gate.
   session-manager.js     One `claude` process per conversation; transcripts;
@@ -471,6 +484,11 @@ chat-service/            The chat backend + PWA client. The security boundary.
                          admin.html + admin.js for the operations surface,
                          mux.html + mux.js + mux.css for the desktop surface, and
                          term.html + term.js + term.css for a terminal pane.
+
+deploy/host/             Host mode: install onto an existing Ubuntu 24.04 VM as its
+                         developer (install.sh, upgrade.sh, uninstall.sh), the
+                         config schema and validator (config.mjs), and an Ubuntu
+                         container test. See docs/HOST.md and its README.
 
 claude-broker/           Keeps the editor panel's `claude` alive and shared
                          between devices. No dependencies beyond node.

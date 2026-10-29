@@ -19,7 +19,16 @@
  *     JWT. We still verify that JWT's signature: "the ALB checked it" is only
  *     true if the header actually came from the ALB.
  *
- * Both modes fail closed. Missing or weak configuration aborts startup rather
+ *   trusted-header — for a host reached over a tailnet. Tailscale Serve proxies a
+ *     tailnet user's request to this service on loopback and adds the user's login
+ *     in a header. The header is believed only from a loopback socket that belongs
+ *     to the configured user (tailscaled's, root): on a developer VM every
+ *     loopback port is also reachable through the VM's own HTTPS proxy, which
+ *     forwards whatever headers a caller sends, so "it came from 127.0.0.1" alone
+ *     would let anyone on that network be anyone. Optionally alongside a password,
+ *     for the path through that proxy.
+ *
+ * All modes fail closed. Missing or weak configuration aborts startup rather
  * than degrading to open access, because the failure mode of the alternative is
  * remote code execution.
  *
@@ -35,12 +44,40 @@
  */
 import { createHmac, timingSafeEqual, createHash, randomUUID } from 'crypto';
 import { createVerify } from 'crypto';
+import { readFile } from 'fs/promises';
+import { audit, isLoopbackAddress } from './host.js';
 
 const COOKIE_NAME = 'cw_session';
 const SESSION_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days — this is a personal tool.
 const MIN_SECRET_LENGTH = 16;
 
 export const AUTH_MODE = (process.env.CW_AUTH_MODE || 'password').toLowerCase();
+
+const singleOwner = () => process.env.CW_SINGLE_OWNER === '1';
+
+function assertPasswordConfig() {
+  const password = process.env.AUTH_PASSWORD || '';
+  const secret = process.env.SESSION_SECRET || '';
+  if (!password) {
+    throw new Error(
+      'AUTH_PASSWORD is not set. Refusing to start: the chat service executes ' +
+        'shell commands, so running it unauthenticated would expose remote code ' +
+        'execution. Set AUTH_PASSWORD (see docs/DEPLOY.md).',
+    );
+  }
+  if (password.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      `AUTH_PASSWORD is only ${password.length} characters; ${MIN_SECRET_LENGTH} is the ` +
+        'minimum. This password is the only thing between the internet and a shell.',
+    );
+  }
+  if (!secret || secret.length < MIN_SECRET_LENGTH) {
+    throw new Error(
+      'SESSION_SECRET is missing or too short. It signs session cookies; a ' +
+        `predictable value lets anyone forge one. Need ${MIN_SECRET_LENGTH}+ characters.`,
+    );
+  }
+}
 
 /**
  * Startup validation. Called once at boot; throws to kill the process.
@@ -50,27 +87,32 @@ export const AUTH_MODE = (process.env.CW_AUTH_MODE || 'password').toLowerCase();
  */
 export function assertAuthConfig() {
   if (AUTH_MODE === 'password') {
-    const password = process.env.AUTH_PASSWORD || '';
-    const secret = process.env.SESSION_SECRET || '';
-    if (!password) {
+    assertPasswordConfig();
+    return;
+  }
+
+  if (AUTH_MODE === 'trusted-header') {
+    const header = trustedHeaderName();
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(header)) {
+      throw new Error(`CW_TRUSTED_HEADER "${header}" is not a header name.`);
+    }
+    const emails = trustedEmails();
+    if (!emails.size) {
       throw new Error(
-        'AUTH_PASSWORD is not set. Refusing to start: the chat service executes ' +
-          'shell commands, so running it unauthenticated would expose remote code ' +
-          'execution. Set AUTH_PASSWORD (see docs/DEPLOY.md).',
+        'CW_AUTH_MODE=trusted-header requires CW_TRUSTED_EMAILS. The header names a ' +
+          'tailnet user; this list is what says which of them may have a shell here.',
       );
     }
-    if (password.length < MIN_SECRET_LENGTH) {
+    if (singleOwner() && emails.size !== 1) {
       throw new Error(
-        `AUTH_PASSWORD is only ${password.length} characters; ${MIN_SECRET_LENGTH} is the ` +
-          'minimum. This password is the only thing between the internet and a shell.',
+        `CW_SINGLE_OWNER is set, so exactly one identity may sign in; CW_TRUSTED_EMAILS has ${emails.size}.`,
       );
     }
-    if (!secret || secret.length < MIN_SECRET_LENGTH) {
-      throw new Error(
-        'SESSION_SECRET is missing or too short. It signs session cookies; a ' +
-          `predictable value lets anyone forge one. Need ${MIN_SECRET_LENGTH}+ characters.`,
-      );
+    const uid = trustedPeerUid();
+    if (!Number.isInteger(uid) || uid < 0) {
+      throw new Error('CW_TRUSTED_PEER_UID must be the numeric uid that owns the proxy (tailscaled: 0).');
     }
+    if (trustedAllowsPassword()) assertPasswordConfig();
     return;
   }
 
@@ -96,10 +138,18 @@ export function assertAuthConfig() {
           'identities are yours. Set oidc.allowedEmails in triplec.config.json.',
       );
     }
+    if (singleOwner() && (emails.size !== 1 || domain)) {
+      throw new Error('CW_SINGLE_OWNER is set, so oidc needs exactly one allowed email and no domain.');
+    }
     return;
   }
 
-  throw new Error(`Unknown CW_AUTH_MODE "${AUTH_MODE}". Expected "password" or "oidc".`);
+  throw new Error(`Unknown CW_AUTH_MODE "${AUTH_MODE}". Expected "password", "oidc" or "trusted-header".`);
+}
+
+/** Whether a password login is a way in on this deployment. */
+export function passwordLoginEnabled() {
+  return AUTH_MODE === 'password' || (AUTH_MODE === 'trusted-header' && trustedAllowsPassword());
 }
 
 // --- password mode ----------------------------------------------------------
@@ -171,20 +221,39 @@ export function parseCookies(header) {
 }
 
 /**
- * `Secure` is set unless we're explicitly told the deployment is plain HTTP
- * (local development). In production the cookie must never travel in the clear.
+ * Whether this request reached us over HTTPS, as far as we can know.
+ *
+ * TLS always ends before this process — at nginx, a VM's own proxy, Tailscale
+ * Serve — so the scheme is a header. It is believed only from a loopback peer,
+ * which is where every one of those proxies connects from; anyone else saying
+ * "https" is saying nothing.
  */
-export function sessionCookie() {
-  const secure = process.env.CW_INSECURE_COOKIES === '1' ? '' : ' Secure;';
+export function viaHttps(req) {
+  if (!req) return false;
+  const proto = String(req.headers?.['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return proto === 'https' && isLoopbackAddress(req.socket?.remoteAddress || '');
+}
+
+/**
+ * `Secure` is set unless we're explicitly told the deployment is plain HTTP
+ * (local development) — and even then when the request itself arrived over HTTPS
+ * through a local proxy, because a cookie that has travelled over TLS once must
+ * not be allowed to travel without it. In production the cookie must never travel
+ * in the clear.
+ */
+function secureFlag(req) {
+  return process.env.CW_INSECURE_COOKIES === '1' && !viaHttps(req) ? '' : ' Secure;';
+}
+
+export function sessionCookie(req = null) {
   return (
-    `${COOKIE_NAME}=${mintToken()}; Path=/; HttpOnly;${secure} ` +
+    `${COOKIE_NAME}=${mintToken()}; Path=/; HttpOnly;${secureFlag(req)} ` +
     `SameSite=Lax; Max-Age=${SESSION_TTL_SECONDS}`
   );
 }
 
-export function clearedCookie() {
-  const secure = process.env.CW_INSECURE_COOKIES === '1' ? '' : ' Secure;';
-  return `${COOKIE_NAME}=; Path=/; HttpOnly;${secure} SameSite=Lax; Max-Age=0`;
+export function clearedCookie(req = null) {
+  return `${COOKIE_NAME}=; Path=/; HttpOnly;${secureFlag(req)} SameSite=Lax; Max-Age=0`;
 }
 
 // --- login throttling -------------------------------------------------------
@@ -393,11 +462,115 @@ export async function verifyOidc(req) {
   return oidcIdentityAllowed(payload);
 }
 
+// --- trusted-header mode ----------------------------------------------------
+
+const trustedHeaderName = () => process.env.CW_TRUSTED_HEADER || 'Tailscale-User-Login';
+const trustedPeerUid = () => Number(process.env.CW_TRUSTED_PEER_UID ?? 0);
+const trustedAllowsPassword = () => process.env.CW_TRUSTED_ALLOW_PASSWORD === '1';
+function trustedEmails() {
+  return new Set(
+    String(process.env.CW_TRUSTED_EMAILS || '')
+      .split(',')
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
+/**
+ * The way an address and port are written in /proc/net/tcp{,6}: hex, with each
+ * 32-bit word of the address in host (little-endian) byte order.
+ */
+function procNetForms(address, port) {
+  const p = Number(port).toString(16).toUpperCase().padStart(4, '0');
+  const v4 = /^(?:::ffff:)?(\d+)\.(\d+)\.(\d+)\.(\d+)$/i.exec(address || '');
+  const forms = [];
+  if (v4) {
+    const word = v4.slice(1).map((n) => Number(n).toString(16).toUpperCase().padStart(2, '0')).reverse().join('');
+    forms.push(`${word}:${p}`, `0000000000000000FFFF0000${word}:${p}`);
+  } else if (address === '::1') {
+    forms.push(`00000000000000000000000001000000:${p}`);
+  }
+  return forms;
+}
+
+/**
+ * Which uid owns the other end of this TCP connection, from the kernel's socket
+ * table, or null when it cannot be found.
+ *
+ * Every loopback connection appears twice there, once from each end. The row
+ * whose *local* address is the peer's and whose remote address is ours is the
+ * peer's socket, and its uid column says which user opened it. Readable by any
+ * user, so this needs no privilege — and unlike anything in the request, the peer
+ * cannot write it.
+ */
+export async function peerUid(socket, { readTable = (f) => readFile(f, 'utf8') } = {}) {
+  const peer = procNetForms(socket?.remoteAddress, socket?.remotePort);
+  const ours = procNetForms(socket?.localAddress, socket?.localPort);
+  if (!peer.length || !ours.length) return null;
+  for (const file of ['/proc/net/tcp', '/proc/net/tcp6']) {
+    let table = '';
+    try {
+      table = await readTable(file);
+    } catch {
+      continue;
+    }
+    for (const line of table.split('\n').slice(1)) {
+      const cols = line.trim().split(/\s+/);
+      if (cols.length < 8) continue;
+      if (peer.includes(cols[1].toUpperCase()) && ours.includes(cols[2].toUpperCase())) {
+        const uid = Number(cols[7]);
+        return Number.isInteger(uid) ? uid : null;
+      }
+    }
+  }
+  return null;
+}
+
+// Connections already decided, so a keep-alive connection is looked up once. Keyed
+// on the socket, which is what the decision is about: a new connection is a new
+// question, whoever opens it.
+const decidedSockets = new WeakMap();
+
+/**
+ * The tailnet identity on this request, if it carries one we believe; else null.
+ *
+ * In order: the header is present; the peer is loopback; the socket on the other
+ * end belongs to the configured uid; the login is on the allowlist. Any failure
+ * is a denial, never a fallback to "probably fine".
+ */
+export async function trustedIdentity(req, { readTable } = {}) {
+  const raw = req.headers?.[trustedHeaderName().toLowerCase()];
+  if (typeof raw !== 'string' || !raw.trim()) return null;
+  const login = raw.trim().toLowerCase();
+  const socket = req.socket;
+  const remember = (verdict) => {
+    if (socket && typeof socket === 'object') decidedSockets.set(socket, verdict);
+    return verdict.ok ? verdict.login : null;
+  };
+  const known = socket && decidedSockets.get(socket);
+  if (known && known.login === login) return known.ok ? login : null;
+
+  const deny = (reason) => {
+    audit('signin_failure', { method: 'trusted-header', reason, identity: login, peer: socket?.remoteAddress });
+    return remember({ ok: false, login });
+  };
+  if (!isLoopbackAddress(socket?.remoteAddress || '')) return deny('identity header from a non-loopback peer');
+  const uid = await peerUid(socket, { readTable });
+  if (uid === null || uid !== trustedPeerUid()) return deny(`identity header from a socket owned by uid ${uid}`);
+  if (!trustedEmails().has(login)) return deny('identity not on the allowlist');
+  audit('signin', { method: 'trusted-header', identity: login });
+  return remember({ ok: true, login });
+}
+
 // --- the check every request goes through -----------------------------------
 
 /** True when the request carries proof of a completed login. */
 export async function isAuthenticated(req) {
   if (AUTH_MODE === 'oidc') return verifyOidc(req);
+  if (AUTH_MODE === 'trusted-header') {
+    if (await trustedIdentity(req)) return true;
+    if (!trustedAllowsPassword()) return false;
+  }
   const cookies = parseCookies(req.headers.cookie);
   return tokenIsValid(cookies[COOKIE_NAME]);
 }

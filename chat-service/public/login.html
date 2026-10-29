@@ -77,7 +77,14 @@
   fetch('/api/auth-mode')
     .then(function (r) { return r.json(); })
     .then(function (data) {
-      if (data && data.mode === 'oidc') {
+      if (data && data.mode === 'trusted-header' && !data.password) {
+        form.hidden = true;
+        var tnote = document.getElementById('note');
+        tnote.hidden = false;
+        tnote.textContent =
+          'This machine signs you in through your tailnet. Open it at its tailnet ' +
+          'address, signed in to Tailscale as its owner.';
+      } else if (data && data.mode === 'oidc') {
         form.hidden = true;
         var note = document.getElementById('note');
         note.hidden = false;

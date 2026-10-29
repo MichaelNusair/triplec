@@ -51,7 +51,8 @@
 import { readdir, stat } from 'fs/promises';
 import { basename, join } from 'path';
 import { createHash } from 'crypto';
-import { CLAUDE_HOME, PROJECTS_ROOT, mangleCwd, projectPlaces } from './session-manager.js';
+import { CLAUDE_HOME, mangleCwd, projectPlaces } from './session-manager.js';
+import { listProjectDirs } from './projects.js';
 import { lastExchange } from './claude-status.js';
 import { appTitle, projectStartUrl } from './manifest.js';
 import { listSubscriptions, notifyAll, topicFor } from './push.js';
@@ -175,19 +176,11 @@ export function questionBody(question) {
  */
 async function projectsByDir() {
   const found = new Map();
-  let entries = [];
-  try {
-    entries = await readdir(PROJECTS_ROOT, { withFileTypes: true });
-  } catch {
-    return found;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const path = join(PROJECTS_ROOT, entry.name);
+  for (const { name, path } of await listProjectDirs()) {
     // The project's own directory first, then its worktrees — all of them mapped to
     // the project itself, which is the name a person knows and the window to open.
     for (const place of await projectPlaces(path)) {
-      found.set(await mangleCwd(place.cwd), { name: entry.name, path });
+      found.set(await mangleCwd(place.cwd), { name, path });
     }
   }
   return found;
