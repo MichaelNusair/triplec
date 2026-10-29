@@ -22,6 +22,7 @@
 <header class="nav">
   <span class="wordmark">Triple<span class="mark">C</span></span>
   <nav>
+    <a href="#mux">Mux</a>
     <a href="#how">How it works</a>
     <a href="#pricing">Pricing</a>
     <a href="#security">Security</a>
@@ -113,6 +114,69 @@
           One instance, one persistent volume, one GitHub token — in an account that
           is yours if you self-host, and one customer's alone if we run it. Voice
           dictation transcribes on the box itself.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Several agents at once: the mux ─────────────────────────────── -->
+  <section id="mux" class="section" data-section="mux">
+    <h2>Eight agents, one screen</h2>
+    <p class="section-lede">
+      On a laptop, open the <strong>mux</strong>: every project down the side, each
+      with eight worktree slots and a light on every one — working, finished while
+      you were looking elsewhere, waiting for you. Put up to eight of them side by
+      side, each as a chat or as the real Claude Code CLI in a terminal.
+    </p>
+
+    <!-- Drawn, like the phone above: nothing to go stale, sharp at every size. -->
+    <div class="mux-mock" aria-hidden="true">
+      <div class="mux-mock-side">
+        <p class="mux-mock-project">allocator</p>
+        <p class="mux-mock-slot"><span class="dot working"></span>slot 1 <em>arm64 alignment fix</em></p>
+        <p class="mux-mock-slot"><span class="dot ring"></span>slot 2 <em>bench the new arena</em></p>
+        <p class="mux-mock-slot"><span class="dot live"></span>slot 3 <em>terminal</em></p>
+        <p class="mux-mock-slot"><span class="dot"></span>slot 4 <em>free</em></p>
+        <p class="mux-mock-project">landing-site</p>
+        <p class="mux-mock-slot"><span class="dot live"></span>slot 1 <em>copy for pricing</em></p>
+      </div>
+      <div class="mux-mock-pane">
+        <p class="mux-mock-head"><span class="dot working"></span>allocator · slot 1 · chat</p>
+        <div class="bubble user">the allocator test is flaky on arm64 — fix it</div>
+        <div class="tool">📖 <span>Read</span> <code>src/arena.c</code></div>
+        <div class="bubble claude">Found it — <code>align_up()</code> assumes 8 bytes.</div>
+      </div>
+      <div class="mux-mock-pane term">
+        <p class="mux-mock-head"><span class="dot live"></span>allocator · slot 3 · terminal</p>
+        <pre><code><span class="p">&gt;</span> run the benchmarks against main
+● Bash(make bench)
+  └ arena_alloc   41.2 ns  (main 57.9)
+● 29% faster on the hot path.</code></pre>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <h3>A worktree per agent</h3>
+        <p>
+          Every project gets eight checkouts of its own, one per slot, so eight agents
+          never edit the same files. A new one starts from the latest main — unless
+          the slot holds work, which is never touched.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Chat or terminal</h3>
+        <p>
+          Each pane is either the chat — dictation, read-aloud, tool cards — or the
+          CLI itself in a terminal that lives in tmux on the server. One click
+          switches a slot between the two.
+        </p>
+      </div>
+      <div class="card">
+        <h3>Close the laptop</h3>
+        <p>
+          Nothing in the browser owns the work. Shut the lid mid-task and it finishes;
+          open your phone and every one of them is there, in the slot you left it.
         </p>
       </div>
     </div>
@@ -214,16 +278,19 @@
   │
   EC2 t4g.large (Graviton) — reachable only from the load balancer
   ├── nginx
-  │     ├── /         → chat  (the PWA you install)
-  │     └── /editor/  → code-server + the official Claude extension
+  │     ├── /          → chat  (the PWA you install)
+  │     ├── /chat/mux  → the desktop view: chats and terminals side by side
+  │     └── /editor/   → code-server + the official Claude extension
   │
   ├── chat service
   │     ├── authenticates every request itself   ← the security boundary
   │     ├── one `claude` process per conversation, kept alive
   │     └── whisper.cpp for voice, on the box, no API key
   │
+  ├── tmux  ← terminal sessions that outlive every browser
+  │
   └── /workspace  ← persistent EBS
-        ├── projects/   one directory per repo
+        ├── projects/   one directory per repo, eight worktree slots each
         └── claude/     session history
 
   Bedrock via instance role — no model keys in the browser</code></pre>
