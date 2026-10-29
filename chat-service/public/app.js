@@ -130,6 +130,8 @@ const LEGACY_OPEN_CHAT_KEY = 'claude-chat-open';
 const MAX_TABS = 6;
 
 function saveOpenPanes() {
+  // An embedded pane is one of the mux's, not one of this device's tabs. See EMBED.
+  if (EMBED) return;
   try {
     const open = [...panes.values()]
       .filter((p) => !p.closed)
@@ -211,6 +213,97 @@ const state = {
 function saveSettings() {
   localStorage.setItem('claude-chat', JSON.stringify(state.settings));
 }
+
+// --- embedded in the mux ----------------------------------------------------
+/*
+ * One conversation, inside one pane of /chat/mux.
+ *
+ * The mux is the desktop surface: several conversations side by side, one per
+ * worktree slot. Each of its panes is this app in a frame, rather than a second
+ * chat client, so a conversation reads, dictates and reads aloud the same on the
+ * laptop as on the phone that picks it up afterwards — and there is one renderer
+ * to keep right, not two.
+ *
+ * What an embedded page does *not* do is everything that belongs to the device
+ * rather than the conversation: it keeps no tabs (the mux has its own layout, and
+ * writing this device's open tabs from eight frames would wipe the phone-style
+ * set every time), holds no wake lock, repairs no push subscription and loads no
+ * list. It tells the mux how its conversation is doing, and the mux does the rest.
+ */
+const EMBED = (() => {
+  const params = new URLSearchParams(location.search);
+  if (params.get('embed') !== '1') return null;
+  const cwd = params.get('cwd');
+  if (!cwd) return null;
+  return {
+    cwd,
+    project: params.get('project') || '',
+    sessionId: params.get('session') || null,
+    title: params.get('title') || '',
+  };
+})();
+if (EMBED) document.documentElement.classList.add('embed');
+
+/** Tell the mux what this pane's conversation is doing. A no-op outside one. */
+function reportToMux(pane, extra = {}) {
+  if (!EMBED || window.parent === window) return;
+  try {
+    window.parent.postMessage({
+      source: 'triplec-chat',
+      type: 'pane-state',
+      cwd: pane.sessionCwd || pane.cwd,
+      sessionId: pane.sessionId,
+      title: pane.named ? pane.title : '',
+      busy: pane.busy,
+      sub: pane.sub,
+      trouble: pane.trouble,
+      ...extra,
+    }, location.origin);
+  } catch {
+    /* a mux that has gone away has nobody to tell */
+  }
+}
+
+if (EMBED) {
+  window.addEventListener('message', (e) => {
+    if (e.origin !== location.origin || e.source !== window.parent) return;
+    if (e.data?.type === 'focus') input.focus();
+  });
+  // A click inside a frame never reaches the page around it, so the mux cannot see
+  // which pane is being used unless the pane says.
+  const focused = () => {
+    if (window.parent === window) return;
+    try {
+      window.parent.postMessage({ source: 'triplec-chat', type: 'pane-focus' }, location.origin);
+    } catch {
+      /* nobody to tell */
+    }
+  };
+  document.addEventListener('pointerdown', focused, true);
+  document.addEventListener('focusin', focused, true);
+}
+
+/*
+ * A link to one conversation: `/chat/?cwd=<project>&session=<id>`, with `sessionCwd`
+ * when that conversation runs in a worktree. What the mux hands to another device.
+ * Opening it is opening that row of the list, which joins the running process —
+ * and the query is dropped from the address bar afterwards, so a refresh lands on
+ * the saved tabs like any other launch rather than re-opening the link.
+ */
+const DEEP_LINK = (() => {
+  if (EMBED) return null;
+  const params = new URLSearchParams(location.search);
+  const cwd = params.get('cwd');
+  const sessionId = params.get('session');
+  if (!cwd || !sessionId) return null;
+  return {
+    cwd,
+    sessionId,
+    sessionCwd: params.get('sessionCwd') || cwd,
+    project: params.get('project') || '',
+    title: params.get('title') || '',
+  };
+})();
 
 // --- what the tab says ------------------------------------------------------
 
@@ -1092,6 +1185,11 @@ function activatePane(pane) {
   restoreDraft(pane);
   renderTabs();
   show('chat');
+  // Again, now that it can be measured: from the list, the chat screen was
+  // `display: none` a moment ago, so the size taken above was a scrollHeight of 0 —
+  // a composer squeezed to its padding, with its placeholder cut in half, until
+  // something was typed into it.
+  autosize();
   saveOpenPanes();
   if (pane.cold) reheat(pane);
   scrollDown(pane, true);
@@ -1257,6 +1355,9 @@ function renderTabs() {
 
 /** One chip's state: which tab you are on, and what the others are doing. */
 function paintChip(pane) {
+  // Every change of busy, trouble and unread passes through here, which is all the
+  // mux needs to know about a pane. See EMBED.
+  reportToMux(pane);
   const chip = pane.chip;
   if (!chip) return;
   chip.classList.toggle('active', pane.key === state.activeKey);
@@ -1512,6 +1613,9 @@ function rememberSession(pane, sessionId) {
   // chat, and getting this wrong orphans exactly that one.
   if (!previous) moveDraft(convKey(pane.cwd, null), convKey(pane.cwd, sessionId));
   saveOpenPanes();
+  // The mux keeps its layout by session id, so a pane that started as a new chat
+  // has to tell it the name it now goes by — or a reload would start another one.
+  reportToMux(pane);
 }
 
 function handleEvent(msg, pane) {
@@ -1813,6 +1917,7 @@ function setBusy(pane, busy) {
  */
 function setSub(pane, text) {
   pane.sub = text;
+  reportToMux(pane);
   if (pane.key !== state.activeKey) return;
   const el = $('#chat-sub');
   el.textContent = text;
@@ -1896,7 +2001,10 @@ const input = $('#input');
 
 function autosize() {
   input.style.height = 'auto';
-  input.style.height = `${Math.min(input.scrollHeight, 140)}px`;
+  // Plus the border: the box is `border-box` and scrollHeight stops inside it, so
+  // without it the composer is two pixels short of its text and grows a scrollbar.
+  const border = input.offsetHeight - input.clientHeight;
+  input.style.height = `${Math.min(input.scrollHeight + Math.max(0, border), 140)}px`;
 }
 
 /*
@@ -2021,7 +2129,10 @@ document.addEventListener('visibilitychange', () => {
 input.addEventListener('keydown', (e) => {
   // Enter sends on desktop; Shift+Enter makes a newline. On phones the
   // on-screen keyboard's return key inserts a newline as usual.
-  if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(min-width: 760px)').matches) {
+  // A mux pane is a desktop window however narrow its frame is, and its width is
+  // the frame's, not the screen's.
+  const desktop = EMBED || window.matchMedia('(min-width: 760px)').matches;
+  if (e.key === 'Enter' && !e.shiftKey && desktop) {
     e.preventDefault();
     sendMessage();
   }
@@ -2075,6 +2186,7 @@ async function sendMessage() {
     pane.title = text.length > 60 ? `${text.slice(0, 57)}…` : text;
     renderConvBar(pane);
     saveOpenPanes();
+    reportToMux(pane);
   }
   // Echo immediately. The server also echoes it back, but waiting for that
   // round trip makes a slow connection look like the tap did nothing.
@@ -5105,13 +5217,15 @@ if ('serviceWorker' in navigator) {
   if (window.caches) {
     caches.keys().then((keys) => keys.forEach((k) => caches.delete(k))).catch(() => {});
   }
-  pushSyncSoon({ force: true });
+  // Not from inside the mux: eight frames would each repair the same subscription.
+  // The device's own chat tab, or the phone, is where that happens. See EMBED.
+  if (!EMBED) pushSyncSoon({ force: true });
   // And every time the app is looked at again. See pushSyncSoon: the subscription dies
   // while nobody is here, so a repair that only runs at boot never runs on the device
   // that needs it most — an installed app that is opened and backgrounded, never
   // started cold.
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') pushSyncSoon();
+    if (document.visibilityState === 'visible' && !EMBED) pushSyncSoon();
   });
 }
 
@@ -5209,6 +5323,7 @@ document.addEventListener('visibilitychange', () => {
     connect(pane);
   }
 
+  if (EMBED) return;
   pollLive();
   if (!$('#screen-chat').classList.contains('active')) refreshList();
 });
@@ -5218,6 +5333,22 @@ document.addEventListener('visibilitychange', () => {
 // still running on the server — including work started from another device — is
 // rejoined when its tab is looked at.
 (function boot() {
+  // One conversation in a pane of the mux, and nothing else of this app's: no
+  // saved tabs, no list, no wake lock, no polling. Voices are still loaded, because
+  // reading aloud is part of the conversation. See EMBED.
+  if (EMBED) {
+    const pane = makePane({
+      cwd: EMBED.cwd,
+      project: EMBED.project || basename(EMBED.cwd),
+      sessionId: EMBED.sessionId,
+      title: EMBED.title || null,
+      sessionCwd: EMBED.cwd,
+    });
+    loadVoices();
+    activatePane(pane);
+    return;
+  }
+
   // Before anything else: the display should stop sleeping from the moment the
   // app is on screen, not from the moment a chat is open.
   startKeepAwake();
@@ -5244,7 +5375,12 @@ document.addEventListener('visibilitychange', () => {
    * the messages already rendered when it arrives.
    */
   loadVoices();
-  if (active) activatePane(active);
+  if (DEEP_LINK) {
+    history.replaceState(null, '', location.pathname);
+    openConversation({ ...DEEP_LINK, project: DEEP_LINK.project || undefined, title: DEEP_LINK.title || undefined });
+  } else if (active) {
+    activatePane(active);
+  }
   pollLive();
   setInterval(pollLive, LIVE_POLL_MS);
 })();

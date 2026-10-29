@@ -172,6 +172,27 @@ process, and the session still running after both detached. Set
 `claudeMobile.claudeSurface` to `tmux` to make the Claude button open that instead
 of the panel.
 
+## Several agents at once, on a big screen: the mux
+
+`/chat/mux` (the **Mux** tab in the chat list, on a laptop) is a cmux-style desktop
+view. Down the side: every project, each with eight **worktree slots**, and a light
+on each one — orange while it works, a blue ring when it finished and nobody was
+looking (the tab title counts those, and desktop alerts are one switch away). In the
+middle: one to eight conversations side by side.
+
+Each slot is its own checkout — `<project>/.claude/worktrees/slot-1` … `slot-8`, on
+branches of the same names — so eight agents on one project never edit the same
+working tree. Every project you clone or create here gets them; older ones get each
+slot the first time you use it. Press **+** next to a project for a chat in a free,
+clean slot. A new chat brings its slot up to date with the default branch first,
+but only if nothing in it would be lost; otherwise it starts from what is there,
+and the pane says so.
+
+Nothing on the laptop owns these conversations: each pane is the ordinary chat in a
+frame, run by the same service as the phone. Shut the laptop mid-task and the task
+finishes; open the chat list on the phone and it is there, labelled with its slot.
+Closing a pane or the tab stops nothing.
+
 ## What is running on the box
 
 `/chat/admin` — reachable from the **Box** tab at the bottom of the chat — is a task

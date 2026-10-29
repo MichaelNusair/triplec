@@ -414,6 +414,13 @@ step "Checking what a device is told, and what makes a phone buzz"
   cd chat-service
   node sw-test.js
 ) || { echo "service worker tests failed — not deploying." >&2; exit 1; }
+# The mux and the worktree slots under it. A slot is a git worktree that a new chat
+# fast-forwards, so what is gated here is that preparing one never loses an edit or
+# a commit, and that removing a project refuses while a slot holds uncommitted work.
+(
+  cd chat-service
+  node mux-test.js
+) || { echo "mux and slot tests failed — not deploying." >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
 step "Checking the Claude broker"

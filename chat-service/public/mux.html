@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="deployment" content="">
+<meta name="build" content="">
+<title>Mux · TripleC</title>
+<link rel="icon" href="/chat/pwa-icons/icon-192.png">
+<link rel="stylesheet" href="/chat/style.css">
+<link rel="stylesheet" href="/chat/mux.css">
+</head>
+<body class="mux">
+
+<!--
+  The desktop surface: every project's worktree slots down the side, and the
+  conversations in them side by side. Each pane is the chat app itself, framed
+  (`/chat/?embed=1`), so a conversation started here is the same conversation the
+  phone opens from its list — owned by claude-chat.service, not by this page, and
+  still running after the laptop that started it has shut. See mux.js.
+-->
+<aside id="mux-side" class="mux-side">
+  <header class="mux-head">
+    <span class="mux-brand">Mux</span>
+    <a class="mux-link" href="/chat/">Chats</a>
+    <a class="mux-link" href="/chat/admin">Box</a>
+  </header>
+
+  <div class="mux-layouts" role="group" aria-label="Panes on screen">
+    <button type="button" data-layout="1" title="One pane">1</button>
+    <button type="button" data-layout="2" title="Two side by side">2</button>
+    <button type="button" data-layout="3" title="Three side by side">3</button>
+    <button type="button" data-layout="4" title="Two by two">4</button>
+    <button type="button" data-layout="6" title="Three by two">6</button>
+    <button type="button" data-layout="8" title="Four by two">8</button>
+  </div>
+
+  <input id="mux-filter" class="mux-filter" type="search" placeholder="Filter projects" autocomplete="off">
+  <div id="mux-projects" class="mux-projects">
+    <div class="mux-empty">Loading…</div>
+  </div>
+
+  <footer class="mux-foot">
+    <button type="button" id="mux-alerts" class="mux-foot-btn">Desktop alerts: off</button>
+    <p class="mux-hint">Closing a pane, this tab or the laptop stops nothing. Every
+      conversation keeps running on the box and is in the phone's list, labelled
+      with its slot.</p>
+  </footer>
+</aside>
+
+<main id="mux-grid" class="mux-grid"></main>
+
+<div id="toast" class="toast hidden"></div>
+<script src="/chat/mux.js"></script>
+</body>
+</html>

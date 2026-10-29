@@ -12,6 +12,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { promisify } from 'util';
+import { ensureSlots, listSlots, prepareSlot, claudeCwds, parseSlot } from './slots.js';
 import {
   SecretsManagerClient,
   GetSecretValueCommand,
@@ -346,6 +347,14 @@ async function repoStatus(dir, rel, nested = []) {
   }
 
   return repo;
+}
+
+/** `ensureSlots`'s answer as one of the steps project creation reports. */
+function slotStep(result) {
+  if (result.skipped) return { step: 'slots', ok: true, note: 'no repository at the root, so no slots' };
+  return result.ok
+    ? { step: 'slots', ok: true, created: result.created }
+    : { step: 'slots', ok: false, created: result.created, error: result.errors.join('; ').slice(0, 300) };
 }
 
 /**
@@ -1134,6 +1143,10 @@ export class SessionManager {
       return { name, path, sessions: [], steps };
     }
 
+    // Before GitHub, so a project whose remote failed still gets its slots: they
+    // need a commit to branch from, not a remote.
+    steps.push(slotStep(await ensureSlots(path)));
+
     if (!github) return { name, path, sessions: [], steps };
 
     try {
@@ -1247,7 +1260,60 @@ export class SessionManager {
     }
     status.ignored = status.ignored.slice(0, 12);
 
+    /*
+     * Uncommitted work in the project's worktrees — its slots, and any a session
+     * made for itself.
+     *
+     * `findRepos` cannot see these, and that is by design: a worktree's `.git` is a
+     * file, and it skips dot-directories. But the directory delete below takes them
+     * with it, and with eight slots per project that stopped being an edge case.
+     * Their *commits* are already covered — a worktree's branch is a branch of the
+     * root repository, so the per-branch unpushed count and `push --all` include it.
+     * Their working trees are not, and nothing commits them on the way out: an edit
+     * left in a slot is somebody's half-finished turn, not a save point.
+     */
+    status.worktrees = [];
+    for (const place of await projectPlaces(path)) {
+      if (!place.worktree) continue;
+      const porcelain = await git(place.cwd, ['status', '--porcelain']);
+      if (!porcelain.ok) continue;
+      const changes = porcelain.out ? porcelain.out.split('\n') : [];
+      if (changes.length) {
+        status.worktrees.push({
+          name: place.worktree,
+          dirty: changes.length,
+          dirtySample: changes.slice(0, 4).map((l) => l.slice(3)),
+        });
+      }
+    }
+
     return status;
+  }
+
+  /**
+   * A project's slots and who is in each one. See slots.js.
+   *
+   * Other surfaces' processes are found from `/proc` with this service's own taken
+   * out, so a slot with a chat of ours in it is not also counted as held elsewhere.
+   */
+  async slots(name) {
+    const path = projectPathFor(name);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isDirectory()) throw new Error(`no project named "${name}"`);
+    const mine = new Set(this.livePids());
+    const others = (await claudeCwds()).filter((p) => !mine.has(p.pid));
+    return { name, path, ...(await listSlots(path, { live: this.liveSummary(), others })) };
+  }
+
+  /** Create a slot if it is missing and refresh it if that is safe. See slots.js. */
+  async prepareSlot(name, slot) {
+    const path = projectPathFor(name);
+    const n = parseSlot(slot);
+    if (!n) throw new Error('slot must be a number from 1 to 8');
+    const info = await stat(path).catch(() => null);
+    if (!info?.isDirectory()) throw new Error(`no project named "${name}"`);
+    const token = await getGithubToken();
+    return prepareSlot(path, n, { env: token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {} });
   }
 
   /**
@@ -1283,6 +1349,13 @@ export class SessionManager {
       }
       if (!status.repos.length) {
         block(`"${name}" is not a git repository, so there is nowhere to push it — deleting it would lose the files outright`);
+      }
+      if (status.worktrees.length) {
+        const total = status.worktrees.reduce((n, w) => n + w.dirty, 0);
+        const where = status.worktrees.length === 1
+          ? `the ${status.worktrees[0].name} worktree`
+          : `${status.worktrees.length} worktrees (${status.worktrees.map((w) => w.name).join(', ')})`;
+        block(`${total} uncommitted change${total === 1 ? '' : 's'} in ${where} would be lost — nothing commits a worktree on the way out`);
       }
       for (const repo of status.repos) {
         if (repo.stashes) {
@@ -1467,6 +1540,10 @@ export class SessionManager {
       throw new Error(`clone failed: ${clone.err.slice(0, 400)}${hint}`);
     }
     steps.push({ step: 'clone', ok: true, url: `https://github.com/${slug}`, dir: into ? target : '' });
+
+    // A repository cloned *into* a project is not a project of its own, so it gets
+    // no slots; the project it joined has its own, or none if its root is no repo.
+    if (!into) steps.push(slotStep(await ensureSlots(path)));
 
     // The project is what the client opens, so when the clone went *into* one, the
     // answer is that project and not the directory just created inside it.

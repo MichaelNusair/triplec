@@ -41,6 +41,9 @@
   <nav class="tabbar">
     <button class="tab active">Chats</button>
     <a class="tab" href="/editor/" target="_blank" rel="noopener">Editor</a>
+    <!-- The desktop surface: several conversations side by side, one per worktree
+         slot. Shown only on a wide window with a mouse — see .tab-mux. -->
+    <a class="tab tab-mux" href="/chat/mux">Mux</a>
     <!-- A full navigation rather than a screen in this shell: the page you open
          when the chat is misbehaving must not depend on the chat's own JS. It is
          reached through /chat/ so that nginx already routes it — see

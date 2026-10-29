@@ -286,6 +286,22 @@ Two things a worktree does not bring, both of which look like a broken project:
 Then remove the worktree — `git worktree remove`, or `ExitWorktree` with `remove`.
 One left behind holds a branch and a second copy of the tree, and becomes the next
 session's confusion about whose work it is.
+
+## Except a slot: `.claude/worktrees/slot-1` … `slot-8`
+
+Every project TripleC clones or creates has eight standing worktrees, one per
+conversation in TripleC's desktop view (`/chat/mux`), each on a branch of the same
+name. If your working directory is one of them, you are already isolated:
+
+- **Do not enter another worktree** and do not give yourself one. Work where you are.
+- **Never remove a slot** — not your own when you finish, and not one you find
+  "left behind". They are permanent; the next conversation in that slot starts there.
+- **Finish the same way:** commit on the slot's branch, then
+  `git push origin HEAD:main` (or whatever the project ships from) and deploy from
+  the project's main checkout as its own instructions say. Leave the slot clean —
+  everything committed and pushed — so the next chat in it can be brought up to date.
+  TripleC fast-forwards a clean slot to the default branch when a new chat starts in
+  it, and leaves one with uncommitted or unmerged work exactly as it is.
 PROJECTSMD
 chown "$USER_NAME:$USER_NAME" "$DATA_MNT/projects/CLAUDE.md"
 

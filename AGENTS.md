@@ -349,6 +349,10 @@ chat-service/            The chat backend + PWA client. The security boundary.
   server.js              HTTP routes, static files, WebSocket upgrade gate.
   session-manager.js     One `claude` process per conversation; transcripts;
                          the project lifecycle (create, clone, remove).
+  slots.js               Eight standing worktrees per project
+                         (.claude/worktrees/slot-N), made on clone/create and on
+                         first use; a new chat fast-forwards a clean one and
+                         leaves one holding work exactly as it is.
   admin.js               The operations surface: what is running on all four
                          surfaces, what is wrong with it, and stopping one thing
                          at a time. Reads the broker's processes from outside
@@ -448,8 +452,12 @@ chat-service/            The chat backend + PWA client. The security boundary.
                          a conversation: a background project rendering off
                          screen, the live cap, switching chats inside one tab,
                          and that neither that nor closing a tab stops anything.
-  public/                index.html, app.js, style.css, login.html, and
-                         admin.html + admin.js for the operations surface.
+  mux-test.js            Slots against real git (a refresh never loses an edit or
+                         a commit; removal refuses over a dirty slot), the mux in
+                         jsdom, and the chat embedded in its panes.
+  public/                index.html, app.js, style.css, login.html,
+                         admin.html + admin.js for the operations surface, and
+                         mux.html + mux.js + mux.css for the desktop surface.
 
 claude-broker/           Keeps the editor panel's `claude` alive and shared
                          between devices. No dependencies beyond node.
@@ -727,6 +735,11 @@ Know this before answering any question about long-running work:
 | Extension panel — **the editor's default** | `claude-broker.service`, reached through the wrapper | yes | yes — one process per conversation, every page attached |
 | Extension panel, broker stopped | extension host, tied to the browser | **no — dies in ~5s** | **no — it forks** |
 | `cc` / tmux | the tmux server, owned by `claude-tmux.service` | yes | yes — multiple tmux clients, one session |
+| Mux (`/chat/mux`) — the desktop view | `claude-chat` systemd service, exactly as the chat | yes | yes — every pane *is* the chat, framed; the phone opens the same conversation from its list |
+
+The mux is not a fifth owner, and that is deliberate: it is the chat app in frames,
+so it inherits the chat's `--session-id` and `sessionOwner` checks below rather
+than needing its own. See [The mux and its slots](#the-mux-and-its-slots).
 
 The middle two rows are the same panel. Which one you get depends on whether
 `claude-broker.service` is running and `claudeCode.claudeProcessWrapper` points at
@@ -871,6 +884,50 @@ Never `systemctl restart claude-broker` from a deploy path — `enable --now` on
 exactly as with `claude-tmux`. A restart ends every live conversation, which is the
 failure the service exists to prevent, so a change to `broker.js` lands at the next
 deliberate restart, chosen at a moment when losing the running work is acceptable.
+
+### The mux and its slots
+
+`/chat/mux` is the laptop's view: every project down the side with its eight
+worktree slots, a light on each (orange working, blue ring finished while nobody
+looked, amber another surface has a process there), and one to eight conversations
+side by side. Linked from the chat list's tab bar on a wide window with a mouse.
+
+**Each pane is the chat app in a frame** — `/chat/?embed=1&cwd=<slot>&session=<id>`
+— not a second client. That is the whole design, for two reasons. The conversation
+is owned by `claude-chat.service` the moment it starts, so shutting the laptop
+mid-turn loses nothing and the phone finds it in its list, labelled with the slot.
+And there is one renderer, one voice stack and one set of tool cards to keep right.
+`EMBED` in app.js is what an embedded page leaves out: it writes no device tabs
+(eight frames would clobber the phone-style set), holds no wake lock, repairs no
+push subscription, loads no list and polls nothing. It reports its state to the
+mux with `postMessage`, same-origin only, and the mux does the rings.
+
+**Slots** (`chat-service/slots.js`) are ordinary linked worktrees at
+`<project>/.claude/worktrees/slot-1` … `slot-8`, each on a branch of the same name,
+made when a project is cloned or created and on first use otherwise. That path is
+the one `projectPlaces` already reads, which is why nothing else had to change for
+a slot's conversations to appear in the phone's list. The rules that keep them safe:
+
+- `.claude/worktrees/` goes in the project's `.git/info/exclude`, not its
+  .gitignore — no project is left with an uncommitted change by being cloned, and
+  the main checkout's `git add -A` never records eight nested checkouts.
+- A new chat in a slot first fast-forwards it to the default branch, after a fetch,
+  **only** if it is clean and has no commit the base lacks. `--ff-only` is the
+  argument: there is no reset anywhere in this code, so a slot holding work is
+  started on as it is, and the pane says so.
+- Opening an *existing* conversation does not touch its slot.
+- `removeProject` refuses while any worktree holds uncommitted changes. It used to
+  `rm -rf` them unasked, because `findRepos` skips dot-directories and a worktree's
+  `.git` is a file; with eight slots per project that stopped being an edge case.
+  Their commits were already safe — a slot's branch is a branch of the root repo,
+  so `push --all` and the per-branch unpushed check cover it.
+- The generated `/workspace/projects/CLAUDE.md` tells a session in a slot not to
+  enter another worktree and never to remove a slot, because its general advice —
+  "remove the worktree when you are done" — is exactly wrong for one.
+
+A slot is "held" when any `claude` on the box has its cwd there, read from `/proc`
+(`claudeCwds`), so one taken by the panel or a tmux session reads as taken. Starting
+a second chat in a held slot asks first; the `+` on a project picks a free, clean one.
 
 ### Seeing all four at once: `/chat/admin`
 

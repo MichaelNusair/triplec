@@ -412,6 +412,38 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // --- worktree slots and the mux surface ----------------------------------
+    // Eight standing worktrees per project, and the desktop page that puts their
+    // conversations side by side. See slots.js. The conversations themselves go
+    // through /ws like every other chat's — a slot is only a directory to start in.
+    if (pathname === '/mux' || pathname === '/mux.html') {
+      await serveStatic(req, res, '/mux.html');
+      return;
+    }
+
+    if (pathname === '/api/slots' && req.method === 'GET') {
+      const name = url.searchParams.get('project');
+      if (!name) {
+        json(res, 400, { error: 'project is required' });
+        return;
+      }
+      json(res, 200, await manager.slots(name));
+      return;
+    }
+
+    // A POST because it can create a worktree and move a branch — a fast-forward
+    // only, and never over work. See prepareSlot.
+    if (pathname === '/api/slots/prepare' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 4 * 1024)).toString() || '{}');
+      if (!body.project) {
+        json(res, 400, { error: 'project is required' });
+        return;
+      }
+      const result = await manager.prepareSlot(body.project, body.slot);
+      json(res, result.ok ? 200 : 409, result);
+      return;
+    }
+
     // Commit, push, verify, then delete from the machine. This is irreversible,
     // so a refused removal comes back as 409 with the reason and the repository
     // state that produced it — the client turns that into a specific question

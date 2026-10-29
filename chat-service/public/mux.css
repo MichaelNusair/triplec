@@ -1,0 +1,138 @@
+/* The mux: a desktop layout, so none of style.css's thumb-sized geometry applies.
+   Colours come from style.css's variables so the two read as one app. */
+
+:root {
+  --mux-side: 280px;
+  --mux-working: var(--accent);
+  --mux-attention: #5aa9f0;
+  --mux-elsewhere: #d6b54a;
+  --mux-live: #6fbf73;
+}
+
+body.mux {
+  display: grid;
+  grid-template-columns: var(--mux-side) minmax(0, 1fr);
+  height: 100vh;
+  font-size: 14px;
+}
+
+/* --- sidebar --- */
+.mux-side {
+  display: flex; flex-direction: column; min-height: 0;
+  background: var(--bg-raised);
+  border-right: 1px solid var(--border);
+}
+.mux-head { display: flex; align-items: baseline; gap: 12px; padding: 12px 14px 8px; }
+.mux-brand { font-weight: 700; font-size: 16px; flex: 1; }
+.mux-link { color: var(--text-dim); text-decoration: none; font-size: 12.5px; }
+.mux-link:hover { color: var(--text); }
+
+.mux-layouts { display: flex; gap: 4px; padding: 0 14px 10px; }
+.mux-layouts button {
+  flex: 1; padding: 4px 0; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg-input); color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer;
+}
+.mux-layouts button.active { color: var(--text); border-color: var(--accent); }
+
+.mux-filter {
+  margin: 0 14px 8px; padding: 6px 9px; border-radius: 7px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit; font-size: 13px;
+}
+
+.mux-projects { flex: 1; overflow-y: auto; padding-bottom: 8px; }
+.mux-empty { padding: 14px; color: var(--text-dim); font-size: 13px; }
+.mux-empty.small { padding: 4px 14px 8px 30px; font-size: 12px; }
+
+.mux-project-head { display: flex; align-items: center; padding: 0 8px 0 6px; }
+.mux-project-name {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px;
+  padding: 6px 4px; border: 0; background: none; color: var(--text); font: inherit; font-weight: 600;
+  text-align: left; cursor: pointer;
+}
+.mux-pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mux-caret { width: 12px; color: var(--text-dim); font-size: 11px; }
+.mux-count {
+  min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; text-align: center; color: #111;
+}
+.mux-count.working { background: var(--mux-working); }
+.mux-count.attention { background: var(--mux-attention); }
+
+.mux-add {
+  width: 24px; height: 24px; border: 1px solid transparent; border-radius: 6px;
+  background: none; color: var(--text-dim); font: inherit; font-size: 16px; line-height: 1; cursor: pointer;
+}
+.mux-add:hover { border-color: var(--border); color: var(--text); }
+.mux-add.small { width: 22px; height: 22px; font-size: 14px; opacity: 0; }
+.mux-slot:hover .mux-add.small, .mux-add.small:focus-visible { opacity: 1; }
+
+.mux-slot { display: flex; align-items: center; padding-right: 8px; }
+.mux-slot.on-screen { background: rgba(255, 255, 255, .04); }
+.mux-slot-main {
+  flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px;
+  padding: 5px 6px 5px 26px; border: 0; background: none; color: inherit; font: inherit;
+  text-align: left; cursor: pointer;
+}
+.mux-slot-main:hover { background: rgba(255, 255, 255, .05); }
+.mux-slot-text { min-width: 0; display: flex; flex-direction: column; }
+.mux-slot-name { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: .03em; }
+.mux-slot-title { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mux-slot-facts { font-size: 11px; color: var(--text-dim); }
+.mux-slot-facts:empty { display: none; }
+
+/* The light. Grey: nothing running. Green: a live process, idle. Orange, pulsing:
+   working. Blue ring: finished while nobody was looking — this one wants you.
+   Amber: another surface (the editor's panel, a terminal) has a process here. */
+.mux-dot {
+  flex: 0 0 auto; width: 9px; height: 9px; margin-top: 5px; border-radius: 50%;
+  background: var(--border);
+}
+.mux-dot.live { background: var(--mux-live); }
+.mux-dot.working { background: var(--mux-working); animation: mux-pulse 1.2s ease-in-out infinite; }
+.mux-dot.attention { background: var(--mux-attention); box-shadow: 0 0 0 3px rgba(90, 169, 240, .35); }
+.mux-dot.elsewhere { background: var(--mux-elsewhere); }
+.mux-dot.trouble { background: var(--error); }
+@keyframes mux-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .mux-dot.working { animation: none; } }
+
+.mux-foot { padding: 10px 14px 12px; border-top: 1px solid var(--border); }
+.mux-foot-btn {
+  width: 100%; padding: 6px; border: 1px solid var(--border); border-radius: 7px;
+  background: var(--bg-input); color: var(--text); font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.mux-hint { margin: 8px 0 0; color: var(--text-dim); font-size: 11.5px; line-height: 1.4; }
+
+/* --- panes --- */
+.mux-grid { display: grid; gap: 6px; padding: 6px; min-height: 0; min-width: 0; }
+.mux-pane {
+  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg);
+}
+.mux-pane.focused { border-color: var(--accent-dim); }
+.mux-pane.attention { border-color: var(--mux-attention); box-shadow: 0 0 0 2px rgba(90, 169, 240, .35); }
+
+.mux-pane-head {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px;
+  background: var(--bg-raised); border-bottom: 1px solid var(--border); font-size: 12.5px;
+}
+.mux-pane-head .mux-dot { margin-top: 0; }
+.mux-pane-label { color: var(--text-dim); white-space: nowrap; }
+.mux-pane-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mux-pane-sub { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
+.mux-pane-btn {
+  width: 24px; height: 24px; border: 0; border-radius: 5px; background: none;
+  color: var(--text-dim); font: inherit; cursor: pointer;
+}
+.mux-pane-btn:hover { background: var(--bg-input); color: var(--text); }
+.mux-pane-note {
+  margin: 0; padding: 4px 10px; font-size: 12px; color: var(--mux-elsewhere);
+  border-bottom: 1px solid var(--border);
+}
+.mux-pane-note.hidden { display: none; }
+.mux-pane-body { flex: 1; min-height: 0; position: relative; }
+.mux-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+
+.mux-placeholder {
+  height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  color: var(--text-dim); text-align: center; padding: 20px;
+}
+.mux-placeholder p { margin: 4px 0; }

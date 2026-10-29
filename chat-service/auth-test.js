@@ -224,6 +224,14 @@ const guarded = [
   ['POST', '/api/admin/kill'],
   ['POST', '/api/admin/reap'],
   ['GET', '/api/live'],
+  // The mux surface and its slots. `/api/slots` lists which directories hold a
+  // live `claude`, and `prepare` creates a worktree and moves a branch — a write
+  // to a repository, which a stranger must not be able to cause.
+  ['GET', '/mux'],
+  ['GET', '/mux.html'],
+  ['GET', '/mux.js'],
+  ['GET', '/api/slots?project=x'],
+  ['POST', '/api/slots/prepare'],
   // Which build is running. Not a secret worth widening the allowlist for — it
   // names a commit of a private repository, and the only caller is a signed-in
   // page — but an unauthenticated one would tell a stranger which version of this
