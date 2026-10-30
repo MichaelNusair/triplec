@@ -249,6 +249,7 @@ const guarded = [
   ['GET', '/term'],
   ['GET', '/term.js'],
   ['GET', '/vendor/xterm.js'],
+  ['POST', '/api/term/paste?project=x&slot=1'],
   ['GET', '/api/slots?project=x'],
   ['POST', '/api/slots/prepare'],
   // Which build is running. Not a secret worth widening the allowlist for — it

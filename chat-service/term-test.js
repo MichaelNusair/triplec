@@ -207,6 +207,7 @@ console.log('the socket, through the server');
       CW_PUSH_DIR: join(root, 'push'),
       CC_SCRIPT: join(bin, 'cc'),
       TMUX_BIN: join(bin, 'tmux'),
+      TERM_PASTE_DIR: join(root, 'pastes'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -315,6 +316,21 @@ console.log('the socket, through the server');
   // shell like any unknown path. What matters is that it is not the source.
   const dotted = await (await fetch(`${BASE}/vendor/%2e%2e/server.js`, { headers: { Cookie: cookie } })).text();
   check('a dotted path does not reach the source', !dotted.includes('createServer') && !dotted.includes('import '), dotted.slice(0, 120));
+  // An image pasted into a pane: kept for that session, and its path handed back.
+  const png = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex');
+  const paste = (query, type, body, auth = true) => fetch(`${BASE}/api/term/paste?${query}`, {
+    method: 'POST', headers: { 'Content-Type': type, ...(auth ? { Cookie: cookie } : {}) }, body,
+  });
+  const pasted = await paste('project=demo&slot=3', 'image/png', png);
+  const { path: pastedPath } = await pasted.json();
+  check('a pasted image is saved, and its path answered', pasted.status === 200
+    && pastedPath.startsWith(join(root, 'pastes', 'demo_slot-3') + '/') && pastedPath.endsWith('.png')
+    && (await readFile(pastedPath)).equals(png), `${pasted.status} ${pastedPath}`);
+  check('…readable by its owner only', ((await stat(pastedPath)).mode & 0o777) === 0o600);
+  check('only an image is taken', (await paste('project=demo&slot=3', 'text/html', '<b>x</b>')).status === 415);
+  check('not for a name that is a path', (await paste('project=..%2Fetc&slot=1', 'image/png', png)).status === 400);
+  check('not without a session', (await paste('project=demo&slot=3', 'image/png', png, false)).status === 401);
+
   const page = await fetch(`${BASE}/term?project=demo&slot=3`, { headers: { Cookie: cookie } });
   check('the terminal page is served', page.status === 200 && (await page.text()).includes('term.js'));
 
@@ -339,6 +355,8 @@ console.log('terminal page');
       write(d) { fake.written.push(d); },
       onData(f) { fake.handlers.data = f; }, onBinary(f) { fake.handlers.binary = f; },
       onBell(f) { fake.handlers.bell = f; }, onResize(f) { fake.handlers.resize = f; },
+      registerLinkProvider() {}, attachCustomKeyEventHandler(f) { fake.handlers.key = f; },
+      hasSelection: () => false,
     });
   };
   w.FitAddon = { FitAddon: function FitAddon() { this.fit = () => {}; } };
@@ -416,6 +434,9 @@ console.log('terminal page, on a phone');
     'Steps:',
     '1. First install the tools',
     '2. Then run them',
+    // A URL longer than the pane, broken by the screen and indented under the margin.
+    `  See https://example.com/${'a'.repeat(54)}`,
+    `  ${'b'.repeat(40)}/end. Then go.`,
   ];
   const fake = { focused: 0 };
   w.Terminal = function Terminal() {
@@ -423,8 +444,10 @@ console.log('terminal page, on a phone');
       cols: 80, rows: 30,
       loadAddon() {}, open() {}, focus() { fake.focused++; }, reset() {}, write() {},
       onData() {}, onBinary() {}, onBell() {}, onResize() {},
-      buffer: { active: { viewportY: 0, getLine: (i) => (i < screen.length ? { translateToString: () => screen[i] } : undefined) } },
-      element: { querySelector: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300 }) }) },
+      buffer: { active: { viewportY: 0, length: 30, getLine: (i) => (i < screen.length ? { translateToString: () => screen[i] } : undefined) } },
+      element: { querySelector: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300, left: 0, width: 800 }) }) },
+      registerLinkProvider() {}, attachCustomKeyEventHandler() {}, hasSelection: () => false, clearSelection() {},
+      getSelectionPosition: () => fake.selection,
     });
   };
   w.FitAddon = { FitAddon: function FitAddon() { this.fit = () => {}; } };
@@ -462,6 +485,18 @@ console.log('terminal page, on a phone');
   await sleep(150);
   check('the compose line is typed, then Enter, apart', inputs().slice(-2).join('|') === 'run the tests|\r', inputs().join('|'));
   check('…and is emptied', w.document.querySelector('#term-line').value === '');
+
+  const url = `https://example.com/${'a'.repeat(54)}${'b'.repeat(40)}/end`;
+  const links = t.linksIn(10);
+  check('a URL broken across rows is one link, on both rows', links.length === 1 && links[0].url === url
+    && links[0].first.y === 10 && links[0].last.y === 11 && t.linksIn(11)[0]?.url === url, JSON.stringify(links));
+  check('…and the prose before it is not joined to anything', t.linksIn(9).length === 0);
+  fake.selection = { start: { x: 2, y: 10 }, end: { x: 56, y: 11 } };
+  check('a selection across it copies the URL whole, without the margin',
+    t.selectionText() === `See ${url}. Then go.`, JSON.stringify(t.selectionText()));
+  fake.selection = { start: { x: 0, y: 7 }, end: { x: 26, y: 8 } };
+  check('…and ordinary rows keep their line breaks', t.selectionText() === 'Steps:\n1. First install the tools',
+    JSON.stringify(t.selectionText()));
   w.close();
 }
 

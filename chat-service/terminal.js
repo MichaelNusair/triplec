@@ -20,9 +20,13 @@
  *   here → browser: binary frames, the terminal's bytes; JSON text for state —
  *                   {type:'attached', session, existed}, {type:'exit', code},
  *                   {type:'error', message}
+ *
+ * And POST /api/term/paste?project=&slot=, an image as the body: see savePaste.
  */
 import { spawn, execFile } from 'child_process';
-import { readFile, stat } from 'fs/promises';
+import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
+import { randomBytes } from 'crypto';
+import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
@@ -265,4 +269,43 @@ export async function vendorFile(name) {
   const path = join(here, 'node_modules', entry[0]);
   const info = await stat(path);
   return { body: await readFile(path), type: entry[1], etag: `"${info.size}-${Math.floor(info.mtimeMs)}"` };
+}
+
+/*
+ * An image pasted or dropped into a terminal pane.
+ *
+ * Claude Code's own image paste reads the clipboard of the machine it runs on, which
+ * is this box, not the browser — so in a pane it finds nothing. What the CLI does take
+ * is a path to an image, the way a terminal hands it a dropped file. So the page
+ * uploads the image here, and pastes the path it gets back.
+ *
+ * Kept under the temp directory, apart per session, and only for a day: the path is
+ * read when the message is sent, and nothing needs it after.
+ */
+const PASTE_TYPES = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+export const PASTE_LIMIT = 20 * 1024 * 1024;
+const PASTE_ROOT = process.env.TERM_PASTE_DIR || join(tmpdir(), 'triplec-term-paste');
+const PASTE_KEEP_MS = 24 * 60 * 60 * 1000;
+
+export async function savePaste(project, slotValue, type, body) {
+  const target = terminalTarget(project, slotValue);
+  const ext = PASTE_TYPES[String(type || '').split(';')[0].trim().toLowerCase()];
+  if (!ext) throw Object.assign(new Error('only a PNG, JPEG, GIF or WebP image can be pasted'), { status: 415 });
+  if (!body?.length) throw Object.assign(new Error('the image is empty'), { status: 400 });
+  // The session name has a slash in it for a slot; the directory does not.
+  const dir = join(PASTE_ROOT, target.name.replace(/[^A-Za-z0-9._-]/g, '_'));
+  await mkdir(dir, { recursive: true, mode: 0o700 });
+  await prunePastes(dir);
+  const path = join(dir, `paste-${Date.now()}-${randomBytes(4).toString('hex')}.${ext}`);
+  await writeFile(path, body, { mode: 0o600 });
+  return path;
+}
+
+async function prunePastes(dir) {
+  const now = Date.now();
+  for (const name of await readdir(dir).catch(() => [])) {
+    const path = join(dir, name);
+    const info = await stat(path).catch(() => null);
+    if (info?.isFile() && now - info.mtimeMs > PASTE_KEEP_MS) await unlink(path).catch(() => {});
+  }
 }

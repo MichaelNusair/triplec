@@ -49,7 +49,7 @@ import {
 import { vapidPublicKey, addSubscription, removeSubscription, listSubscriptions, notifyAll, topicFor, wasGone, describeDevice, recordReceipt, lastReceipt } from './push.js';
 import { startTurnWatcher } from './turn-watcher.js';
 import { createAdmin } from './admin.js';
-import { serveTerminal, vendorFile, withTerminals } from './terminal.js';
+import { PASTE_LIMIT, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
 import { ensureSlot, slotOf } from './slots.js';
 import {
   AUTH_MODE,
@@ -119,7 +119,7 @@ function routeFeature(pathname) {
   if (pathname.startsWith('/api/push/')) return 'push';
   if (pathname === '/mux' || pathname === '/mux.html' || pathname === '/term' || pathname === '/term.html'
     || pathname.startsWith('/vendor/') || pathname === '/api/slots' || pathname.startsWith('/api/slots/')
-    || pathname === '/ws/term') return 'mux';
+    || pathname === '/ws/term' || pathname === '/api/term/paste') return 'mux';
   if (pathname === '/admin' || pathname === '/admin.html' || pathname.startsWith('/api/admin/')) return 'admin';
   if (pathname === '/api/projects/remove') return 'retire';
   if (pathname.startsWith('/editor') || pathname.startsWith('/p/') || pathname === '/editor') return 'editor';
@@ -539,6 +539,21 @@ const server = http.createServer(async (req, res) => {
       }
       res.writeHead(200, headers);
       res.end(file.body);
+      return;
+    }
+
+    // An image pasted into a terminal pane, kept where the Claude in it can read it.
+    // The answer is the path, which the page pastes in its place — see savePaste.
+    if (pathname === '/api/term/paste' && req.method === 'POST') {
+      let path;
+      try {
+        path = await savePaste(url.searchParams.get('project'), url.searchParams.get('slot'),
+          req.headers['content-type'], await readBody(req, PASTE_LIMIT));
+      } catch (err) {
+        json(res, err.status || 400, { error: err.message });
+        return;
+      }
+      json(res, 200, { path });
       return;
     }
 

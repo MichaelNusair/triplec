@@ -57,7 +57,21 @@
   <button type="button" data-key="right" aria-label="Right">→</button>
   <button type="button" data-key="bksp" aria-label="Backspace">⌫</button>
   <button type="button" data-key="ctrlc" aria-label="Control-C">^C</button>
+  <button type="button" data-act="copy" aria-label="Copy from the screen">Copy</button>
+  <button type="button" data-act="image" aria-label="Attach an image">📎</button>
 </nav>
+<input id="term-image" type="file" accept="image/*" multiple hidden>
+
+<!-- Copy, on a phone: the screen as text the phone can select, and its links. -->
+<div id="term-copy" class="term-copy hidden" role="dialog" aria-label="Copy from the screen">
+  <div class="term-copy-bar">
+    <button type="button" id="term-copy-all">Copy all</button>
+    <button type="button" id="term-copy-close" aria-label="Close">✕</button>
+  </div>
+  <div id="term-copy-links" class="term-copy-links"></div>
+  <textarea id="term-copy-text" readonly spellcheck="false"></textarea>
+</div>
+<div id="term-toast" class="term-toast hidden" role="status"></div>
 
 <script src="/chat/vendor/xterm.js"></script>
 <script src="/chat/vendor/addon-fit.js"></script>
