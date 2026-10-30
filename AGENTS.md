@@ -459,8 +459,9 @@ chat-service/            The chat backend + PWA client. The security boundary.
                          budget, an id that aged out, a segment that does not
                          exist. Runs against a fake synthesiser, so a test run
                          needs no credentials and spends nothing.
-  overlay-test.js        Boots pwa/mobile-overlay.js in jsdom. Nothing else
-                         loads that file, and it drives the editor by
+  overlay-test.js        Boots pwa/mobile-overlay.js in jsdom — over the editor,
+                         and over the mux, where only its voice half may mount.
+                         It drives the editor by
                          keybinding, so this is what checks both. Also the
                          speech reducer and the rules iOS imposes on it, against
                          a fake speechSynthesis — jsdom has none, which is also
@@ -940,6 +941,24 @@ CLI reads a paste and puts a newline in its prompt), and **tap-to-choose**:
 in the same menu as a `❯`-marked one, sends its digit. A numbered list in prose is
 not a menu, so a tap there types nothing. It never calls `term.focus()` by itself,
 which on a phone would open the keyboard over the screen.
+
+**The editor overlay's voice is the mux's too.** `mux.html` loads
+`pwa/mobile-overlay.js` (as `/chat/mobile-overlay.js` — deploy.sh and the host
+installer copy it into the chat service's `public/` beside `sw.js`), and `mux.js` sets
+`window.cmoHost = { name: 'mux' }` first. In that mode the overlay leaves out
+everything that only means something in code-server — dictation, the project switcher,
+the layout rescue, the terminal chord, install offers, the reload history, the wake
+lock, the Disconnect-frame filter — and draws no chip, since the rings already say
+it. What it keeps is the status sheet: the last message rendered, Read aloud with the
+server voices and speed, Talk it over, the answered-question note, and following
+the sheet while it is open, which reads out each new message as it lands. It
+puts `cmoHost.open({ cwd, sessionId })` on the host. Each pane's 🔊 button calls it
+with that pane's slot, plus its conversation if it is a chat. A terminal pane pins
+nothing, so the answer is the slot's most recent transcript, which is the CLI in it.
+The sheet stays on the pane it was opened for, and changing panes forgets the last
+one before asking, so the poll never reads another slot's history out as news. The
+floating bar is there only while something is playing. Once the sheet is dismissed
+it is the only Stop. Dictation is deliberately not offered here.
 
 A pane is a **chat** or a **terminal** — the sidebar's "New" switch picks what a `+`
 opens, and each pane's header switches its own slot between the two. Both kinds are

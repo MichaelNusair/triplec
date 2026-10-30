@@ -41,6 +41,25 @@
   window.__claudeMobileOverlay = true;
 
   /*
+   * Which page this is over: the editor, or the mux.
+   *
+   * The mux (chat-service/public/mux.js) loads this file too, for the half of it that
+   * is about Claude rather than about the workbench: the last message, rendered, read
+   * aloud, talked over, followed while the sheet is open. It says so by setting
+   * `window.cmoHost = { name: 'mux' }` before this runs, and in return gets
+   * `cmoHost.open({ cwd, sessionId })`, which aims the status sheet at one pane's slot
+   * and opens it. One voice stack, not a second copy of it in mux.js.
+   *
+   * What the mux leaves out is everything that only means something in code-server:
+   * dictation, the project switcher, the layout rescue, the terminal chord, the
+   * install offers, the reload history, the wake lock and the Disconnect-frame filter
+   * below. No chip either — the mux's own rings already say working and finished, per
+   * pane — and the bar is only on screen while there is something to Stop.
+   */
+  const HOST = window.cmoHost && typeof window.cmoHost === 'object' ? window.cmoHost : null;
+  const MUX = HOST?.name === 'mux';
+
+  /*
    * Which version of this file is on the phone.
    *
    * nginx serves it with `Cache-Control: no-cache`, so a reload always fetches the
@@ -53,7 +72,7 @@
    *
    * Bump it when this file changes in a way anyone would look for.
    */
-  const OVERLAY_BUILD = '2026-09-28.2';
+  const OVERLAY_BUILD = '2026-10-30.1';
 
   // -------------------------------------------- survive a browser refresh
   /*
@@ -117,7 +136,9 @@
     return out;
   }
 
-  try {
+  // Not over the mux: its sockets are not VS Code's, and a filter that guesses at
+  // frames has no business near traffic it was never written for.
+  if (!MUX) try {
     const nativeSend = WebSocket.prototype.send;
     WebSocket.prototype.send = function (data) {
       try {
@@ -504,6 +525,14 @@
   .cmo-convo-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .cmo-convo-meta { grid-column: 2; color: #a8a49b; font-size: 12px; }
   .cmo-convo-back { grid-template-columns: 1fr; color: #a8a49b; }
+
+  /*
+   * Over the mux. The bar is a Stop button and nothing else, so it exists only
+   * while something is playing; and a sheet as wide as a laptop screen puts every
+   * line of the answer further from the next than anyone reads comfortably.
+   */
+  #cmo-fab[hidden] { display: none; }
+  body.cmo-mux .cmo-panel { max-width: 760px; margin: 0 auto; }
   `;
   const style = document.createElement('style');
   style.textContent = css;
@@ -512,12 +541,16 @@
   // ------------------------------------------------------------- scaffolding
   const fab = document.createElement('div');
   fab.id = 'cmo-fab';
-  fab.innerHTML = `
+  fab.innerHTML = MUX
+    ? '<button class="cmo-btn cmo-secondary" id="cmo-status" aria-label="Is Claude working?">&#9673;</button>'
+    : `
     <button class="cmo-btn cmo-secondary" id="cmo-layout" aria-label="Fix the layout">&#10038;</button>
     <button class="cmo-btn cmo-secondary" id="cmo-projects" aria-label="Switch project">&#9707;</button>
     <button class="cmo-btn cmo-secondary" id="cmo-status" aria-label="Is Claude working?">&#9673;</button>
     <button class="cmo-btn cmo-secondary" id="cmo-terminal" aria-label="Terminal">&#10095;</button>
     <button class="cmo-btn" id="cmo-mic" aria-label="Dictate">&#127908;</button>`;
+  fab.hidden = MUX; // see paintBarPresence
+  if (MUX) document.body.classList.add('cmo-mux');
   document.body.appendChild(fab);
 
   /*
@@ -1615,6 +1648,8 @@
   }
 
   window.addEventListener('beforeinstallprompt', (event) => {
+    // The mux is not a project's window, and it is not this file's to install.
+    if (MUX) return;
     event.preventDefault();
     installPrompt = event;
     const waiting = offerWaiters;
@@ -1768,7 +1803,7 @@
     });
   }
 
-  linkProjectManifest();
+  if (!MUX) linkProjectManifest();
 
   async function addToHomeScreen() {
     const status = panel.querySelector('#cmo-install-status');
@@ -2434,11 +2469,15 @@
     });
   }
 
-  document.addEventListener('visibilitychange', syncWakeLock);
-  window.addEventListener('pageshow', syncWakeLock);
-  window.addEventListener('focus', syncWakeLock);
-  setInterval(syncWakeLock, 30000);
-  syncWakeLock();
+  // Not over the mux: the setting defaults to on, for a phone in an editor, and a
+  // laptop whose screen will not sleep because a tab is open is nobody's request.
+  if (!MUX) {
+    document.addEventListener('visibilitychange', syncWakeLock);
+    window.addEventListener('pageshow', syncWakeLock);
+    window.addEventListener('focus', syncWakeLock);
+    setInterval(syncWakeLock, 30000);
+    syncWakeLock();
+  }
 
   // ------------------------------------------------- is Claude working, and what
   /*
@@ -2526,8 +2565,15 @@
    * answer always names what it chose.
    */
   let pinnedSession = null;
+  /*
+   * Over the mux, the pane the sheet was last opened for: `{ cwd, sessionId }`. Set by
+   * `cmoHost.open` and nowhere else, so the sheet stays on the slot it was opened on
+   * rather than following focus around behind its own backdrop.
+   */
+  let hostTarget = null;
 
   function folder() {
+    if (MUX) return hostTarget?.cwd || '';
     try {
       return new URLSearchParams(location.search).get('folder') || '';
     } catch {
@@ -2779,6 +2825,7 @@
    * only time the note above is news. See answeredNote.
    */
   function showChip(s, { linger = true, replay = false } = {}) {
+    if (MUX) return; // the mux's own rings say this, per pane
     chipText.textContent = chipLine(s);
     const note = replay ? answeredNote(s) : '';
     chipNote.textContent = note;
@@ -3431,6 +3478,20 @@
   }
 
   /** The whole of what Claude last said, for when one line was not enough. */
+  /**
+   * The footnote, over the mux. The editor's talks about the panel re-reading its
+   * history, which is not something a pane does; what is left is where to answer.
+   */
+  function muxHint(s) {
+    if (s.state === 'question') {
+      return 'Nothing more happens in this conversation until this is answered, in its pane. Nothing out here can answer on your behalf.';
+    }
+    if (s.state === 'working') return 'The turn is still running; this is the latest thing it has written.';
+    if (s.cutOff === 'overflow') return 'The last turn could not run: this conversation is too long to continue. Start a new one to carry on.';
+    if (s.cutOff) return 'The last turn was cut off before it finished. Send “continue” in the pane and it picks up where it stopped.';
+    return 'This is the last thing Claude said in this slot.';
+  }
+
   function openStatus({ auto = false } = {}) {
     /*
      * A tap is a decision to watch this conversation for a while. A redraw from
@@ -3447,8 +3508,10 @@
     if (!s) {
       openSheet(`
         <p class="cmo-title">Claude</p>
-        <p class="cmo-hint">No status yet. The chat service answers this, and it has
-        its own sign-in — open the project switcher if you have not signed in.</p>
+        <p class="cmo-hint">${MUX
+          ? 'No status for this slot. Nothing has been said in it yet, or the chat service did not answer — try again in a moment.'
+          : `No status yet. The chat service answers this, and it has
+        its own sign-in — open the project switcher if you have not signed in.`}</p>
         <div class="cmo-row"><button class="cmo-action cmo-alt" id="cmo-status-close">Close</button></div>`);
       panel.querySelector('#cmo-status-close').addEventListener('click', closeSheet);
       return;
@@ -3546,7 +3609,9 @@
            this file is ever built into a string of HTML here. -->
       <div id="cmo-code-reads"></div>
       <p class="cmo-hint">${
-        asking
+        MUX
+          ? muxHint(s)
+          : asking
           ? 'Nothing more happens in this conversation until this is answered. It has to be answered in the panel — tap the question card at the bottom of it. Nothing out here can answer on your behalf.'
           : working
             ? 'The panel is still loading the history; the end of it has not been written yet.'
@@ -3555,7 +3620,7 @@
               : s.cutOff
                 ? 'The last turn was cut off before it finished — this is the last thing said before that. Send “continue” and it picks up where it stopped.'
                 : 'This is the last thing Claude said. The panel is still rendering the history above it.'
-      }${size ? ` This conversation is ${size} on disk, which is what the panel is reading.` : ''}</p>
+      }${size && !MUX ? ` This conversation is ${size} on disk, which is what the panel is reading.` : ''}</p>
       <p class="cmo-hint" id="cmo-status-follow"></p>
       <!-- The prompt this conversation began with. Empty until it is in hand, and
            empty for good if the ask fails — see paintFirstPrompt. -->
@@ -4950,6 +5015,7 @@
       'aria-label',
       speaking ? 'Stop reading aloud' : 'Is Claude working?',
     );
+    paintBarPresence();
     const sheetBtn = panel.querySelector('#cmo-speak');
     if (sheetBtn) sheetBtn.textContent = speaking ? 'Stop' : 'Read aloud';
     /*
@@ -5864,18 +5930,29 @@
       'aria-label',
       live ? 'Hang up the spoken conversation' : speaking ? 'Stop reading aloud' : 'Is Claude working?',
     );
+    paintBarPresence();
+  }
+
+  /*
+   * Over the mux the bar is only ever a Stop or a Hang up, so it is on screen exactly
+   * while there is something to end. Each pane's header is how the sheet is opened;
+   * this is what is left once the sheet has been dismissed with the voice still going.
+   */
+  function paintBarPresence() {
+    if (MUX) fab.hidden = !(speaking || talking());
   }
 
   // -------------------------------------------------------------- wiring
-  document.getElementById('cmo-mic').addEventListener('click', () => {
+  // `?.` on the editor's own buttons, because the mux's bar does not have them.
+  document.getElementById('cmo-mic')?.addEventListener('click', () => {
     if (recognition) {
       stopRecognition();
       return;
     }
     if (!sheet.classList.contains('cmo-open')) openDictation();
   });
-  document.getElementById('cmo-projects').addEventListener('click', openProjects);
-  document.getElementById('cmo-layout').addEventListener('click', openLayout);
+  document.getElementById('cmo-projects')?.addEventListener('click', openProjects);
+  document.getElementById('cmo-layout')?.addEventListener('click', openLayout);
   // The chip is the answer; the button is how you get it back after it has gone,
   // and how you ask again without reloading.
   statusBtn.addEventListener('click', async () => {
@@ -5903,6 +5980,14 @@
       endTalk();
       return;
     }
+    await openLatest();
+  });
+
+  /**
+   * Fetch the status and put it on the sheet: the bar's button, and over the mux each
+   * pane's own. Must be called inside the tap — see the first line.
+   */
+  async function openLatest() {
     // Before the await, not after it: this is the gesture, and by the time the
     // status has been fetched iOS no longer counts anything as one. See
     // `unlockAudio` — the sheet's own read, and the auto-read, both depend on it.
@@ -5921,7 +6006,28 @@
      */
     if (!voicesAnswered) await loadSpeechVoices();
     openStatus();
-  });
+  }
+
+  /*
+   * The mux's way in: a pane's header button, with that pane's slot and — for a chat
+   * pane — its conversation. A different pane is a different conversation, so what
+   * was known about the last one is dropped first: otherwise the sheet's poll would
+   * see a changed message under it and read the new pane's history out as news.
+   */
+  if (MUX) {
+    HOST.open = (target) => {
+      const cwd = typeof target?.cwd === 'string' ? target.cwd : '';
+      const sessionId = typeof target?.sessionId === 'string' ? target.sessionId : null;
+      if (!cwd) return Promise.resolve();
+      if (hostTarget?.cwd !== cwd || hostTarget?.sessionId !== sessionId) {
+        status = null;
+        sheetShown = null;
+        pinnedSession = sessionId;
+      }
+      hostTarget = { cwd, sessionId };
+      return openLatest();
+    };
+  }
   chip.addEventListener('click', () => {
     openStatus();
     hideChip();
@@ -5929,12 +6035,12 @@
   // Straight to the chord, no sheet: a terminal appearing is its own feedback, and
   // pressing it again is what puts Claude back. The extension decides which of
   // those two a press means, since only it can see what is in front.
-  document.getElementById('cmo-terminal').addEventListener('click', () => {
+  document.getElementById('cmo-terminal')?.addEventListener('click', () => {
     pressChord(KEY_TERMINAL);
   });
 
   // One line per workbench load, so a phone that reloads itself leaves a trail.
-  recordLoad();
+  if (!MUX) recordLoad();
   /*
    * A page restored from the back/forward cache is not a load — but the workbench
    * makes it one: its lifecycle service calls location.reload() on
@@ -6001,7 +6107,8 @@
    * about the guess first would draw a chip for the wrong conversation and replace it
    * a second later.
    */
-  const arrivedFor = notifiedSession();
+  // The mux takes no `?session=`: a notification opens a conversation in the chat.
+  const arrivedFor = MUX ? '' : notifiedSession();
   if (arrivedFor) forgetNotifiedSession();
 
   /**
@@ -6030,15 +6137,19 @@
    * `navigator.serviceWorker` is absent — an unsupported browser must not throw here
    * and take the rest of the overlay's wiring with it.
    */
-  navigator.serviceWorker?.addEventListener?.('message', (event) => {
+  if (!MUX) navigator.serviceWorker?.addEventListener?.('message', (event) => {
     const data = event?.data;
     if (!data || data.type !== 'cw-notification-click') return;
     showNotified(data.sessionId);
   });
 
+  /*
+   * Over the mux there is nothing to ask about until a pane's button is pressed, and
+   * no chip for a heartbeat to keep current: the open sheet follows itself.
+   */
   if (arrivedFor) showNotified(arrivedFor);
-  else checkStatus();
-  startStatusHeartbeat();
+  else if (!MUX) checkStatus();
+  if (!MUX) startStatusHeartbeat();
   /*
    * Which voices this box can read in, asked once and early.
    *
@@ -6079,7 +6190,8 @@
    * A fixed overlay will eventually sit on top of something that matters, so
    * there has to be a way out without waiting on a redeploy.
    */
-  const SIDE_KEY = 'cmo-side';
+  // Its own key over the mux: the same origin's editor has its own reasons for its side.
+  const SIDE_KEY = MUX ? 'cmo-side-mux' : 'cmo-side';
   function applySide(side) {
     if (side === 'right') {
       fab.style.left = 'auto';

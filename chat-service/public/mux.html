@@ -72,5 +72,10 @@
 
 <div id="toast" class="toast hidden"></div>
 <script src="/chat/mux.js"></script>
+<!-- Read aloud and Talk it over, the editor overlay's, in a mode for this page: see
+     `window.cmoHost` at the top of mux.js. Shipped into the chat service's public/
+     by deploy.sh, beside sw.js, and loaded last so a failure in it costs the voice
+     and nothing else. -->
+<script src="/chat/mobile-overlay.js" defer></script>
 </body>
 </html>

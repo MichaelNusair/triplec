@@ -294,6 +294,21 @@ console.log('mux page');
   check('…and the tab title counts it', /^\(1\) /.test(doc.title), doc.title);
   check('the pane takes the title the chat named itself', pane0.el.querySelector('.mux-pane-title').textContent === 'fix the build');
 
+  // The voice button: the editor overlay's sheet, aimed at this pane's slot and chat.
+  check('the mux declares itself to the overlay before it loads', w.cmoHost?.name === 'mux');
+  check('mux.html loads the overlay from /chat/, after mux.js',
+    /<script src="\/chat\/mux\.js"><\/script>[\s\S]*<script src="\/chat\/mobile-overlay\.js" defer><\/script>/.test(html));
+  const opened = [];
+  w.cmoHost.open = (target) => { opened.push(target); return Promise.resolve(); };
+  pane0.el.querySelector('[data-act="listen"]').click();
+  check('a chat pane\'s voice button opens the sheet on its slot and its conversation',
+    opened.at(-1)?.cwd === slotCwd(3) && opened.at(-1)?.sessionId === 'new-3', JSON.stringify(opened));
+  mux.openIn(1, { kind: 'terminal', project: 'demo', slot: 4, cwd: slotCwd(4) });
+  mux.state.panes[1].el.querySelector('[data-act="listen"]').click();
+  check('a terminal pane\'s asks about its slot, pinning no conversation',
+    opened.at(-1)?.cwd === slotCwd(4) && opened.at(-1)?.sessionId === null, JSON.stringify(opened));
+  mux.openIn(1, { project: 'demo', slot: 2, cwd: slotCwd(2), sessionId: 'old-2', title: 'slot two chat' });
+
   // A message from some other frame or origin is ignored.
   w.dispatchEvent(new w.MessageEvent('message', {
     data: { source: 'triplec-chat', type: 'pane-state', busy: true }, origin: 'https://evil.example', source: pane0.frame.contentWindow,

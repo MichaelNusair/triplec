@@ -264,8 +264,11 @@ tar -C "$SOURCE" -cf - \
   --exclude=node_modules --exclude='*-test.js' --exclude=build.json \
   --exclude=chat-service/public/manifest.webmanifest --exclude=chat-service/public/sw.js \
   --exclude=chat-service/public/reset.html --exclude=chat-service/public/pwa-icons \
+  --exclude=chat-service/public/mobile-overlay.js \
   chat-service | tar -C "$STAGE" -xf -
-cp "$SOURCE/pwa/manifest.webmanifest" "$SOURCE/pwa/sw.js" "$SOURCE/pwa/reset.html" "$STAGE/chat-service/public/"
+# The overlay too, whatever the editor flag says: the mux loads it for its voice.
+cp "$SOURCE/pwa/manifest.webmanifest" "$SOURCE/pwa/sw.js" "$SOURCE/pwa/reset.html" \
+  "$SOURCE/pwa/mobile-overlay.js" "$STAGE/chat-service/public/"
 mkdir -p "$STAGE/chat-service/public/pwa-icons"
 # Named files out of the manifest, as infra/config.js reads them: an icon the
 # manifest asks for and the payload lacks is an install that silently has none.

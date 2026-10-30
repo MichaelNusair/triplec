@@ -649,8 +649,9 @@ cp claude-broker/broker.js claude-broker/wrapper claude-broker/package.json \
   claude-broker/claude-broker.service claude-broker/install.sh dist/stage/claude-broker/
 mkdir -p dist/stage/vsix
 cp dist/claude-voice.vsix dist/claude-mobile.vsix dist/stage/vsix/
-# The chat UI serves its own PWA assets, so bundle them into its public dir.
-cp pwa/manifest.webmanifest pwa/sw.js pwa/reset.html dist/stage/chat-service/public/
+# The chat UI serves its own PWA assets, so bundle them into its public dir. The
+# overlay as well: the mux loads it from /chat/ for its voice (see mux.js).
+cp pwa/manifest.webmanifest pwa/sw.js pwa/reset.html pwa/mobile-overlay.js dist/stage/chat-service/public/
 mkdir -p dist/stage/chat-service/public/pwa-icons
 # Which icon set, from the config: two deployments of this repository are two apps
 # on the same phone, and an icon is how you tell them apart. Named files rather

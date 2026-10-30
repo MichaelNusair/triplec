@@ -30,6 +30,15 @@
 (() => {
   const $ = (sel, root = document) => root.querySelector(sel);
 
+  /*
+   * The editor overlay's voice half, over this page too: what Claude last said in a
+   * pane's slot, read aloud, talked over, and followed while its sheet is open. The
+   * overlay (pwa/mobile-overlay.js, loaded after this) sees this, leaves out
+   * everything that only means something in the editor, and puts `open` on it. Set
+   * before anything else so it is there when that script runs.
+   */
+  window.cmoHost = { name: 'mux' };
+
   const STORE_KEY = 'triplec-mux';
   const LAYOUTS = { 1: [1, 1], 2: [2, 1], 3: [3, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2] };
   const KINDS = ['chat', 'terminal'];
@@ -619,6 +628,7 @@
         <span class="mux-pane-title"></span>
         <span class="mux-pane-sub"></span>
         <button type="button" class="mux-pane-btn mux-pane-kind" data-act="kind"></button>
+        <button type="button" class="mux-pane-btn" data-act="listen" title="What Claude last said here — read it aloud, or talk it over">🔊</button>
         <button type="button" class="mux-pane-btn" data-act="new" title="New chat in this slot">+</button>
         <button type="button" class="mux-pane-btn" data-act="phone" title="Copy a link that opens this on the phone">⇱</button>
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
@@ -642,6 +652,7 @@
       startIn(state.panes.indexOf(pane), pane.project, { ...place, busy: false, sessions: [], elsewhere: 0 }, 'chat');
     });
     el.querySelector('[data-act="phone"]').addEventListener('click', () => copyPhoneLink(pane));
+    el.querySelector('[data-act="listen"]').addEventListener('click', () => listen(pane));
     pane.el = el;
     void index;
     return el;
@@ -764,6 +775,21 @@
     note.textContent = pane.note;
     note.classList.toggle('hidden', !pane.note);
     renderTabs();
+  }
+
+  /**
+   * The overlay's sheet, aimed at this pane: its slot, and for a chat its conversation.
+   * A terminal's is whichever conversation in the slot was written to last — which is
+   * the CLI in it. Called straight from the click, because the overlay has to unlock
+   * audio inside the gesture or a phone will not play the read.
+   */
+  function listen(pane) {
+    if (!pane.cwd) return;
+    if (typeof window.cmoHost?.open !== 'function') {
+      toast('Read aloud is still loading — try again in a moment.');
+      return;
+    }
+    window.cmoHost.open({ cwd: pane.cwd, sessionId: pane.kind === 'chat' ? pane.sessionId : null });
   }
 
   /**
@@ -980,7 +1006,7 @@
   // For mux-test.js, which drives this in jsdom without a server behind it.
   window.__muxForTest = {
     state, openIn, closePane, focusPane, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
-    newInFreeSlot, switchKind, pollTerminals, openSide, closeSide,
+    newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen,
     // The name the first tests knew it by: a new chat, in a free slot.
     newChatInFreeSlot: (name) => newInFreeSlot(name, 'chat'),
   };

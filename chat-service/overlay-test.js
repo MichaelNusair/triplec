@@ -5969,6 +5969,139 @@ ok('a tap beside the sheet no longer dismisses it', !sheet.classList.contains('c
   }
 }
 
+// ------------------------------------------------------------------- over the mux
+/*
+ * The same file, loaded by /chat/mux for its voice half (see `window.cmoHost` in
+ * chat-service/public/mux.js). Two things can go wrong there, and both are quiet: the
+ * editor's half mounting over a page it means nothing on — a mic, a project switcher,
+ * a wake lock on a laptop, a filter rewriting the page's own socket frames — or the
+ * sheet asking about the wrong slot, which reads one agent's answer out as another's.
+ */
+{
+  const quiet = new VirtualConsole();
+  quiet.on('jsdomError', () => {});
+  quiet.on('error', (m) => fail(`console error in the mux boot: ${m}`));
+  const url = 'https://claude.example.com/chat/mux';
+  const dom3 = new JSDOM('<!doctype html><html><head></head><body class="mux"></body></html>', {
+    runScripts: 'outside-only',
+    url,
+    virtualConsole: quiet,
+  });
+  const win = dom3.window;
+  win.addEventListener('error', (e) => fail(`uncaught in the mux boot: ${e.message}`));
+
+  const asks = [];
+  const replies = new Map(); // cwd|sessionId -> text
+  win.fetch = (target) => {
+    const asked = String(target);
+    if (asked.includes('/api/claude-status')) {
+      const params = new win.URL(asked, url).searchParams;
+      const cwd = params.get('cwd');
+      const sessionId = params.get('sessionId');
+      asks.push({ cwd, sessionId });
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          cwd,
+          sessionId: sessionId || `latest-in-${cwd}`,
+          state: 'idle',
+          clients: 0,
+          conversations: [],
+          last: {
+            role: 'assistant',
+            text: replies.get(`${cwd}|${sessionId || ''}`) || `the answer in ${cwd}`,
+            at: new Date().toISOString(),
+          },
+        }),
+      });
+    }
+    return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+  };
+  let spoken = [];
+  let speakMs = 40;
+  win.SpeechSynthesisUtterance = class {
+    constructor(text) { this.text = text; this.onend = null; this.onerror = null; }
+  };
+  let speechRun = 0;
+  win.speechSynthesis = {
+    speak(u) {
+      const run = speechRun;
+      spoken.push(u.text);
+      setTimeout(() => { if (run === speechRun && u.onend) u.onend(); }, speakMs);
+    },
+    cancel() { speechRun += 1; },
+  };
+
+  const nativeSend = win.WebSocket.prototype.send;
+  win.cmoHost = { name: 'mux' };
+  try {
+    win.eval(overlayJs);
+  } catch (err) {
+    fail(`mobile-overlay.js threw when loaded over the mux — ${err.message}`);
+  }
+  await settle(40);
+  const d = win.document;
+  const fabEl = d.getElementById('cmo-fab');
+
+  for (const id of ['cmo-mic', 'cmo-projects', 'cmo-layout', 'cmo-terminal']) {
+    ok(`#${id} mounted over the mux — that is an editor control, with nothing behind it here`, !d.getElementById(id));
+  }
+  ok('the mux has no Stop button on its bar', fabEl?.querySelector('#cmo-status'));
+  ok('the bar is on screen over the mux with nothing playing — it is only ever a Stop there', fabEl?.hidden === true);
+  ok('the overlay put no `open` on window.cmoHost, so no pane can open the sheet', typeof win.cmoHost.open === 'function');
+  ok(`the overlay asked for a status at load over the mux (${JSON.stringify(asks)}) — there is no slot until a pane asks`, asks.length === 0);
+  ok('the overlay linked a project manifest into the mux', !d.querySelector('link[rel="manifest"]'));
+  ok(
+    "the Disconnect-frame filter was installed over the mux — it rewrites binary frames, and the mux's sockets are not VS Code's",
+    win.WebSocket.prototype.send === nativeSend,
+  );
+
+  // A terminal pane: a slot, no conversation id — the guess for the slot.
+  const slot3 = '/workspace/projects/demo/.claude/worktrees/slot-3';
+  await win.cmoHost.open({ cwd: slot3, sessionId: null });
+  ok(
+    `a terminal pane's sheet asked ${JSON.stringify(asks.at(-1))} — it must ask about that pane's slot, and pin nothing`,
+    asks.at(-1)?.cwd === slot3 && !asks.at(-1)?.sessionId,
+  );
+  ok('opening a pane\'s sheet showed nothing', d.getElementById('cmo-sheet')?.classList.contains('cmo-open'));
+  ok(
+    `the sheet shows ${JSON.stringify(d.getElementById('cmo-status-said')?.textContent)}, not slot 3's answer`,
+    (d.getElementById('cmo-status-said')?.textContent || '').includes(`the answer in ${slot3}`),
+  );
+  ok(
+    'the mux sheet still talks about "the panel", which is the editor\'s',
+    !/the panel/i.test(d.getElementById('cmo-panel')?.textContent || ''),
+  );
+  ok('no Read aloud on the mux sheet, with a voice available', d.getElementById('cmo-speak'));
+
+  // Read aloud, then dismiss the sheet: the bar is the only Stop left, so it shows.
+  d.getElementById('cmo-speak')?.click();
+  await settle(5);
+  d.getElementById('cmo-sheet')?.click();
+  ok(`Read aloud said nothing over the mux (${JSON.stringify(spoken)})`, spoken.some((t) => t.includes('slot-3')));
+  ok('reading aloud over the mux left no Stop on screen once the sheet was dismissed', fabEl?.hidden === false);
+  fabEl?.querySelector('#cmo-status')?.click();
+  await settle(5);
+  ok('the bar\'s Stop over the mux did not put itself away again', fabEl?.hidden === true);
+
+  // A chat pane, in another slot: its conversation is pinned, and slot 3 is forgotten.
+  const slot5 = '/workspace/projects/demo/.claude/worktrees/slot-5';
+  replies.set(`${slot5}|S5`, 'what the chat in slot five said');
+  spoken = [];
+  await win.cmoHost.open({ cwd: slot5, sessionId: 'S5' });
+  ok(
+    `a chat pane's sheet asked ${JSON.stringify(asks.at(-1))} — it must pin that pane's conversation`,
+    asks.at(-1)?.cwd === slot5 && asks.at(-1)?.sessionId === 'S5',
+  );
+  ok(
+    `a second pane's sheet shows ${JSON.stringify(d.getElementById('cmo-status-said')?.textContent)}`,
+    (d.getElementById('cmo-status-said')?.textContent || '').includes('slot five'),
+  );
+  ok(`changing panes read something out unasked: ${JSON.stringify(spoken)}`, spoken.length === 0);
+  void speakMs;
+}
+
 // ------------------------------------------------------------------- results
 if (failures.length) {
   console.error(`\noverlay test: ${failures.length} failure(s) of ${checks} checks\n`);
