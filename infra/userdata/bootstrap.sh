@@ -554,6 +554,38 @@ sed -i -e "s|__REGION__|$REGION|" -e "s|__DEFAULT_MODEL__|$DEFAULT_MODEL|" \
 # ---------------------------------------------------------------------------
 npm install -g @anthropic-ai/claude-code
 
+# Keep the CLI current between deploys. Its own auto-updater cannot: it runs as
+# $USER_NAME, and the global install above is root's, so every attempt fails
+# quietly and the box sits on whatever version the last deploy happened to pull.
+# A root timer does the same install daily. Running sessions are unaffected —
+# npm replaces the files, a live process keeps the binary it already mapped — and
+# the next `claude` started picks up the new version.
+cat > /etc/systemd/system/claude-code-update.service <<'SVC'
+[Unit]
+Description=Update the Claude Code CLI to the latest release
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/npm install -g @anthropic-ai/claude-code@latest
+SVC
+cat > /etc/systemd/system/claude-code-update.timer <<'TIMER'
+[Unit]
+Description=Update the Claude Code CLI daily
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+# Catch up on a run missed while the instance was stopped or being replaced.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+systemctl daemon-reload
+systemctl enable --now claude-code-update.timer
+
 # The official extension is published on Open VSX, which is the marketplace
 # code-server uses. Install the arm64 build to match this Graviton instance.
 EXT_VSIX="/tmp/claude-code.vsix"
