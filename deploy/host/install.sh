@@ -88,6 +88,11 @@ login_shell="${SHELL:-/bin/bash}"
 NODE="$("$login_shell" -lc 'command -v node' 2>/dev/null </dev/null | tail -n1 || true)"
 node_ok "$NODE" || NODE="$(command -v node || true)"
 node_ok "$NODE" || NODE=""
+# The real file, not the path the shell found it by. fnm puts node on PATH through
+# a symlink under /run/user/<uid>/fnm_multishells/<pid>_<time>/, made per shell:
+# a unit naming it rewrites (and restarts the service) on every run, and fails to
+# start at all once that shell's directory is gone, which a reboot guarantees.
+[ -z "$NODE" ] || NODE="$(readlink -f "$NODE")"
 
 APT_LOG="$(mktemp "${TMPDIR:-/tmp}/triplec-apt.XXXXXX")"
 pkg_installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed'; }
