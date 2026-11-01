@@ -332,6 +332,31 @@
       return ok;
     }
   }
+  /*
+   * A copy made inside the terminal: OSC 52, "set the clipboard".
+   *
+   * Claude Code runs full screen and has the mouse, so a plain drag is Claude
+   * Code's own selection, and it copies through tmux. tmux sends it on to this
+   * terminal as OSC 52, which xterm.js ignores unless asked, so every drag-copy
+   * landed in tmux's buffer list and never in the clipboard you paste from. Set
+   * only: a program asking to read the clipboard ("?") is refused, as a terminal
+   * should, since anything running in it could otherwise read what you copied
+   * elsewhere.
+   */
+  term.parser.registerOscHandler(52, (data) => {
+    const payload = data.slice(data.indexOf(';') + 1);
+    if (!payload || payload === '?') return true;
+    let text;
+    try {
+      const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+      text = new TextDecoder().decode(bytes);
+    } catch {
+      return true;
+    }
+    if (text) writeClipboard(text).then((ok) => toast(ok ? 'Copied' : 'Could not copy'));
+    return true;
+  });
+
   async function copySelection() {
     const text = selectionText();
     if (!text) return;
