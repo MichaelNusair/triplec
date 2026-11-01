@@ -460,6 +460,41 @@ if [ -d "$VSCODE_DIR/extensions/copilot" ]; then
   mv "$VSCODE_DIR/extensions/copilot" "$VSCODE_DIR/extensions/.copilot-disabled"
 fi
 
+# Sign the editor in to GitHub with the same token gh uses, so the Pull Requests
+# extension (installed below) and anything else asking VS Code for a "github"
+# session gets one without a browser OAuth dance that cannot complete here.
+#
+# code-server takes the token from $GITHUB_TOKEN (the launcher below sets it) and
+# hands it to the workbench as a pre-seeded session — but VS Code only does that
+# hand-off in dev builds: server-main.js guards it with `!isBuilt`. So the guard
+# comes off. The seeded session also only carries the scope sets ["user:email"]
+# and ["repo"], and the built-in GitHub provider matches a requested scope list
+# exactly, so the sets the Pull Requests extension asks for are added beside them.
+# The scopes are labels for that match; what the token can actually do is decided
+# by the token. code-server is pinned, so the text below is stable; if an upgrade
+# moves it, this warns rather than failing provisioning, and the editor simply
+# falls back to asking for a sign-in.
+if [ -f "$VSCODE_DIR/out/server-main.js" ]; then
+  python3 - "$VSCODE_DIR/out/server-main.js" <<'GHSESSION'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+token = 'this._environmentService.args["github-auth"]'
+guard = '!this._environmentService.isBuilt&&' + token
+old_scopes = 'accessToken:' + token + ',scopes:[["user:email"],["repo"]]'
+new_scopes = ('accessToken:' + token + ',scopes:[["user:email"],["repo"],'
+              '["read:user","user:email","repo"],["read:user","user:email","repo","workflow"],'
+              '["read:user","user:email","repo","workflow","project","read:org"]]')
+if guard not in src and new_scopes in src:
+    print("server-main.js: GitHub session already enabled")
+elif src.count(guard) == 1 and src.count(old_scopes) == 1:
+    open(path, 'w').write(src.replace(guard, token).replace(old_scopes, new_scopes))
+    print("server-main.js: GitHub session enabled")
+else:
+    print("WARNING: server-main.js: GitHub session code not found; the editor will ask for a GitHub sign-in")
+GHSESSION
+fi
+
 install -d -o "$USER_NAME" -g "$USER_NAME" "/home/$USER_NAME/.config/code-server"
 set +x   # the heredoc below interpolates the password
 cat > "/home/$USER_NAME/.config/code-server/config.yaml" <<CSCONF
@@ -597,6 +632,17 @@ sudo -u "$USER_NAME" HOME="/home/$USER_NAME" \
     --user-data-dir "$DATA_MNT/code-server-data" \
     --extensions-dir "$DATA_MNT/code-server-ext" \
     --install-extension "$EXT_VSIX"
+
+# GitHub Pull Requests, signed in through the seeded session set up above. By id
+# from Open VSX, which picks the newest release this VS Code supports. No --force:
+# an installed copy is left alone and code-server keeps it updated. A marketplace
+# outage costs the extension, not the provisioning run.
+sudo -u "$USER_NAME" HOME="/home/$USER_NAME" \
+  /usr/bin/code-server \
+    --user-data-dir "$DATA_MNT/code-server-data" \
+    --extensions-dir "$DATA_MNT/code-server-ext" \
+    --install-extension GitHub.vscode-pull-request-github ||
+  echo "WARNING: GitHub Pull Requests extension install failed"
 
 # Voice dictation companion extension (built and shipped by deploy.sh).
 #
@@ -1228,6 +1274,22 @@ MAINCONF
 # ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
+# code-server's launcher: resolve the GitHub token from the secret, as a login
+# shell does, and pass it as $GITHUB_TOKEN, which code-server turns into the
+# editor's GitHub session (see the server-main.js patch) and then deletes from its
+# own environment. GH_TOKEN is dropped so it is not inherited by everything the
+# editor starts; terminals get both from /etc/profile.d as before. Read at start,
+# so a rotated token reaches the editor on its next restart.
+cat > /usr/local/bin/code-server-launch <<'LAUNCH'
+#!/bin/bash
+if [ -n "${GITHUB_SECRET_ARN:-}" ] && [ -f /etc/profile.d/01-gh-token.sh ]; then
+  . /etc/profile.d/01-gh-token.sh
+  unset GH_TOKEN
+fi
+exec /usr/bin/code-server "$@"
+LAUNCH
+chmod 755 /usr/local/bin/code-server-launch
+
 cat > /etc/systemd/system/code-server.service <<SVC
 [Unit]
 Description=code-server with Claude Code
@@ -1248,7 +1310,7 @@ Environment=AWS_REGION=$REGION
 Environment=ANTHROPIC_MODEL=$DEFAULT_MODEL
 Environment=GITHUB_SECRET_ARN=$GITHUB_SECRET_ARN
 WorkingDirectory=$DATA_MNT/projects
-ExecStart=/usr/bin/code-server
+ExecStart=/usr/local/bin/code-server-launch
 Restart=always
 RestartSec=5
 

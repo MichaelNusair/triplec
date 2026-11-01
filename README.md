@@ -73,7 +73,8 @@ your-domain.com
   │     └── /api/transcribe → whisper.cpp, on-box, no API key
   │
   ├── code-server + official anthropic.claude-code extension
-  │     └── its Claude launched via claude-broker/wrapper
+  │     ├── its Claude launched via claude-broker/wrapper
+  │     └── GitHub Pull Requests extension, signed in with the gh token
   │
   ├── claude-broker service
   │     ├── one `claude` per conversation, outliving every browser page
