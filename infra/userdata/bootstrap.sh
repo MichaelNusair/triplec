@@ -478,7 +478,8 @@ if [ -f "$VSCODE_DIR/out/server-main.js" ]; then
   python3 - "$VSCODE_DIR/out/server-main.js" <<'GHSESSION'
 import sys
 path = sys.argv[1]
-src = open(path).read()
+# newline='' keeps the bundle's own \r bytes; text mode would rewrite them.
+src = open(path, encoding='utf-8', newline='').read()
 token = 'this._environmentService.args["github-auth"]'
 guard = '!this._environmentService.isBuilt&&' + token
 old_scopes = 'accessToken:' + token + ',scopes:[["user:email"],["repo"]]'
@@ -488,7 +489,7 @@ new_scopes = ('accessToken:' + token + ',scopes:[["user:email"],["repo"],'
 if guard not in src and new_scopes in src:
     print("server-main.js: GitHub session already enabled")
 elif src.count(guard) == 1 and src.count(old_scopes) == 1:
-    open(path, 'w').write(src.replace(guard, token).replace(old_scopes, new_scopes))
+    open(path, 'w', encoding='utf-8', newline='').write(src.replace(guard, token).replace(old_scopes, new_scopes))
     print("server-main.js: GitHub session enabled")
 else:
     print("WARNING: server-main.js: GitHub session code not found; the editor will ask for a GitHub sign-in")

@@ -496,6 +496,68 @@ CSCONF
     EDITOR_CHANGED=1
   fi
 
+  # GitHub Pull Requests, signed in with this developer's `gh` token (see the
+  # launcher below). By id from Open VSX, which picks the newest release this
+  # code-server's VS Code supports.
+  if [ "$DRY" = 1 ] && [ ! -x "$CODE_SERVER" ]; then
+    changed "install the GitHub Pull Requests extension"
+  elif ! "$CODE_SERVER" --config "$CONFIG_DIR/code-server.yaml" --list-extensions 2>/dev/null | grep -qi '^github\.vscode-pull-request-github$'; then
+    changed "install the GitHub Pull Requests extension into $CS_DATA/extensions"
+    if [ "$DRY" = 0 ]; then
+      "$CODE_SERVER" --config "$CONFIG_DIR/code-server.yaml" --install-extension GitHub.vscode-pull-request-github >/dev/null ||
+        warn "the GitHub Pull Requests extension did not install"
+    fi
+    EDITOR_CHANGED=1
+  fi
+
+  # code-server turns $GITHUB_TOKEN into a pre-seeded GitHub session for the
+  # editor, but VS Code only hands it to the page in dev builds (server-main.js
+  # guards it with !isBuilt), and seeds only the scope sets ["user:email"] and
+  # ["repo"], where the built-in GitHub provider needs an exact match for what the
+  # Pull Requests extension asks for. Lift the guard and add those sets — the same
+  # patch infra/userdata/bootstrap.sh applies on AWS. The scopes are labels for the
+  # match; what the token can do is the token's. code-server is pinned, so the text
+  # is stable; if it moves, this warns and the editor asks for a sign-in instead.
+  if [ -x "$CODE_SERVER" ]; then
+    CS_SERVER_MAIN="$(dirname "$(readlink -f "$CODE_SERVER")")/../lib/vscode/out/server-main.js"
+    if [ -f "$CS_SERVER_MAIN" ]; then
+      gh_patch="$("$NODE" - "$CS_SERVER_MAIN" "$DRY" <<'GHSESSION'
+const fs = require('fs');
+const [file, dry] = process.argv.slice(2);
+const src = fs.readFileSync(file, 'utf8');
+const token = 'this._environmentService.args["github-auth"]';
+const guard = '!this._environmentService.isBuilt&&' + token;
+const oldScopes = 'accessToken:' + token + ',scopes:[["user:email"],["repo"]]';
+const newScopes = 'accessToken:' + token + ',scopes:[["user:email"],["repo"],' +
+  '["read:user","user:email","repo"],["read:user","user:email","repo","workflow"],' +
+  '["read:user","user:email","repo","workflow","project","read:org"]]';
+const count = (s) => src.split(s).length - 1;
+if (!src.includes(guard) && src.includes(newScopes)) console.log('done');
+else if (count(guard) === 1 && count(oldScopes) === 1) {
+  if (dry !== '1') fs.writeFileSync(file, src.replace(guard, token).replace(oldScopes, newScopes));
+  console.log('patched');
+} else console.log('missing');
+GHSESSION
+)"
+      case "$gh_patch" in
+        patched) changed "let the editor start signed in to GitHub ($CS_SERVER_MAIN)"; EDITOR_CHANGED=1 ;;
+        missing) warn "code-server's GitHub session code was not found; the editor will ask for a GitHub sign-in" ;;
+      esac
+    fi
+  fi
+
+  # The launcher: this developer's `gh auth token`, read at start and passed as
+  # GITHUB_TOKEN, which code-server reads and then deletes from its environment.
+  # No gh, or not logged in, and the editor starts as before, signed out.
+  cat >"$WORK/editor-launch" <<LAUNCH
+#!/bin/sh
+# Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
+token="\$(PATH="\$PATH:/usr/local/bin:/usr/bin:$HOME_DIR/.local/bin" gh auth token 2>/dev/null)"
+[ -n "\$token" ] && export GITHUB_TOKEN="\$token"
+exec "$CODE_SERVER" --config "$CONFIG_DIR/code-server.yaml"
+LAUNCH
+  sync_file "$WORK/editor-launch" "$INSTALL_DIR/bin/editor-launch" 0755 && EDITOR_CHANGED=1
+
   # Point the extension at the broker's wrapper, so one panel conversation can be
   # shared between devices — what claude-broker/install.sh does on AWS. Set rather
   # than defaulted: it is infrastructure, not a preference.
@@ -643,7 +705,7 @@ User=$USER_NAME
 Group=$MY_GROUP
 Environment=HOME=$HOME_DIR
 WorkingDirectory=$PROJECTS_ROOT
-ExecStart=$CODE_SERVER --config $CONFIG_DIR/code-server.yaml
+ExecStart=$INSTALL_DIR/bin/editor-launch
 Restart=on-failure
 RestartSec=5
 
