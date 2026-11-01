@@ -44,6 +44,10 @@
     // asked of it — see onWheel. A scrollback here would only ever be empty.
     scrollback: 0,
     macOptionIsMeta: true,
+    // Claude Code asks for the mouse, so a plain drag goes to it and selects
+    // nothing. xterm lets a drag select anyway with Shift, except on a Mac, where
+    // it is Option and only with this set. Without it a Mac could not copy at all.
+    macOptionClickForcesSelection: true,
     theme: {
       background: '#141413',
       foreground: '#f5f4ef',
