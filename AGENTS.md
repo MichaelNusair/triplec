@@ -60,21 +60,19 @@ a comment:
   it is the right tool when the change is only app payload: `chat-service`, `pwa`,
   either extension, or `infra/userdata/bootstrap.sh`. It changes no AWS resources.
   Anything under `infra/lib` needs the deploy box.
-- **Ship the deployment whose config is the plain `triplec.config.json`, and only
-  that one.** This account can run more than one: a deployment is a config file, and
-  a second one is a second config file selected with `TRIPLEC_CONFIG=…` —
-  `ls triplec.*.config.json claude-web.*.config.json` is how you find out, since
-  they are all gitignored. (Both spellings, because this box predates the rename:
-  see ["The names before the rename"](#the-names-before-the-rename).)
-  Everything here is shared by all of them — one repository, one `origin/main`, one
-  deploy box, one suite — so a change to `chat-service`, `pwa` or `infra/lib` *is* a
-  change to every deployment, and the others will drift until someone ships them.
-  That is deliberate: the owner of this repository asked for the alternates to be
-  updated ad-hoc rather than as part of finishing, because a second deployment is
-  someone else's running box and the timing is theirs. So deploy the plain config
-  without being asked, deploy an alternate only when asked, and say which ones you
-  shipped. ["More than one deployment"](docs/DEPLOY.md#more-than-one-deployment) has
-  the mechanics, including why the deploy box needs a checkout per deployment.
+- **Ship the deployment whose config is the plain `triplec.config.json`. It is the
+  only one.** The repository supports several — a deployment is a config file, and a
+  second one is a second file selected with `TRIPLEC_CONFIG=…`, as
+  ["More than one deployment"](docs/DEPLOY.md#more-than-one-deployment) describes —
+  and this account ran a second until 2026-11-01. It was torn down that day, and the
+  owner's rule since is that the plain config is the only deployment shipped from
+  here. So if `ls triplec.*.config.json claude-web.*.config.json` ever finds another
+  file (both spellings, because this box predates the rename: see
+  ["The names before the rename"](#the-names-before-the-rename)), do not deploy it,
+  not even to "bring it up to date". Its stack is gone, and CloudFormation does not
+  fail on a stack that does not exist — it creates one — so the deploy would rebuild
+  an instance, a load balancer and a volume that were deleted on purpose, and report
+  success.
 
 The box is named in `triplec.config.json` under `deployFrom` (gitignored, so it
 is per-deployment and never committed). Anyone running the open-source repo should
