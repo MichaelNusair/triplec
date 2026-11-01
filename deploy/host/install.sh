@@ -704,7 +704,9 @@ Type=simple
 User=$USER_NAME
 Group=$MY_GROUP
 Environment=HOME=$HOME_DIR
-WorkingDirectory=$PROJECTS_ROOT
+# "-": projectsRoot may not exist yet on a VM with a life of its own, and a
+# missing directory is no reason for the editor to crash-loop.
+WorkingDirectory=-$PROJECTS_ROOT
 ExecStart=$INSTALL_DIR/bin/editor-launch
 Restart=on-failure
 RestartSec=5
