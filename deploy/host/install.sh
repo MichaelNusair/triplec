@@ -825,10 +825,14 @@ fi
 # workers are not root — so that check already refuses them. This is the second
 # lock: whatever reaches nginx, from a VM proxy or anywhere else, cannot carry an
 # identity through it.
+# Host is \$http_host, as the browser sent it, port included. \$host drops the port,
+# and code-server refuses a WebSocket whose Origin (localhost:8080) does not match
+# the host it is told (localhost): the editor then fails with 1006 on any
+# nginxPort but 80 or 443, which on a VM reached by tunnel is every one.
 proxy_headers() {
   cat <<HDRS
         proxy_http_version 1.1;
-        proxy_set_header Host \$host;
+        proxy_set_header Host \$http_host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
@@ -877,7 +881,20 @@ NGINX
         proxy_pass http://127.0.0.1:$APP_PORT/api/auth-check;
         proxy_pass_request_body off;
         proxy_set_header Content-Length "";
-$(proxy_headers)
+        # Not \$(proxy_headers): those forward Upgrade and Connection, and on the
+        # editor's WebSocket the check then reaches the app as an upgrade to
+        # /api/auth-check, which it closes unanswered. nginx reads that as a 502
+        # and the editor drops with 1006. The check is a plain GET.
+        proxy_http_version 1.1;
+        proxy_set_header Host \$http_host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$http_x_forwarded_proto;
+        proxy_set_header Upgrade "";
+        proxy_set_header Connection "";
+        proxy_set_header Tailscale-User-Login "";
+        proxy_set_header Tailscale-User-Name "";
+        proxy_set_header Tailscale-User-Profile-Pic "";
     }
 
     # Not signed in: to the chat's login rather than a bare 401 page.
