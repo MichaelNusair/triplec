@@ -375,6 +375,7 @@ console.log('terminal page');
       onBell(f) { fake.handlers.bell = f; }, onResize(f) { fake.handlers.resize = f; },
       registerLinkProvider() {}, attachCustomKeyEventHandler(f) { fake.handlers.key = f; },
       hasSelection: () => false,
+      parser: { registerOscHandler(code, f) { fake.handlers[`osc${code}`] = f; } },
     });
   };
   w.FitAddon = { FitAddon: function FitAddon() { this.fit = () => {}; } };
@@ -417,6 +418,16 @@ console.log('terminal page');
   check('the bell is passed to the mux', posted.some((m) => m.type === 'term-bell'));
   w.document.querySelector('#term').dispatchEvent(new w.Event('pointerdown', { bubbles: true }));
   check('a click inside it is reported', posted.some((m) => m.type === 'pane-focus'));
+
+  // A drag in Claude Code copies through tmux, which sends it here as OSC 52.
+  const clip = [];
+  Object.defineProperty(w.navigator, 'clipboard', { value: { writeText: async (t) => { clip.push(t); } }, configurable: true });
+  const osc = fake.handlers.osc52;
+  const handled = osc?.(`;${Buffer.from('gh auth refresh — ✓').toString('base64')}`);
+  osc?.('c;?');
+  await sleep(10);
+  check('a copy made inside the terminal (OSC 52) reaches the clipboard, and a read is refused',
+    handled === true && clip.length === 1 && clip[0] === 'gh auth refresh — ✓', JSON.stringify(clip));
 
   ws.fire('message', { data: JSON.stringify({ type: 'exit', code: 0 }) });
   ws.fire('close');
@@ -465,6 +476,7 @@ console.log('terminal page, on a phone');
       buffer: { active: { viewportY: 0, length: 30, getLine: (i) => (i < screen.length ? { translateToString: () => screen[i] } : undefined) } },
       element: { querySelector: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300, left: 0, width: 800 }) }) },
       registerLinkProvider() {}, attachCustomKeyEventHandler() {}, hasSelection: () => false, clearSelection() {},
+      parser: { registerOscHandler() {} },
       getSelectionPosition: () => fake.selection,
     });
   };
