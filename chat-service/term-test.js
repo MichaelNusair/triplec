@@ -63,7 +63,8 @@ await writeFile(join(bin, 'tmux'), `#!/bin/bash
 printf '%s\\n' "$*" >> "${tmuxLog}"
 case "$1" in
   has-session) for t in $FAKE_TMUX_HAS; do [ "$3" = "$t" ] && exit 0; done; exit 1 ;;
-  display-message) [ -e "${root}/no-server" ] && exit 1; echo 4242 ;;
+  display-message) [ -e "${root}/no-server" ] && exit 1
+    case "$*" in *mouse_any_flag*) [ -e "${root}/pane-mouse" ] && echo "1 1" || echo "0 0" ;; *) echo 4242 ;; esac ;;
   list-sessions) [ -e "${root}/no-server" ] && exit 1; printf 'claude-demo/slot-2\\nshell\\n' ;;
   *) exit 0 ;;
 esac
@@ -294,6 +295,23 @@ console.log('the socket, through the server');
   const log = await readFile(tmuxLog, 'utf8');
   check('scrolling is tmux copy mode, on exactly that session',
     log.includes('copy-mode -e -t =claude-demo/slot-3:') && log.includes('send-keys -t =claude-demo/slot-3: -X -N 3 scroll-up'), log);
+
+  // A full-screen program that asked for the mouse, as Claude Code does, has no
+  // tmux history to scroll: it gets wheel events instead, and no copy mode.
+  await writeFile(join(root, 'pane-mouse'), '');
+  await writeFile(tmuxLog, '');
+  await open('project=demo&slot=3&cols=90&rows=20', {
+    ms: 3000,
+    onOpen: (ws) => {
+      setTimeout(() => ws.send(JSON.stringify({ type: 'scroll', lines: -3 })), 300);
+      setTimeout(() => ws.close(), 1200);
+    },
+  });
+  await rm(join(root, 'pane-mouse'));
+  const wheelLog = await readFile(tmuxLog, 'utf8');
+  check('a pane that asked for the mouse is sent three SGR wheel-up events, not copy mode',
+    wheelLog.includes('send-keys -t =claude-demo/slot-3: -l \x1b[<64;1;1M\x1b[<64;1;1M\x1b[<64;1;1M') &&
+      !wheelLog.includes('copy-mode'), JSON.stringify(wheelLog));
 
   const slotsRes = await fetch(`${BASE}/api/slots?project=demo`, { headers: { Cookie: cookie } });
   const slots = await slotsRes.json();

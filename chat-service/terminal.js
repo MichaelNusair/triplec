@@ -107,18 +107,37 @@ export async function tmuxServerPid() {
 }
 
 /**
- * Scroll a session's history, in tmux's own copy mode.
+ * Scroll a session: the program's own view, or tmux's history.
  *
  * The browser's terminal has no history of its own to scroll: tmux draws on the
  * alternate screen, so the scrollback lives in tmux. Doing this here rather than
  * turning on tmux's mouse mode leaves the session's options exactly as `cc` set
  * them, for every other terminal attached to it. `-e` leaves copy mode on its own
  * once scrolled back to the bottom.
+ *
+ * Except when the program in the pane asked for the mouse. Claude Code runs full
+ * screen, on the pane's own alternate screen, so tmux keeps no history of it at
+ * all (history_size 0) and copy mode scrolls through nothing. It does ask for
+ * mouse reporting, to scroll its transcript itself on the wheel. So a pane that
+ * asked is sent wheel events, in the encoding it asked for, and the copy-mode path
+ * is left for programs that did not.
  */
+const MAX_WHEEL_EVENTS = 50;
 async function scroll(session, lines) {
   const n = Math.max(1, Math.min(Math.abs(Math.trunc(lines)) || 1, 200));
-  if (lines < 0) await tmux(['copy-mode', '-e', '-t', `=${session}:`]);
-  await tmux(['send-keys', '-t', `=${session}:`, '-X', '-N', String(n), lines < 0 ? 'scroll-up' : 'scroll-down']);
+  const target = `=${session}:`;
+  const flags = await tmux(['display-message', '-p', '-t', target, '#{mouse_any_flag} #{mouse_sgr_flag}']);
+  const [wantsMouse, sgr] = flags.ok ? flags.out.split(' ') : [];
+  if (wantsMouse === '1') {
+    const button = lines < 0 ? 64 : 65; // wheel up, wheel down
+    const event = sgr === '1'
+      ? `\x1b[<${button};1;1M`
+      : `\x1b[M${String.fromCharCode(32 + button, 33, 33)}`;
+    await tmux(['send-keys', '-t', target, '-l', event.repeat(Math.min(n, MAX_WHEEL_EVENTS))]);
+    return;
+  }
+  if (lines < 0) await tmux(['copy-mode', '-e', '-t', target]);
+  await tmux(['send-keys', '-t', target, '-X', '-N', String(n), lines < 0 ? 'scroll-up' : 'scroll-down']);
 }
 
 function frame(kind, payload) {
