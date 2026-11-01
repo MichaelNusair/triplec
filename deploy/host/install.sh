@@ -305,16 +305,32 @@ if [ "$F_EDITOR" = true ]; then
   cp "$SOURCE/claude-broker/broker.js" "$SOURCE/claude-broker/wrapper" "$SOURCE/claude-broker/package.json" "$STAGE/claude-broker/"
   chmod 0755 "$STAGE/claude-broker/wrapper"
   cp "$SOURCE/pwa/mobile-overlay.js" "$STAGE/pwa/"
+  # The editor's launcher: this developer's `gh auth token`, read at start and
+  # passed as GITHUB_TOKEN, which code-server reads and then deletes from its
+  # environment (see the server-main.js patch below). No gh, or not logged in, and
+  # the editor starts as before, signed out. Staged with the payload, like `cc`, so
+  # the sync below owns it rather than removing it as unshipped.
+  mkdir -p "$STAGE/bin"
+  cat >"$STAGE/bin/editor-launch" <<LAUNCH
+#!/bin/sh
+# Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
+token="\$(PATH="\$PATH:/usr/local/bin:/usr/bin:$HOME_DIR/.local/bin" gh auth token 2>/dev/null)"
+[ -n "\$token" ] && export GITHUB_TOKEN="\$token"
+exec "$INSTALL_DIR/code-server/bin/code-server" --config "$CONFIG_DIR/code-server.yaml"
+LAUNCH
+  chmod 0755 "$STAGE/bin/editor-launch"
 fi
 
 PAYLOAD_CHANGED=0
 LOCK_CHANGED=0
+LAUNCH_CHANGED=0
 while IFS= read -r -d '' rel; do
   rel="${rel#./}"
   mode=0644
   [ -x "$STAGE/$rel" ] && mode=0755
   if sync_file "$STAGE/$rel" "$INSTALL_DIR/$rel" "$mode"; then
     PAYLOAD_CHANGED=1
+    [ "$rel" = bin/editor-launch ] && LAUNCH_CHANGED=1
     [ "$rel" = chat-service/package-lock.json ] && LOCK_CHANGED=1
   fi
 done < <(cd "$STAGE" && find . -type f -print0 | sort -z)
@@ -443,7 +459,8 @@ fi
 # stops them. See docs/SECURITY.md, "Host mode on a developer VM".
 CODE_SERVER="$INSTALL_DIR/code-server/bin/code-server"
 CS_DATA="$STATE_DIR/code-server"
-EDITOR_CHANGED=0
+# A new launcher only takes effect when the editor restarts.
+EDITOR_CHANGED=$LAUNCH_CHANGED
 if [ "$F_EDITOR" = true ]; then
   if [ ! -x "$CODE_SERVER" ] || ! "$CODE_SERVER" --version 2>/dev/null | grep -q "^$CODE_SERVER_VERSION"; then
     changed "install code-server $CODE_SERVER_VERSION into $INSTALL_DIR/code-server"
@@ -546,17 +563,6 @@ GHSESSION
     fi
   fi
 
-  # The launcher: this developer's `gh auth token`, read at start and passed as
-  # GITHUB_TOKEN, which code-server reads and then deletes from its environment.
-  # No gh, or not logged in, and the editor starts as before, signed out.
-  cat >"$WORK/editor-launch" <<LAUNCH
-#!/bin/sh
-# Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
-token="\$(PATH="\$PATH:/usr/local/bin:/usr/bin:$HOME_DIR/.local/bin" gh auth token 2>/dev/null)"
-[ -n "\$token" ] && export GITHUB_TOKEN="\$token"
-exec "$CODE_SERVER" --config "$CONFIG_DIR/code-server.yaml"
-LAUNCH
-  sync_file "$WORK/editor-launch" "$INSTALL_DIR/bin/editor-launch" 0755 && EDITOR_CHANGED=1
 
   # Point the extension at the broker's wrapper, so one panel conversation can be
   # shared between devices — what claude-broker/install.sh does on AWS. Set rather
