@@ -291,8 +291,10 @@ try {
     check('C5: an audit line is one JSON object marked as ours', lines.length === 1 && JSON.parse(lines[0]).audit === 'triplec');
     check('C5: secret-looking fields are redacted whatever a caller passes', !/hunter2|zzz/.test(lines[0]), lines[0]);
 
+    // It drops the `-l` before handing on to /bin/sh, which would otherwise read the
+    // real ~/.profile of whoever runs the suite and put its PATH in front of ours.
     const fakeShell = join(bin, 'fake-login-shell');
-    await writeFile(fakeShell, `#!/bin/sh\necho "a banner a profile printed"\nPATH="/opt/brew/bin:$HOME/.local/bin:$HOME/go/bin:$PATH"\nexport PATH\nexec /bin/sh "$@"\n`);
+    await writeFile(fakeShell, `#!/bin/sh\necho "a banner a profile printed"\nPATH="/opt/brew/bin:$HOME/.local/bin:$HOME/go/bin:$PATH"\nexport PATH\nshift\nexec /bin/sh "$@"\n`);
     await chmod(fakeShell, 0o755);
     const path = host.loginShellPath({ shell: fakeShell });
     check('A4: the login shell\'s PATH is read, banner and all, without the banner',

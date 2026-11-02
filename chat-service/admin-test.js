@@ -529,6 +529,36 @@ console.log('\nReaps only what has never been spoken to:');
   check('and nothing was signalled', down.signals.length === 0);
 }
 
+{
+  // A host install makes PROJECTS_ROOT on first use, so on a fresh VM it does not
+  // exist yet and `df` of it fails. The disk is still there; measure its parent.
+  const s = makeState();
+  const deps = makeDeps(s);
+  const run = deps.run;
+  const asked = [];
+  deps.run = async (cmd, args, opts) => {
+    if (cmd === 'df') {
+      asked.push(args[1]);
+      if (asked.length === 1) return { ok: false, out: '', err: 'No such file or directory' };
+    }
+    return run(cmd, args, opts);
+  };
+  const view = await createAdmin({ manager: makeManager([]), deps }).overview();
+  check('a missing data dir falls back to its parent', view.host.disk?.percent === 40, JSON.stringify(view.host.disk));
+  check('and says which path it measured', view.host.disk?.path === dirname(asked[0]), JSON.stringify(asked));
+}
+
+{
+  // The host installer's unit names are what admin.js must ask systemd about, or
+  // the page reports a running editor and broker as dead.
+  const install = readFileSync(join(here, '..', 'deploy', 'host', 'install.sh'), 'utf8');
+  const admin = readFileSync(join(here, 'admin.js'), 'utf8');
+  const hostLine = admin.split('\n').find((l) => l.includes("chat: 'triplec-chat'")) || '';
+  for (const name of hostLine.match(/'([a-z-]+)'/g).map((q) => q.slice(1, -1))) {
+    check(`host unit ${name} is one install.sh creates`, install.includes(`${name}.service`), hostLine);
+  }
+}
+
 // --- 4. The page ------------------------------------------------------------
 //
 // Booted in jsdom for the same reason smoke-test.js boots app.js: a runtime error

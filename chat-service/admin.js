@@ -44,6 +44,7 @@ import { readFile, readlink } from 'fs/promises';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
+import { dirname } from 'path';
 import { brokerSessions as liveBrokerSessions } from './claude-status.js';
 import { buildInfo } from './build.js';
 import { HOST_MODE, PROJECTS_ROOT, feature } from './host.js';
@@ -59,7 +60,7 @@ const execFileAsync = promisify(execFile);
  * of it — a unit that was never installed is not a unit that is down.
  */
 const UNIT = HOST_MODE
-  ? { chat: 'triplec-chat', editor: 'code-server', broker: 'claude-broker', tmux: 'triplec-tmux' }
+  ? { chat: 'triplec-chat', editor: 'triplec-editor', broker: 'triplec-broker', tmux: 'triplec-tmux' }
   : { chat: 'claude-chat', editor: 'code-server', broker: 'claude-broker', tmux: 'claude-tmux' };
 const UNITS = [
   UNIT.chat,
@@ -345,8 +346,18 @@ async function readCgroup(deps, pid) {
   }
 }
 
+/**
+ * `df` of the data directory, or of its nearest ancestor that exists. A host
+ * install creates PROJECTS_ROOT on first use, not at install time, and a fresh VM
+ * with no projects yet still has a disk worth showing — it is the same filesystem.
+ */
 async function diskUsage(deps, path) {
-  const res = await deps.run('df', ['-kP', path]);
+  let target = path;
+  let res = await deps.run('df', ['-kP', target]);
+  while (!res.ok && target !== dirname(target)) {
+    target = dirname(target);
+    res = await deps.run('df', ['-kP', target]);
+  }
   if (!res.ok) return null;
   const line = res.out.split('\n').slice(1)[0];
   if (!line) return null;
@@ -354,7 +365,7 @@ async function diskUsage(deps, path) {
   const totalKb = Number(parts[1]);
   const usedKb = Number(parts[2]);
   if (!Number.isFinite(totalKb) || !Number.isFinite(usedKb)) return null;
-  return { path, totalKb, usedKb, percent: totalKb ? Math.round((usedKb / totalKb) * 100) : null };
+  return { path: target, totalKb, usedKb, percent: totalKb ? Math.round((usedKb / totalKb) * 100) : null };
 }
 
 /**
