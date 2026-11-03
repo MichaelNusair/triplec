@@ -342,3 +342,98 @@ async function prunePastes(dir) {
     if (info?.isFile() && now - info.mtimeMs > PASTE_KEEP_MS) await unlink(path).catch(() => {});
   }
 }
+
+/*
+ * Run a command line of your own in a pane's session, in place of `claude`.
+ *
+ * A pane always starts `bash -lc claude`, so there is nowhere in it to put an
+ * environment variable or a flag — `CLAUDE_X=off claude --resume <id>` — and
+ * `/exit`, the way out to a shell anywhere else, resets a slot. So this restarts
+ * the program in the session's pane with tmux's respawn-pane, which keeps the
+ * session itself: every attached pane, the phone's included, just sees the new
+ * program, and nothing is reset. With no session yet it is started, the way `cc`
+ * starts one.
+ *
+ * Still never a shell command. The line is split into words here, quotes honoured
+ * and nothing else interpreted — no pipes, no `$`, no globs — and reaches tmux as
+ * argv, run as `bash -lc 'exec "$@"'` so the login profile (Bedrock, the GitHub
+ * token resolver) is read first, as for `claude` itself. Leading NAME=value words
+ * are its environment.
+ */
+export const RUN_LIMIT = 4096;
+
+/** Split a command line into words, shell-style but with nothing expanded. */
+export function splitCommandLine(line) {
+  const text = String(line ?? '');
+  if (text.length > RUN_LIMIT) throw new Error(`the command line is longer than ${RUN_LIMIT} characters`);
+  const words = [];
+  let word = null;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) throw new Error('a quote is not closed');
+      word = (word ?? '') + text.slice(i + 1, end);
+      i = end;
+    } else if (c === '"') {
+      word = word ?? '';
+      for (i++; ; i++) {
+        if (i >= text.length) throw new Error('a quote is not closed');
+        if (text[i] === '"') break;
+        if (text[i] === '\\' && '"\\$`'.includes(text[i + 1] ?? '')) i++;
+        else if (text[i] === '$' || text[i] === '`') throw new Error('`$` and backticks are not expanded here — write the value itself');
+        word += text[i];
+      }
+    } else if (c === '\\') {
+      if (i + 1 >= text.length) throw new Error('the line ends in a backslash');
+      word = (word ?? '') + text[++i];
+    } else if (/\s/.test(c)) {
+      if (word !== null) words.push(word);
+      word = null;
+    } else if ('|&;<>()$`*?[]{}~#'.includes(c)) {
+      throw new Error(`\`${c}\` is not interpreted here: this runs one program, not a shell line — quote it if it is part of an argument`);
+    } else {
+      word = (word ?? '') + c;
+    }
+  }
+  if (word !== null) words.push(word);
+  return words;
+}
+
+/** The argv to hand tmux for a command line: its environment, then its program. */
+export function runArgv(line) {
+  const words = splitCommandLine(line);
+  const env = [];
+  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) env.push(words.shift());
+  if (!words.length) throw new Error('say what to run — `claude`, with whatever flags, for instance');
+  if (words.some((w) => w.includes('\0'))) throw new Error('a word has a NUL in it');
+  return ['bash', '-lc', 'exec "$@"', 'bash', 'env', ...env, ...words];
+}
+
+export async function runInTerminal(project, slotValue, line) {
+  const target = terminalTarget(project, slotValue);
+  const argv = runArgv(line);
+  if (!(await stat(target.projectPath).catch(() => null))?.isDirectory()) {
+    throw Object.assign(new Error(`no project named "${target.project}"`), { status: 404 });
+  }
+  if (target.slot && !(await stat(join(target.dir, '.git')).catch(() => null))) {
+    if (!(await canHaveSlots(target.projectPath))) throw new Error('this project has no git repository at its root, so it has no slots');
+    const made = await ensureSlot(target.projectPath, target.slot);
+    if (!made.ok) throw new Error(made.error);
+  }
+  // As for a pane: a session started with no server would belong to this service.
+  if (!(await tmuxServerPid())) {
+    throw Object.assign(new Error('no tmux server is running — check `systemctl status claude-tmux`'), { status: 503 });
+  }
+  const existed = (await tmuxSessions()).has(target.session);
+  const res = existed
+    ? await tmux(['respawn-pane', '-k', '-t', `=${target.session}:`, '-c', target.dir, ...argv])
+    : await tmux(['new-session', '-d', '-s', target.session, '-c', target.dir, ...argv]);
+  if (!res.ok) throw new Error(`tmux refused: ${res.err || 'no reason given'}`);
+  if (!existed) {
+    // `cc`'s options, so it reads the same as a session `cc` started.
+    await tmux(['set-option', '-t', `=${target.session}:`, 'remain-on-exit', 'off']);
+    await tmux(['set-option', '-t', `=${target.session}:`, 'window-size', 'latest']);
+  }
+  return { session: target.session, existed, dir: target.dir };
+}

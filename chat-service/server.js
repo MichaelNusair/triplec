@@ -49,7 +49,7 @@ import {
 import { vapidPublicKey, addSubscription, removeSubscription, listSubscriptions, notifyAll, topicFor, wasGone, describeDevice, recordReceipt, lastReceipt } from './push.js';
 import { startTurnWatcher } from './turn-watcher.js';
 import { createAdmin } from './admin.js';
-import { PASTE_LIMIT, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
+import { PASTE_LIMIT, RUN_LIMIT, runInTerminal, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
 import { ensureSlot, slotOf } from './slots.js';
 import {
   AUTH_MODE,
@@ -119,7 +119,7 @@ function routeFeature(pathname) {
   if (pathname.startsWith('/api/push/')) return 'push';
   if (pathname === '/mux' || pathname === '/mux.html' || pathname === '/term' || pathname === '/term.html'
     || pathname.startsWith('/vendor/') || pathname === '/api/slots' || pathname.startsWith('/api/slots/')
-    || pathname === '/ws/term' || pathname === '/api/term/paste') return 'mux';
+    || pathname === '/ws/term' || pathname === '/api/term/paste' || pathname === '/api/term/run') return 'mux';
   if (pathname === '/admin' || pathname === '/admin.html' || pathname.startsWith('/api/admin/')) return 'admin';
   if (pathname === '/api/projects/remove') return 'retire';
   if (pathname.startsWith('/editor') || pathname.startsWith('/p/') || pathname === '/editor') return 'editor';
@@ -554,6 +554,25 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       json(res, 200, { path });
+      return;
+    }
+
+    // A command line of your own in a pane's session, in place of `claude`: an
+    // environment variable, `--resume <id>`. Restarts what runs in the session and
+    // keeps the session — see runInTerminal.
+    if (pathname === '/api/term/run' && req.method === 'POST') {
+      let body;
+      try {
+        body = JSON.parse((await readBody(req, RUN_LIMIT + 1024)).toString() || '{}');
+      } catch (err) {
+        json(res, 400, { error: err instanceof SyntaxError ? 'the body must be JSON' : err.message });
+        return;
+      }
+      try {
+        json(res, 200, await runInTerminal(body.project, body.slot, body.command));
+      } catch (err) {
+        json(res, err.status || 400, { error: err.message });
+      }
       return;
     }
 

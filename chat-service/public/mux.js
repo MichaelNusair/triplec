@@ -619,6 +619,53 @@
     }
   }
 
+  /**
+   * Run a command line of your own in this slot's terminal session, in place of the
+   * `claude` a pane starts: `CLAUDE_X=off claude --resume <id>`. The server restarts
+   * the program in the session and keeps the session, so nothing is reset and every
+   * device attached to it sees the new one. See runInTerminal in terminal.js.
+   */
+  const RUN_KEY = 'triplec-mux-run';
+  async function runCommand(pane) {
+    let last = 'claude';
+    try {
+      last = localStorage.getItem(RUN_KEY) || last;
+    } catch {
+      /* storage blocked: start from the default */
+    }
+    const where = `${pane.project} ${slotLabel(pane.slot)}`;
+    const line = window.prompt(
+      `Run in ${where}'s terminal, in place of what runs there now — it is stopped. `
+        + 'NAME=value words first set its environment; quotes work, pipes and $ do not.',
+      last,
+    );
+    if (line === null || !line.trim()) return;
+    try {
+      localStorage.setItem(RUN_KEY, line.trim());
+    } catch {
+      /* not remembered; it still runs */
+    }
+    let result;
+    try {
+      const res = await api('/api/term/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: pane.project, slot: pane.slot || 0, command: line.trim() }),
+      });
+      result = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(result.error || `server returned ${res.status}`);
+    } catch (err) {
+      toast(`Couldn't run that in ${where}: ${err.message}`);
+      return;
+    }
+    // A terminal pane already attached to the session just sees the new program.
+    // Anything else — a chat pane, or a session that was not running — opens it.
+    if (pane.kind !== 'terminal' || !result.existed) {
+      openIn(state.panes.indexOf(pane), { kind: 'terminal', project: pane.project, slot: pane.slot, cwd: pane.cwd });
+    }
+    loadSlots(pane.project);
+  }
+
   /** Take something off screen. It keeps running; that is the point. */
   function closePane(index) {
     const pane = state.panes[index];
@@ -661,6 +708,7 @@
         <button type="button" class="mux-pane-btn mux-pane-kind" data-act="kind"></button>
         <button type="button" class="mux-pane-btn" data-act="listen" title="What Claude last said here — read it aloud, or talk it over">🔊</button>
         <button type="button" class="mux-pane-btn" data-act="new" title="New chat in this slot">+</button>
+        <button type="button" class="mux-pane-btn" data-act="run" title="Run your own command line in this slot's terminal — an environment variable, claude --resume <id>">❯…</button>
         <button type="button" class="mux-pane-btn" data-act="phone" title="Copy a link that opens this on the phone">⇱</button>
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
       </header>
@@ -683,6 +731,9 @@
       startIn(state.panes.indexOf(pane), pane.project, { ...place, busy: false, sessions: [], elsewhere: 0 }, 'chat');
     });
     el.querySelector('[data-act="phone"]').addEventListener('click', () => copyPhoneLink(pane));
+    el.querySelector('[data-act="run"]').addEventListener('click', () => {
+      if (pane.project) runCommand(pane);
+    });
     el.querySelector('[data-act="listen"]').addEventListener('click', () => listen(pane));
     pane.el = el;
     void index;

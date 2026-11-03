@@ -319,6 +319,46 @@ console.log('the socket, through the server');
     slots.slots.find((s) => s.n === 2)?.terminal === true && slots.slots.find((s) => s.n === 3)?.terminal === false
       && slots.rootTerminal === false, JSON.stringify(slots.slots?.map((s) => [s.n, s.terminal])));
 
+  // A command line of your own, in place of `claude`: the session's program is
+  // replaced and the session kept, and the line reaches tmux as argv, never a shell.
+  const run = (body, auth = true) => fetch(`${BASE}/api/term/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(auth ? { Cookie: cookie } : {}) },
+    body: JSON.stringify(body),
+  });
+  const runAnon = await run({ project: 'demo', slot: 2, command: 'claude' }, false);
+  check('no session, no command line: 401', runAnon.status === 401, `status ${runAnon.status}`);
+
+  await writeFile(tmuxLog, '');
+  const resumed = await run({ project: 'demo', slot: 2, command: `CLAUDE_DESIGN_LINK_GATE=off claude --resume 8de8f98d-a76a 'two words'` });
+  const resumedBody = await resumed.json();
+  const runLog = await readFile(tmuxLog, 'utf8');
+  const slot2 = join(demo, '.claude', 'worktrees', 'slot-2');
+  check('a running session has its program replaced, through a login shell, as argv',
+    resumed.status === 200 && resumedBody.existed === true
+      && runLog.includes(`respawn-pane -k -t =claude-demo/slot-2: -c ${slot2} bash -lc exec "$@" bash env CLAUDE_DESIGN_LINK_GATE=off claude --resume 8de8f98d-a76a two words`),
+    `${resumed.status} ${JSON.stringify(resumedBody)} ${runLog}`);
+  check('…and the session is kept, not started again', !runLog.includes('new-session') && !runLog.includes('kill-session'), runLog);
+
+  await writeFile(tmuxLog, '');
+  const startedRun = await run({ project: 'demo', slot: 4, command: 'claude --resume abc' });
+  const startedLog = await readFile(tmuxLog, 'utf8');
+  check('with no session yet, one is started with it, under `cc`\'s name and options',
+    startedRun.status === 200 && startedLog.includes(`new-session -d -s claude-demo/slot-4 -c ${join(demo, '.claude', 'worktrees', 'slot-4')} bash -lc exec "$@" bash env claude --resume abc`)
+      && startedLog.includes('set-option -t =claude-demo/slot-4: window-size latest'), startedLog);
+
+  for (const [label, command] of [
+    ['a pipe', 'claude | tee x'], ['a `$`', 'claude --resume $ID'], ['a `;`', 'claude; rm -rf ~'],
+    ['backticks in quotes', 'claude "`id`"'], ['an open quote', "claude 'oops"], ['only an environment', 'A=1'],
+  ]) {
+    await writeFile(tmuxLog, '');
+    const refused = await run({ project: 'demo', slot: 2, command });
+    const refusedLog = await readFile(tmuxLog, 'utf8');
+    check(`a line with ${label} is refused, and tmux not asked`,
+      refused.status === 400 && !/respawn-pane|new-session/.test(refusedLog), `${refused.status} ${refusedLog}`);
+  }
+  const badSlot = await run({ project: '../etc', slot: 1, command: 'claude' });
+  check('a project name that is a path is refused here too', badSlot.status >= 400, `status ${badSlot.status}`);
+
   const xterm = await fetch(`${BASE}/vendor/xterm.js`, { headers: { Cookie: cookie } });
   const body = await xterm.text();
   check('the emulator is served from its package', xterm.status === 200 && /javascript/.test(xterm.headers.get('content-type'))
