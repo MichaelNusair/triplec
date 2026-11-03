@@ -79,9 +79,9 @@ async function makeProject(name, { remote = true } = {}) {
 
 console.log('slots.js');
 {
-  check('parseSlot accepts 1..8 only',
-    slots.parseSlot(1) === 1 && slots.parseSlot('8') === 8 && slots.parseSlot(0) === null
-      && slots.parseSlot(9) === null && slots.parseSlot('1; rm -rf') === null && slots.parseSlot(2.5) === null);
+  check('parseSlot accepts 1..10 only',
+    slots.parseSlot(1) === 1 && slots.parseSlot('10') === 10 && slots.parseSlot(0) === null
+      && slots.parseSlot(11) === null && slots.parseSlot('1; rm -rf') === null && slots.parseSlot(2.5) === null);
 
   const plain = join(root, 'not-a-repo');
   await mkdir(plain, { recursive: true });
@@ -95,9 +95,9 @@ console.log('slots.js');
 
   const p = await makeProject('alpha');
   const made = await slots.ensureSlots(p);
-  check('eight slots are created', made.ok && made.created === 8, JSON.stringify(made));
+  check('ten slots are created', made.ok && made.created === 10, JSON.stringify(made));
   const branches = (await git(p, 'branch', '--format=%(refname:short)')).split('\n').sort();
-  check('each slot is on its own branch', ['main', ...Array.from({ length: 8 }, (_, i) => `slot-${i + 1}`)]
+  check('each slot is on its own branch', ['main', ...Array.from({ length: 10 }, (_, i) => `slot-${i + 1}`)]
     .sort().every((b) => branches.includes(b)), branches.join(','));
   check('the slots are where projectPlaces looks for worktrees',
     await exists(join(p, '.claude', 'worktrees', 'slot-3', 'README.md')));
@@ -159,11 +159,21 @@ console.log('slots.js');
     others: [{ pid: 1, cwd: join(slots.slotPath(p, 5), 'src') }],
   });
   const at = (n) => listed.slots.find((s) => s.n === n);
-  check('listSlots reports all eight', listed.enabled && listed.slots.length === 8);
+  check('listSlots reports all ten', listed.enabled && listed.slots.length === 10);
   check('a slot with one of our chats mid-turn is busy and held', at(4).busy && at(4).held && at(4).sessions[0].sessionId === 's4');
   check('a slot with a process from another surface is held, and says where', at(5).held && at(5).elsewhere === 1 && !at(5).busy);
   check('a free slot is neither', !at(6).held && !at(6).busy);
   check('a dirty slot says how much is in it', at(3).dirty === 1);
+
+  // `/exit` in a slot's terminal resets it: refreshed as prepareSlot would, and
+  // marked with the time, outside the checkout.
+  const reset = await slots.resetSlot(p, 7, { fetch: false });
+  check('resetSlot refreshes the slot and says when', reset.ok && Number.isFinite(reset.resetAt), JSON.stringify(reset));
+  const afterReset = await slots.listSlots(p);
+  check('listSlots reports when a slot was reset', afterReset.slots.find((s) => s.n === 7).resetAt === reset.resetAt
+    && afterReset.slots.find((s) => s.n === 6).resetAt === null);
+  check("the reset mark is not in the slot's git status",
+    (await git(slots.slotPath(p, 7), 'status', '--porcelain')) === '');
 
   const cwds = await slots.claudeCwds({ proc: join(root, 'no-proc-here') });
   check('the process scan survives a /proc it cannot read', Array.isArray(cwds) && cwds.length === 0);
@@ -174,10 +184,10 @@ console.log('session-manager');
   const manager = new SessionManager();
   const created = await manager.createProject('fresh-one');
   const step = created.steps.find((s) => s.step === 'slots');
-  check('a new project arrives with its eight slots', step?.ok && step.created === 8, JSON.stringify(created.steps));
+  check('a new project arrives with its ten slots', step?.ok && step.created === 10, JSON.stringify(created.steps));
 
   const status = await manager.slots('alpha');
-  check('the slots route reports a project\'s slots', status.enabled && status.slots.length === 8);
+  check('the slots route reports a project\'s slots', status.enabled && status.slots.length === 10);
 
   const prepared = await manager.prepareSlot('alpha', 6);
   check('prepareSlot through the manager answers with the directory to start in',
@@ -321,6 +331,26 @@ console.log('mux page');
   }));
   check('focusing the pane clears the ring and the count', !pane0.attention && !/^\(\d+\) /.test(doc.title)
     && mux.state.focus === 0);
+
+  // Work happens in the slots: the main checkout is for looking at.
+  const rootRow = doc.querySelector(`.mux-slot[data-cwd="${projectPath}"]`);
+  check('the main checkout row is view only, with no + to start in it',
+    rootRow?.classList.contains('view-only') && !rootRow.querySelector('.mux-add')
+      && /view only/.test(rootRow.querySelector('.mux-slot-name').textContent));
+  const prepares = calls.filter((c) => c.url === '/api/slots/prepare').length;
+  await mux.startIn(0, 'demo', { n: 0, cwd: projectPath, created: true, sessions: [] }, 'terminal');
+  check('nothing new starts in the main checkout',
+    calls.filter((c) => c.url === '/api/slots/prepare').length === prepares && mux.state.panes[0].cwd === slotCwd(3));
+  check('the terminal is what a + opens, unless chosen otherwise', mux.state.newKind === 'terminal');
+
+  // A slot reset after its last conversation is not called by that conversation.
+  mux.state.slots.get('demo').slots[1].resetAt = 10;
+  mux.closePane(1);
+  mux.renderSidebar();
+  check("a reset slot's row forgets the conversation that ended",
+    doc.querySelector(`.mux-slot[data-cwd="${slotCwd(2)}"] .mux-slot-title`)?.textContent === 'Nothing yet');
+  mux.state.slots.get('demo').slots[1].resetAt = null;
+  mux.openIn(1, { project: 'demo', slot: 2, cwd: slotCwd(2), sessionId: 'old-2', title: 'slot two chat' });
 
   // Closing and shrinking stop nothing.
   const before = calls.length;

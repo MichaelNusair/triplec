@@ -62,14 +62,14 @@
     focus: 0,
     panes: [],                 // see emptyPane
     alerts: false,
-    newKind: 'chat',           // what a + opens
+    newKind: 'terminal',       // what a + opens
   };
 
   function emptyPane() {
     return {
       kind: 'chat',    // 'chat' | 'terminal'
       project: null,   // project name, as /api/slots and /api/projects know it
-      slot: null,      // 1-8, or 0 for the project's own checkout
+      slot: null,      // 1-10, or 0 for the project's own checkout
       cwd: null,
       sessionId: null, // a chat's; a terminal is named by its slot
       title: '',
@@ -114,7 +114,7 @@
     state.layout = LAYOUTS[saved?.layout] ? Number(saved.layout) : 2;
     state.expanded = new Set(Array.isArray(saved?.expanded) ? saved.expanded : []);
     state.alerts = Boolean(saved?.alerts) && 'Notification' in window && Notification.permission === 'granted';
-    state.newKind = KINDS.includes(saved?.newKind) ? saved.newKind : 'chat';
+    state.newKind = KINDS.includes(saved?.newKind) ? saved.newKind : 'terminal';
     const panes = Array.isArray(saved?.panes) ? saved.panes : [];
     state.panes = [];
     for (let i = 0; i < 8; i++) {
@@ -222,7 +222,10 @@
       if (pane.slot === 0 && status.worktree) return;
       const wasBusy = pane.busy;
       pane.busy = status.state === 'working';
-      if (status.title) pane.title = status.title;
+      // A title from before the slot was reset is the conversation that ended, not
+      // the one starting now.
+      const since = resetAtFor(pane.project, pane.cwd);
+      if (status.title && (!since || (status.transcriptAt || 0) > since)) pane.title = status.title;
       const waiting = status.state === 'question';
       if ((wasBusy && !pane.busy) || (waiting && !pane.attention && wasBusy)) {
         if (!watched(pane)) flag(pane.cwd, pane);
@@ -295,13 +298,27 @@
     return state.projects.find((p) => p.name === name) || null;
   }
 
-  /** The newest conversation recorded in a directory, from /api/projects. */
+  /** When a slot was last reset (its Claude exited), from /api/slots; 0 if never. */
+  function resetAtFor(project, cwd) {
+    return state.slots.get(project)?.slots?.find((s) => s.cwd === cwd)?.resetAt || 0;
+  }
+
+  /**
+   * The newest conversation recorded in a directory, from /api/projects — and only
+   * one since the slot was last reset: a conversation that was ended with `/exit` is
+   * not what the slot is called any more.
+   */
   function latestSession(project, cwd) {
+    const since = resetAtFor(project, cwd);
     const sessions = (projectByName(project)?.sessions || [])
       .filter((s) => (s.cwd || projectByName(project).path) === cwd)
+      .filter((s) => !since || (s.mtime || 0) > since)
       .sort((a, b) => b.mtime - a.mtime);
     return sessions[0] || null;
   }
+
+  /** Whether a project has slots, so its own checkout is view only. */
+  const slotsOn = (name) => state.slots.get(name)?.enabled;
 
   function placesOf(name) {
     const project = projectByName(name);
@@ -397,6 +414,9 @@
     const onScreen = visiblePanes().findIndex((p) => p.cwd === place.cwd);
     if (onScreen >= 0) row.classList.add('on-screen');
 
+    // The project's own checkout is for looking at, as in the editor: work happens in
+    // the slots. What is already running there can be opened; nothing new starts.
+    const viewOnly = place.n === 0 && Boolean(slotsOn(project.name));
     const latest = latestSession(project.name, place.cwd);
     const pane = visiblePanes().find((p) => p.cwd === place.cwd);
     const title = pane?.title
@@ -415,7 +435,8 @@
     main.className = 'mux-slot-main';
     // What a click opens: whatever is alive here — a terminal first, because its
     // session is running right now — then the last chat, then something new.
-    const opens = place.terminal ? 'its terminal' : latest ? `"${title}"` : `a new ${kindLabel(state.newKind)}`;
+    const reopens = place.terminal || (latest && (state.newKind === 'chat' || viewOnly));
+    const opens = place.terminal ? 'its terminal' : reopens ? `"${title}"` : `a new ${kindLabel(state.newKind)}`;
     main.title = `Open ${opens} in the focused pane`;
     main.innerHTML = `<span class="mux-dot ${dot}"></span>
       <span class="mux-slot-text">
@@ -423,7 +444,8 @@
         <span class="mux-slot-title"></span>
         <span class="mux-slot-facts"></span>
       </span>`;
-    $('.mux-slot-name', main).textContent = slotLabel(place.n) + (onScreen >= 0 ? ` · pane ${onScreen + 1}` : '');
+    $('.mux-slot-name', main).textContent = slotLabel(place.n) + (viewOnly ? ' · view only' : '')
+      + (onScreen >= 0 ? ` · pane ${onScreen + 1}` : '');
     $('.mux-slot-title', main).textContent = title;
     $('.mux-slot-facts', main).textContent = facts.join(' · ');
     main.addEventListener('click', () => {
@@ -433,7 +455,8 @@
         return;
       }
       if (place.terminal) openIn(state.focus, { kind: 'terminal', project: project.name, slot: place.n, cwd: place.cwd });
-      else if (latest) openIn(state.focus, { kind: 'chat', project: project.name, slot: place.n, cwd: place.cwd, sessionId: latest.sessionId, title: latest.title });
+      else if (reopens) openIn(state.focus, { kind: 'chat', project: project.name, slot: place.n, cwd: place.cwd, sessionId: latest.sessionId, title: latest.title });
+      else if (viewOnly) toast(`${project.name}'s main checkout is view only — start in a slot.`);
       else startIn(state.focus, project.name, place);
     });
 
@@ -448,7 +471,10 @@
       startIn(state.focus, project.name, place);
     });
 
-    row.append(main, fresh);
+    if (viewOnly) {
+      row.classList.add('view-only');
+      row.append(main);
+    } else row.append(main, fresh);
     return row;
   }
 
@@ -468,7 +494,7 @@
     const free = slots.slots.filter((s) => !taken(s));
     const pick = free.find((s) => !s.dirty && !s.unpushed) || free[0];
     if (!pick) {
-      toast(`All 8 slots of ${name} have something in them. Open one, or start in one anyway with its +.`);
+      toast(`All ${slots.slots.length} slots of ${name} have something in them. Open one, or start in one anyway with its +.`);
       return;
     }
     state.expanded.add(name);
@@ -485,6 +511,11 @@
   async function startIn(index, name, place, kind = state.newKind) {
     if (kind === 'terminal' && place.terminal) {
       openIn(index, { kind, project: name, slot: place.n, cwd: place.cwd });
+      return;
+    }
+    // Nothing new starts in a project's own checkout once it has slots; see slotRow.
+    if (!place.n && slotsOn(name)) {
+      toast(`${name}'s main checkout is view only — start in a slot.`);
       return;
     }
     const others = [];
@@ -846,6 +877,11 @@
         pane.sub = msg.text || '';
         pane.trouble = msg.status === 'error' || msg.status === 'reconnecting';
         paintPane(pane);
+        // Claude exiting in a slot resets it (see resetSlot), so the title goes too.
+        if (msg.status === 'ended' && pane.slot) {
+          pane.title = '';
+          save();
+        }
         // A terminal started or ended changes what its slot row says.
         if (msg.status === 'attached' || msg.status === 'ended') loadSlots(pane.project);
       } else if (msg.type === 'term-bell' && !watched(pane)) {
@@ -916,7 +952,7 @@
 
   for (const button of document.querySelectorAll('[data-kind]')) {
     button.addEventListener('click', () => {
-      state.newKind = KINDS.includes(button.dataset.kind) ? button.dataset.kind : 'chat';
+      state.newKind = KINDS.includes(button.dataset.kind) ? button.dataset.kind : 'terminal';
       save();
       renderGrid();
       renderSidebar();

@@ -256,8 +256,8 @@ console.log('the socket, through the server');
   const traversal = await open('project=..%2Fetc&slot=1');
   check('a project name that is a path is refused',
     traversal.json.some((m) => m.type === 'error') && !traversal.text, JSON.stringify(traversal.json));
-  const nine = await open('project=demo&slot=9');
-  check('slot 9 is refused', nine.json.some((m) => m.type === 'error' && /slot/.test(m.message)), JSON.stringify(nine.json));
+  const nine = await open('project=demo&slot=11');
+  check('slot 11 is refused', nine.json.some((m) => m.type === 'error' && /slot/.test(m.message)), JSON.stringify(nine.json));
   const nowhere = await open('project=nope&slot=0');
   check('a project that does not exist is refused', nowhere.json.some((m) => m.type === 'error' && /no project/.test(m.message)));
 

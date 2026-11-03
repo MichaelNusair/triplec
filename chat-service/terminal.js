@@ -14,7 +14,7 @@
  * socket. It never builds a shell command — the project name is validated by
  * `projectPathFor` and the slot is a number, and both reach `cc` as argv.
  *
- * Socket protocol, at /ws/term?project=<name>&slot=<0-8>&cols=&rows=:
+ * Socket protocol, at /ws/term?project=<name>&slot=<0-10>&cols=&rows=:
  *   browser → here: JSON text — {type:'input', data}, {type:'resize', cols, rows},
  *                   {type:'scroll', lines} (negative is up)
  *   here → browser: binary frames, the terminal's bytes; JSON text for state —
@@ -30,8 +30,8 @@ import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
-import { projectPathFor } from './session-manager.js';
-import { canHaveSlots, ensureSlot, parseSlot, slotPath } from './slots.js';
+import { getGithubToken, projectPathFor } from './session-manager.js';
+import { canHaveSlots, ensureSlot, parseSlot, resetSlot, slotPath } from './slots.js';
 import { HOST_MODE } from './host.js';
 import { hasRegistry, slotConfigFor } from './projects.js';
 
@@ -238,8 +238,22 @@ export async function serveTerminal(ws, query) {
   relay.stderr.on('data', (d) => { stderr = (stderr + d.toString()).slice(-2000); });
   relay.stdin.on('error', () => { /* the relay is gone; its exit says why */ });
 
-  relay.on('exit', (code) => {
+  relay.on('exit', async (code) => {
     if (code && stderr.trim()) console.error(`terminal ${target.session}: relay exited ${code}: ${stderr.trim()}`);
+    // The relay also exits when the page detaches, and then the session is still
+    // there. Gone means Claude exited — `/exit` — which in a slot is a reset: see
+    // resetSlot. Done before saying so, so the page's next look at the slot sees it.
+    if (target.slot && !(await tmuxSessions()).has(target.session)) {
+      try {
+        const token = await getGithubToken();
+        const result = await resetSlot(target.projectPath, target.slot, {
+          env: token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {},
+        });
+        if (!result.ok) console.error(`terminal ${target.session}: reset failed: ${result.error}`);
+      } catch (err) {
+        console.error(`terminal ${target.session}: reset failed: ${err.message}`);
+      }
+    }
     sendJson({ type: 'exit', code });
     ws.close();
   });

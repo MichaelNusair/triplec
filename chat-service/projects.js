@@ -25,7 +25,7 @@ import { readdir } from 'fs/promises';
 import { isAbsolute, join, normalize } from 'path';
 import { PROJECTS_ROOT } from './host.js';
 
-export const MAX_SLOTS = 8;
+export const MAX_SLOTS = 10;
 
 /**
  * Validate a project name. The character class is the whole defence for the

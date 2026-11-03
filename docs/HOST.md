@@ -62,7 +62,7 @@ over SSH. Hooks run under every permission mode, `bypassPermissions` included:
 verified with a project `PreToolUse` hook that exits 2, which blocked a `Write` in
 `bypassPermissions` and surfaced the hook's own message.
 
-**Slots.** A registered project gets `slots.count` worktrees (up to 8) under
+**Slots.** A registered project gets `slots.count` worktrees (up to 10) under
 `.claude/worktrees/slot-N`, each on a branch of that name. `slots.postCreate` is a
 shell command run once in a newly created slot — install dependencies, so the
 repository's commit hooks can run there — in the background and one slot at a time

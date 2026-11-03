@@ -43,7 +43,7 @@ const execFileAsync = promisify(execFile);
 // git and gh use the machine's own login — `gh auth login`, an SSH key — and the SDK
 // is never loaded, so a host with no AWS account has no AWS call to fail.
 let cachedGithubToken = null;
-async function getGithubToken() {
+export async function getGithubToken() {
   if (cachedGithubToken !== null) return cachedGithubToken;
   const arn = process.env.GITHUB_SECRET_ARN;
   if (!arn) {

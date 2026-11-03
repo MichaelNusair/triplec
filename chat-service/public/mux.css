@@ -67,6 +67,7 @@ body.mux {
 
 .mux-slot { display: flex; align-items: center; padding-right: 8px; }
 .mux-slot.on-screen { background: rgba(255, 255, 255, .04); }
+.mux-slot.view-only .mux-slot-main { opacity: .6; }
 .mux-slot-main {
   flex: 1; min-width: 0; display: flex; align-items: flex-start; gap: 8px;
   padding: 5px 6px 5px 26px; border: 0; background: none; color: inherit; font: inherit;

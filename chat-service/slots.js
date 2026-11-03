@@ -53,9 +53,10 @@ export function slotPath(projectPath, n) {
  * project directly under `root`.
  */
 export function slotOf(cwd, root) {
-  const m = /^(.+)\/\.claude\/worktrees\/slot-([1-8])$/.exec(String(cwd || ''));
+  const m = /^(.+)\/\.claude\/worktrees\/slot-([1-9][0-9]?)$/.exec(String(cwd || ''));
   if (!m) return null;
   const n = Number(m[2]);
+  if (n > SLOT_COUNT) return null;
   // With a registry a project is wherever it was registered, not a child of a root.
   if (hasRegistry()) {
     const project = projectFor(m[1]);
@@ -357,6 +358,9 @@ export async function listSlots(projectPath, { live = [], others = [] } = {}) {
       held: mine.length > 0 || theirs.length > 0,
       elsewhere: theirs.length,
       postCreate: created ? await postCreateStatus(projectPath, n) : null,
+      // When the slot was last reset — its Claude exited — so a conversation from
+      // before then is not what the slot is called any more. See resetSlot.
+      resetAt: created ? await resetAtOf(path) : null,
     });
   }
   return { enabled: true, count, slots };
@@ -414,4 +418,40 @@ export async function prepareSlot(projectPath, n, { env = {}, fetch = true } = {
     if (!refreshed) kept = `${state.branch || 'its branch'} could not be fast-forwarded to ${base}`;
   }
   return { ok: true, cwd: path, created: made.created, base, fetched, refreshed, kept, postCreate, ...(await slotState(path)) };
+}
+
+/*
+ * A slot reset: what `/exit` in a slot's terminal means. The conversation that was
+ * there is finished, so the slot goes back to being free — refreshed exactly as
+ * prepareSlot would (a fast-forward, only when nothing would be lost; never a hard
+ * reset), and marked with the time, so the sidebar stops calling it by the title of
+ * a conversation that has ended.
+ *
+ * The mark lives in the worktree's own git directory (`.git/worktrees/slot-N`), not
+ * in the checkout, so it never shows in `git status` and goes away with the slot.
+ */
+const RESET_MARK = 'triplec-reset';
+
+async function markPath(path) {
+  const dir = await git(path, ['rev-parse', '--git-dir']);
+  if (!dir.ok || !dir.out) return null;
+  return join(dir.out.startsWith('/') ? '' : path, dir.out, RESET_MARK);
+}
+
+/** When a slot was last reset, in ms since the epoch, or null if never. */
+export async function resetAtOf(path) {
+  const mark = await markPath(path);
+  if (!mark) return null;
+  const text = await readFile(mark, 'utf8').catch(() => '');
+  const at = Number(text.trim());
+  return Number.isFinite(at) && at > 0 ? at : null;
+}
+
+export async function resetSlot(projectPath, n, options = {}) {
+  const result = await prepareSlot(projectPath, n, options);
+  if (!result.ok) return result;
+  const mark = await markPath(result.cwd);
+  const resetAt = Date.now();
+  if (mark) await writeFile(mark, `${resetAt}\n`);
+  return { ...result, resetAt };
 }

@@ -61,7 +61,7 @@ checks a file without installing anything.
 | `stateDir` | `~/.local/state/triplec` | The pre-install snapshot and the editor's data. |
 | `projectsRoot` | `~/projects` | Where the chat looks for projects, used only when `projects` is empty. |
 | `claudeHome` | `~/.claude` | Claude Code's state, which the service reads and never moves. |
-| `projects[]` | `[]` | An explicit list of `{name, path, slots: {count 1-8, postCreate}}`, for repositories that live in different places. Names match `^[A-Za-z0-9._-]+$` and are unique. |
+| `projects[]` | `[]` | An explicit list of `{name, path, slots: {count 1-10, postCreate}}`, for repositories that live in different places. Names match `^[A-Za-z0-9._-]+$` and are unique. |
 | `listen.nginxPort` | `8080` | The port nginx listens on, at `127.0.0.1`. This is what a reverse proxy points at. |
 | `listen.appPort` | `9997` | The chat service's own port. |
 | `listen.bind` | `127.0.0.1` | The chat service's bind address. Anything other than loopback is refused unless `listen.allowPublicBind` is `true`. |
