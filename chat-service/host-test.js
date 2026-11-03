@@ -420,7 +420,6 @@ try {
     // which the service reads, and in config.json, which projects.json is rendered
     // from, so an upgrade keeps it. Both files are put back afterwards for the
     // servers this test starts later.
-    await writeFile(join(home, '.gitconfig'), '[user]\n\temail = test@example.com\n\tname = Test\n');
     const registryBefore = await readFile(registryFile, 'utf8');
     const configFile = join(configDir, 'config.json');
     await writeFile(configFile, JSON.stringify({ mode: 'host', projects: [{ name: 'webapp', path: repo }] }, null, 2));
@@ -430,6 +429,11 @@ try {
       check('E5: a new project on a registry machine is created in the projects root', created.project?.path === surprisePath
         && created.project.steps.some((s) => s.step === 'register' && s.ok)
         && Boolean(await stat(join(surprisePath, '.git')).catch(() => null)), JSON.stringify(created).slice(0, 400));
+      // This home has no git identity, which is what a fresh VM looks like: the first
+      // commit must still be made, and the repository left able to make more.
+      const author = await git(surprisePath, 'log', '-1', '--format=%an <%ae>').then((r) => r.stdout.trim(), () => '');
+      check('E5: with no git identity on the machine the initial commit is still made', created.project.steps.some((s) => s.step === 'git init' && s.ok)
+        && created.project.steps.some((s) => s.step === 'git identity' && s.ok) && /\S <\S+@\S+>/.test(author), author || JSON.stringify(created.project.steps));
       const reg = JSON.parse(await readFile(registryFile, 'utf8'));
       check('E5: and is added to the registry', reg.some((p) => p.name === 'surprise' && p.path === surprisePath) && reg.some((p) => p.name === 'webapp'));
       const cfg = JSON.parse(await readFile(configFile, 'utf8'));

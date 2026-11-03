@@ -9,6 +9,7 @@
 import { spawn, execFile } from 'child_process';
 import { readdir, readFile, stat, mkdir, realpath, writeFile, rm } from 'fs/promises';
 import { basename, dirname, join } from 'path';
+import { hostname, userInfo } from 'os';
 import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { promisify } from 'util';
@@ -44,6 +45,37 @@ const execFileAsync = promisify(execFile);
 // git and gh use the machine's own login — `gh auth login`, an SSH key — and the SDK
 // is never loaded, so a host with no AWS account has no AWS call to fail.
 let cachedGithubToken = null;
+/**
+ * Who a new repository commits as, when git has no identity for it — or null when
+ * it does. Without one the initial commit fails outright ("Author identity
+ * unknown"), and so would every commit a chat makes there later, so the answer is
+ * written to the repository's own config rather than used once.
+ *
+ * The GitHub account the workspace token belongs to is the first choice, with its
+ * noreply address, so commits are attributed to the person who pushes them. A
+ * machine with no token falls back to the local account.
+ */
+export async function commitIdentity(dir) {
+  const get = (key) => execFileAsync('git', ['config', '--get', key], { cwd: dir })
+    .then(({ stdout }) => stdout.trim(), () => '');
+  if ((await get('user.name')) && (await get('user.email'))) return null;
+  try {
+    const token = await getGithubToken();
+    const { stdout } = await execFileAsync('gh', ['api', 'user'], {
+      timeout: 20_000,
+      env: { ...process.env, ...(token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {}) },
+    });
+    const u = JSON.parse(stdout);
+    if (u?.login && u?.id) {
+      // Profile names can carry invisible direction marks; git keeps them verbatim.
+      const name = String(u.name || '').replace(/[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, '').trim();
+      return { name: name || u.login, email: `${u.id}+${u.login}@users.noreply.github.com` };
+    }
+  } catch { /* no gh, no token, or no network: the local account below */ }
+  const user = userInfo().username;
+  return { name: user, email: `${user}@${hostname()}` };
+}
+
 export async function getGithubToken() {
   if (cachedGithubToken !== null) return cachedGithubToken;
   const arn = process.env.GITHUB_SECRET_ARN;
@@ -1382,6 +1414,12 @@ export class SessionManager {
 
     try {
       await asUser(['git', 'init', '-b', 'main']);
+      const who = await commitIdentity(path);
+      if (who) {
+        await asUser(['git', 'config', 'user.name', who.name]);
+        await asUser(['git', 'config', 'user.email', who.email]);
+        steps.push({ step: 'git identity', ok: true, note: `none configured on this machine; this repository commits as ${who.name} <${who.email}>` });
+      }
       await asUser(['git', 'add', '-A']);
       await asUser(['git', 'commit', '-m', 'Initial commit']);
       steps.push({ step: 'git init', ok: true });
