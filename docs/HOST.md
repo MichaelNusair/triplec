@@ -74,8 +74,11 @@ throughout. No git call TripleC makes passes `--depth`, `--deepen` or
 `--unshallow`: a shallow clone stays shallow.
 
 **Registry.** With `projects` set, those are the only projects. Creating or cloning
-one is limited to a registered name whose directory does not exist yet, and with
-`retire` off there is no route that deletes a directory at all.
+a registered name uses its declared path. Creating or cloning a new name from the
+app makes it in `projectsRoot` and adds it to the registry: to `projects.json`,
+which the service reads, and to `config.json` beside it, so the next install or
+upgrade keeps it. With `retire` off there is no route that deletes a directory at
+all.
 
 **Limits.** `maxLiveSessions` (default 8) caps the `claude` processes the service
 runs; joining a live chat never counts against it, and a new one past it is refused

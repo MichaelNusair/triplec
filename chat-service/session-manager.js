@@ -30,7 +30,8 @@ import {
   projectFor,
   projectLabel,
   projectPathFor,
-  registered,
+  newProjectPathFor,
+  registerProject,
   slotConfigFor,
 } from './projects.js';
 
@@ -1338,12 +1339,9 @@ export class SessionManager {
    * from a fully wired one, and the UI says which happened.
    */
   async createProject(name, { github = false, private: isPrivate = true, description = '' } = {}) {
-    // With a registry, a project is something the machine's owner declared, so the
-    // only one that can be created is a registered name whose directory is missing.
-    if (hasRegistry() && !registered(assertSafeName(name))) {
-      throw new Error(`"${name}" is not in this machine's project registry, so it cannot be created here`);
-    }
-    const path = projectPathFor(name);
+    // With a registry, a registered name is created at its declared path and a new
+    // name in PROJECTS_ROOT, joining the registry once it is a repository.
+    const path = newProjectPathFor(name);
     try {
       await stat(path);
       throw new Error(`"${name}" already exists`);
@@ -1354,6 +1352,11 @@ export class SessionManager {
 
     await mkdir(path, { recursive: true });
     const steps = [];
+
+    // Registered as soon as the folder exists, so a project whose git step fails is
+    // still one the app lists and can open, not a stray directory nothing names.
+    const reg = await registerProject(name);
+    if (reg) steps.push(reg);
 
     // Seed a README so the first commit isn't empty (GitHub shows an empty repo
     // as unusable, and `gh repo create --push` needs a commit to push).
@@ -1738,11 +1741,9 @@ export class SessionManager {
       // exactly what keeps `join` from writing outside the directory chosen above.
       path = join(parent, assertSafeName(target));
     } else if (hasRegistry()) {
-      // A clone becomes a project only at a path the registry already names for it.
-      if (!registered(assertSafeName(target))) {
-        throw new Error(`"${target}" is not in this machine's project registry, so it cannot be cloned here`);
-      }
-      path = projectPathFor(target);
+      // A registered name clones to its declared path; a new one to PROJECTS_ROOT,
+      // and is registered once the clone has succeeded.
+      path = newProjectPathFor(target);
       parent = dirname(path);
     } else {
       path = join(parent, assertSafeName(target));
@@ -1801,7 +1802,11 @@ export class SessionManager {
 
     // A repository cloned *into* a project is not a project of its own, so it gets
     // no slots; the project it joined has its own, or none if its root is no repo.
-    if (!into) steps.push(slotStep(await ensureSlots(path)));
+    if (!into) {
+      const reg = await registerProject(target);
+      if (reg) steps.push(reg);
+      steps.push(slotStep(await ensureSlots(path)));
+    }
 
     // The project is what the client opens, so when the clone went *into* one, the
     // answer is that project and not the directory just created inside it.

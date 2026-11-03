@@ -408,16 +408,40 @@ try {
     const removal = await fetch(`${base}/api/projects/remove`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'webapp', force: true }) });
     check('E5: with retire off the removal route does not exist', removal.status === 404, String(removal.status));
     check('E5: and the registered directory is untouched', Boolean(await stat(join(repo, 'README.md')).catch(() => null)));
-    const created = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'surprise' }) });
-    check('E5: creating a project outside the registry is refused', created.status === 500 && /not in this machine's project registry/.test((await created.json()).error || ''));
-    const cloned = await fetch(`${base}/api/projects/clone`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ repo: 'someone/other' }) });
-    check('E5: cloning a project outside the registry is refused', cloned.status === 500 && /not in this machine's project registry/.test((await cloned.json()).error || ''));
     const unknownApi = await fetch(`${base}/api/does-not-exist`, { headers: auth });
     check('E5: an unknown API path is a 404, not the app shell', unknownApi.status === 404);
 
     const projects = await (await fetch(`${base}/api/projects`, { headers: auth })).json();
     const webapp = projects.projects.find((p) => p.name === 'webapp');
     check('E1: the registered path is listed under its registered name', webapp && webapp.path === repo && projects.projects.length === 1, JSON.stringify(projects.projects.map((p) => [p.name, p.path])));
+
+    // --- E5: adding a project from the app on a registry machine --------------
+    // A new name is made in PROJECTS_ROOT and joins the registry — in projects.json,
+    // which the service reads, and in config.json, which projects.json is rendered
+    // from, so an upgrade keeps it. Both files are put back afterwards for the
+    // servers this test starts later.
+    await writeFile(join(home, '.gitconfig'), '[user]\n\temail = test@example.com\n\tname = Test\n');
+    const registryBefore = await readFile(registryFile, 'utf8');
+    const configFile = join(configDir, 'config.json');
+    await writeFile(configFile, JSON.stringify({ mode: 'host', projects: [{ name: 'webapp', path: repo }] }, null, 2));
+    try {
+      const created = await (await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'surprise' }) })).json();
+      const surprisePath = join(root, 'projects', 'surprise');
+      check('E5: a new project on a registry machine is created in the projects root', created.project?.path === surprisePath
+        && created.project.steps.some((s) => s.step === 'register' && s.ok)
+        && Boolean(await stat(join(surprisePath, '.git')).catch(() => null)), JSON.stringify(created).slice(0, 400));
+      const reg = JSON.parse(await readFile(registryFile, 'utf8'));
+      check('E5: and is added to the registry', reg.some((p) => p.name === 'surprise' && p.path === surprisePath) && reg.some((p) => p.name === 'webapp'));
+      const cfg = JSON.parse(await readFile(configFile, 'utf8'));
+      check('E5: and to config.json, so a reinstall keeps it', cfg.mode === 'host' && cfg.projects.some((p) => p.name === 'surprise' && p.path === surprisePath));
+      const listed = (await (await fetch(`${base}/api/projects`, { headers: auth })).json()).projects;
+      check('E5: and is listed straight away', listed.some((p) => p.name === 'surprise'));
+      const twice = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'surprise' }) });
+      check('E5: creating it again is refused', twice.status === 500 && /already exists/.test((await twice.json()).error || ''));
+    } finally {
+      await writeFile(registryFile, registryBefore);
+      await rm(configFile, { force: true });
+    }
     check('B2: with no defaultModel in login mode, there is no default model', projects.defaultModel === '');
     const models = await (await fetch(`${base}/api/models`, { headers: auth })).json();
     check('B2: the picker offers the CLI default first, not a Bedrock id', models.default === '' && models.models[0].id === '' && !models.models.some((m) => m.id.startsWith('us.anthropic.')));

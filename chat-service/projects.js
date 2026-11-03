@@ -12,8 +12,9 @@
  *     `{name, path}`, for a machine whose repositories were there first: a
  *     developer VM with a checkout at whatever path its own tooling chose, which
  *     need not be named after the project or share a parent with anything else.
- *     With a registry nothing else is a project, and creating or cloning one is
- *     limited to a registered name whose path does not exist yet.
+ *     With a registry nothing else is a project. Creating or cloning one under a
+ *     registered name uses that name's path; under a new name it lands in
+ *     PROJECTS_ROOT and is added to the registry (see `registerProject`).
  *
  * Everything that used to ask "is this cwd under PROJECTS_ROOT?" asks `projectFor`
  * instead, so both answers go through the same check. That check is hygiene, not
@@ -21,8 +22,8 @@
  * from a browser from naming a directory nobody meant to open.
  */
 import { readFileSync } from 'fs';
-import { readdir } from 'fs/promises';
-import { isAbsolute, join, normalize } from 'path';
+import { readdir, readFile, rename, writeFile } from 'fs/promises';
+import { dirname, isAbsolute, join, normalize } from 'path';
 import { PROJECTS_ROOT } from './host.js';
 
 export const MAX_SLOTS = 10;
@@ -81,10 +82,74 @@ function loadRegistry(file = process.env.TRIPLEC_PROJECTS_FILE) {
 }
 
 let REGISTRY = loadRegistry();
+let REGISTRY_FILE = process.env.TRIPLEC_PROJECTS_FILE || null;
 
 /** For the tests: install a registry (or `null` for the projects root). */
-export function setRegistry(list) {
+export function setRegistry(list, file = null) {
   REGISTRY = list ? parseRegistry(JSON.stringify(list)) : null;
+  REGISTRY_FILE = file;
+}
+
+async function writeAtomic(file, text) {
+  const tmp = `${file}.tmp-${process.pid}`;
+  await writeFile(tmp, text, 'utf8');
+  await rename(tmp, file);
+}
+
+/**
+ * Add a project the app just created or cloned to the registry, at
+ * PROJECTS_ROOT/<name>, so a host install can grow its project list from the app
+ * instead of only from its config.
+ *
+ * Two files: `projects.json`, which this service reads, and the install's
+ * `config.json` beside it, which is what `projects.json` is rendered from — without
+ * that second write the next upgrade would quietly drop the project. The config is
+ * found next to the registry (where install.sh puts both) or at
+ * TRIPLEC_CONFIG_FILE. Returns a step for the caller to report.
+ */
+let registering = Promise.resolve();
+export function registerProject(name) {
+  // One at a time: two creates at once must not each write a list missing the other.
+  const run = registering.then(() => addToRegistry(name));
+  registering = run.catch(() => {});
+  return run;
+}
+
+async function addToRegistry(name) {
+  if (!REGISTRY) return null;
+  assertSafeName(name);
+  if (registered(name)) return null;
+  const path = join(PROJECTS_ROOT, name);
+  const entry = { name, path, slots: defaultSlots() };
+  const next = parseRegistry(JSON.stringify([...REGISTRY, entry]));
+  if (REGISTRY_FILE) await writeAtomic(REGISTRY_FILE, `${JSON.stringify(next, null, 2)}\n`);
+  REGISTRY = next;
+
+  const configFile = process.env.TRIPLEC_CONFIG_FILE
+    || (REGISTRY_FILE ? join(dirname(REGISTRY_FILE), 'config.json') : null);
+  const raw = configFile ? await readFile(configFile, 'utf8').catch(() => null) : null;
+  if (!raw) {
+    return { step: 'register', ok: true, note: 'added to projects.json; no config.json found, so a reinstall will not keep it' };
+  }
+  try {
+    const config = JSON.parse(raw);
+    const home = process.env.HOME;
+    const shown = home && path.startsWith(`${home}/`) ? `~/${path.slice(home.length + 1)}` : path;
+    config.projects = Array.isArray(config.projects) ? config.projects : [];
+    if (!config.projects.some((p) => p?.name === name)) {
+      config.projects.push({ name, path: shown, slots: defaultSlots() });
+      await writeAtomic(configFile, `${JSON.stringify(config, null, 2)}\n`);
+    }
+    return { step: 'register', ok: true };
+  } catch (err) {
+    return { step: 'register', ok: false, error: `added to projects.json, but not to ${configFile}: ${err.message}`.slice(0, 300) };
+  }
+}
+
+/** Where a project by this name will live: its registered path, or a new one in PROJECTS_ROOT. */
+export function newProjectPathFor(name) {
+  assertSafeName(name);
+  return registered(name)?.path || join(PROJECTS_ROOT, name);
 }
 
 export const hasRegistry = () => REGISTRY !== null;
