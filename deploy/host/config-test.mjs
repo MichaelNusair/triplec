@@ -132,11 +132,12 @@ test('project name no leading dot', () => rejects(proj({ name: '.hidden', path: 
 test('project names unique', () => rejects(proj({ name: 'a', path: '/a' }, { name: 'a', path: '/b' }), 'projects[1].name', /twice/));
 test('project path absolute or ~/', () => rejects(proj({ name: 'a', path: 'src/a' }), 'projects[0].path', /absolute/));
 test('project path no ..', () => rejects(proj({ name: 'a', path: '~/../etc' }), 'projects[0].path', /\.\./));
-test('slots.count 1..8', () => {
+test('slots.count 1..10', () => {
   rejects(proj({ name: 'a', path: '/a', slots: { count: 0 } }), 'projects[0].slots.count');
-  rejects(proj({ name: 'a', path: '/a', slots: { count: 9 } }), 'projects[0].slots.count');
+  rejects(proj({ name: 'a', path: '/a', slots: { count: 11 } }), 'projects[0].slots.count');
   rejects(proj({ name: 'a', path: '/a', slots: { count: 2.5 } }), 'projects[0].slots.count');
   ok(proj({ name: 'a', path: '/a', slots: { count: 1 } }));
+  ok(proj({ name: 'a', path: '/a', slots: { count: 10 } }));
 });
 test('postCreate single line', () => rejects(proj({ name: 'a', path: '/a', slots: { postCreate: 'a\nb' } }), 'projects[0].slots.postCreate'));
 test('slots may be omitted', () => ok(proj({ name: 'a', path: '/a' })));
@@ -270,7 +271,7 @@ test('env: every line is KEY=VALUE or a comment', () => {
 });
 test('projects.json: expanded, with slot defaults', () => {
   assert.deepEqual(JSON.parse(renderProjects(resolve(proj({ name: 'a', path: '~/a/' }), ctx))), [
-    { name: 'a', path: '/home/dev/a', slots: { count: 8, postCreate: '' } },
+    { name: 'a', path: '/home/dev/a', slots: { count: 10, postCreate: '' } },
   ]);
 });
 test('get: scalars bare, nested by dots', () => {

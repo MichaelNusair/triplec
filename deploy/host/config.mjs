@@ -70,7 +70,7 @@ export const DEFAULTS = {
   pwa: { name: '' },
 };
 
-const PROJECT_DEFAULTS = { name: '', path: '', slots: { count: 8, postCreate: '' } };
+const PROJECT_DEFAULTS = { name: '', path: '', slots: { count: 10, postCreate: '' } };
 
 // Key names that only ever hold a secret. Rejected with a message that says where
 // the secret goes instead, because "unknown key" alone reads like a typo to fix.
@@ -165,8 +165,8 @@ export function validate(raw) {
           for (const key of Object.keys(p.slots)) {
             if (!(key in PROJECT_DEFAULTS.slots)) err(`${at}.slots.${key}`, 'unknown key');
           }
-          if (p.slots.count !== undefined && !isInt(p.slots.count, 1, 8)) {
-            err(`${at}.slots.count`, 'must be an integer from 1 to 8');
+          if (p.slots.count !== undefined && !isInt(p.slots.count, 1, 10)) {
+            err(`${at}.slots.count`, 'must be an integer from 1 to 10');
           }
           if (p.slots.postCreate !== undefined && typeof p.slots.postCreate !== 'string') {
             err(`${at}.slots.postCreate`, 'must be a string (a command, or empty)');
