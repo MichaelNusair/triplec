@@ -38,13 +38,6 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-// Resolved on demand and cached: `gh` needs the token in its environment, and
-// keeping it out of any file means nothing in the workspace can read it back.
-//
-// Only where GITHUB_SECRET_ARN is set, which is the AWS deployment. Everywhere else
-// git and gh use the machine's own login — `gh auth login`, an SSH key — and the SDK
-// is never loaded, so a host with no AWS account has no AWS call to fail.
-let cachedGithubToken = null;
 /**
  * Who a new repository commits as, when git has no identity for it — or null when
  * it does. Without one the initial commit fails outright ("Author identity
@@ -76,6 +69,13 @@ export async function commitIdentity(dir) {
   return { name: user, email: `${user}@${hostname()}` };
 }
 
+// Resolved on demand and cached: `gh` needs the token in its environment, and
+// keeping it out of any file means nothing in the workspace can read it back.
+//
+// Only where GITHUB_SECRET_ARN is set, which is the AWS deployment. Everywhere else
+// git and gh use the machine's own login — `gh auth login`, an SSH key — and the SDK
+// is never loaded, so a host with no AWS account has no AWS call to fail.
+let cachedGithubToken = null;
 export async function getGithubToken() {
   if (cachedGithubToken !== null) return cachedGithubToken;
   const arn = process.env.GITHUB_SECRET_ARN;
@@ -1435,8 +1435,9 @@ export class SessionManager {
     if (!github) return { name, path, sessions: [], steps };
 
     try {
+      // No workspace token is a host install, where gh uses the machine's own
+      // `gh auth login`; gh says so itself if there is none.
       const token = await getGithubToken();
-      if (!token) throw new Error('no GitHub token configured');
       const out = await asUser(
         [
           'gh', 'repo', 'create', name,
@@ -1444,7 +1445,7 @@ export class SessionManager {
           '--source', '.', '--remote', 'origin', '--push',
           ...(description ? ['--description', description] : []),
         ],
-        { GH_TOKEN: token, GITHUB_TOKEN: token },
+        token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {},
       );
       const url = (out.match(/https:\/\/github\.com\/\S+/) || [])[0] || '';
       steps.push({ step: 'github', ok: true, url });
@@ -1859,8 +1860,8 @@ export class SessionManager {
    * than typing `owner/repo` on a phone keyboard.
    */
   async listGithubRepos({ limit = 60 } = {}) {
+    // As in createProject: with no workspace token, gh's own login.
     const token = await getGithubToken();
-    if (!token) throw new Error('no GitHub token is configured for this workspace');
 
     const { stdout } = await execFileAsync(
       'gh',
@@ -1872,7 +1873,7 @@ export class SessionManager {
       {
         timeout: 60_000,
         maxBuffer: 8 * 1024 * 1024,
-        env: { ...process.env, GH_TOKEN: token, GITHUB_TOKEN: token },
+        env: { ...process.env, ...(token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {}) },
       },
     );
 

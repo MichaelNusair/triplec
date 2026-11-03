@@ -114,6 +114,21 @@ process.stdin.on('data', (d) => {
 await writeFile(join(bin, 'claude'), FAKE);
 await chmod(join(bin, 'claude'), 0o755);
 
+// A stand-in gh, so nothing here reaches GitHub. It logs each call and whether a
+// token was handed to it: a host install has no workspace token, and gh is meant
+// to fall back to the machine's own `gh auth login`.
+const ghLog = join(root, 'gh-calls.log');
+await writeFile(join(bin, 'gh'), `#!/bin/sh
+echo "$* token=\${GH_TOKEN:+set}" >> '${ghLog}'
+case "$1 $2" in
+  "api user") echo '{"login":"someone","id":7,"name":"Some One"}' ;;
+  "repo create") echo "https://github.com/someone/$3" ;;
+  "repo list") echo '[{"nameWithOwner":"someone/thing","description":"","isPrivate":true,"updatedAt":"2026-01-01T00:00:00Z"}]' ;;
+  *) exit 1 ;;
+esac
+`);
+await chmod(join(bin, 'gh'), 0o755);
+
 // A real repository for the project registry, at a path named nothing like the
 // project — which is the case the registry exists for.
 const repo = join(root, 'repos', 'webapp', 'main');
@@ -440,6 +455,13 @@ try {
       check('E5: and to config.json, so a reinstall keeps it', cfg.mode === 'host' && cfg.projects.some((p) => p.name === 'surprise' && p.path === surprisePath));
       const listed = (await (await fetch(`${base}/api/projects`, { headers: auth })).json()).projects;
       check('E5: and is listed straight away', listed.some((p) => p.name === 'surprise'));
+      // On GitHub too, with no workspace token: gh's own login does it.
+      const viaGh = await (await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'surprise-gh', github: true }) })).json();
+      const ghCalls = await readFile(ghLog, 'utf8').catch(() => '');
+      check('E5: with no workspace token, Create on GitHub uses the machine\'s own gh login', viaGh.project?.steps?.some((s) => s.step === 'github' && s.ok && s.url === 'https://github.com/someone/surprise-gh')
+        && /^repo create surprise-gh --private .* token=$/m.test(ghCalls), JSON.stringify(viaGh.project?.steps) + ghCalls);
+      const repos = await (await fetch(`${base}/api/github/repos`, { headers: auth })).json();
+      check('E5: and so does browsing my repositories', repos.repos?.[0]?.slug === 'someone/thing', JSON.stringify(repos).slice(0, 200));
       const twice = await fetch(`${base}/api/projects`, { method: 'POST', headers: { ...auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ name: 'surprise' }) });
       check('E5: creating it again is refused', twice.status === 500 && /already exists/.test((await twice.json()).error || ''));
     } finally {
