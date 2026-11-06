@@ -221,7 +221,9 @@
       // answer about a slot is not an answer about this terminal.
       if (pane.slot === 0 && status.worktree) return;
       const wasBusy = pane.busy;
-      pane.busy = status.state === 'working';
+      // Waiting on background sub-agents is still a turn in flight: it carries on by
+      // itself, so it must not ring as finished.
+      pane.busy = status.state === 'working' || status.state === 'agents';
       // A title from before the slot was reset is the conversation that ended, not
       // the one starting now.
       const since = resetAtFor(pane.project, pane.cwd);

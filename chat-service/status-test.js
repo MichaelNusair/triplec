@@ -803,7 +803,47 @@ ok(status.live === true && status.state === 'idle',
 status = await claudeStatus(CWD, { sessionId: SESSION });
 ok(status.live === false, 'a registry file whose process is gone makes nothing live');
 
+/*
+ * Sub-agents. A turn that launches background agents ends with end_turn and resumes
+ * when they report back, so "your turn" is wrong and "finished" is what the phone
+ * said. The launch and the notice are the two edges, as the CLI writes them.
+ */
+const launch = (id, description) => JSON.stringify({
+  type: 'user',
+  timestamp: new Date().toISOString(),
+  message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: [{ type: 'text', text: 'Async agent launched successfully.' }] }] },
+  toolUseResult: { isAsync: true, status: 'async_launched', agentId: 'a1', description },
+});
+const notice = (id) => JSON.stringify({
+  type: 'user',
+  timestamp: new Date().toISOString(),
+  message: { role: 'user', content: `<task-notification>\n<task-id>a1</task-id>\n<tool-use-id>${id}</tool-use-id>\n<status>completed</status>\n</task-notification>` },
+});
+writeConvo(MUXED_TRANSCRIPT, title('Working in a pane', MUXED),
+  launch('toolu_A', 'Map the auth routes'), launch('toolu_B', 'Read the broker'),
+  assistant('Two agents are looking; I will pick up when they report.'));
+status = await settle((s) => s.state === 'agents', 6000, MUXED);
+ok(status.state === 'agents' && status.agents.length === 2,
+  'a turn that ended waiting on background sub-agents says so, rather than your turn', JSON.stringify(status.agents));
+ok(status.conversations?.find((c) => c.sessionId === MUXED)?.state === 'agents', 'and the list agrees');
+
+writeConvo(MUXED_TRANSCRIPT, title('Working in a pane', MUXED),
+  launch('toolu_A', 'Map the auth routes'), launch('toolu_B', 'Read the broker'),
+  assistant('Two agents are looking.'), notice('toolu_A'), assistant('One is back; waiting on the other.'));
+status = await claudeStatus(CWD, { sessionId: MUXED });
+ok(status.state === 'agents' && status.agents.length === 1 && status.agents[0].description === 'Read the broker',
+  'one that has reported back is no longer waited on', JSON.stringify(status.agents));
+
+writeConvo(MUXED_TRANSCRIPT, title('Working in a pane', MUXED),
+  launch('toolu_A', 'Map the auth routes'), notice('toolu_A'), assistant('All done.'));
+status = await claudeStatus(CWD, { sessionId: MUXED });
+ok(status.state === 'idle' && status.agents.length === 0, 'and once every agent is back, it is your turn');
+
 muxed.kill();
+writeConvo(MUXED_TRANSCRIPT, title('Working in a pane', MUXED),
+  launch('toolu_A', 'Map the auth routes'), assistant('waiting'));
+status = await settle((s) => s.live === false, 6000, MUXED);
+ok(status.state === 'idle', 'agents with no process left to report to are not waited on');
 fs.rmSync(REGISTRY, { recursive: true, force: true });
 
 section('One project is never answered with another project’s conversation:');

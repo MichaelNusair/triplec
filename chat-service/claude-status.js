@@ -705,6 +705,54 @@ const textOf = (message) => {
     .join('');
 };
 
+/*
+ * Sub-agents still running in the background, from the transcript alone.
+ *
+ * A turn that hands work to background agents ends — `stop_reason: end_turn`, the
+ * same as a finished answer — and resumes when each agent reports back. Read as
+ * idle, that is "Claude finished" over a conversation that is about to carry on by
+ * itself, which is the wrong half of the distinction everything here is for. The
+ * CLI marks both edges plainly: the launch is a tool result whose `toolUseResult`
+ * says `status: 'async_launched'`, and the end is a `user` entry carrying a
+ * `<task-notification>` that names the same tool call. A launch with no notification
+ * under it is an agent still out.
+ *
+ * Over the whole window, not the walk in `lastExchange`, because that walk stops at
+ * the last thing said and the launch is usually before it.
+ */
+const TASK_NOTIFIED = /<task-notification>[\s\S]*?<tool-use-id>([^<\s]+)<\/tool-use-id>/g;
+
+function pendingAgents(lines) {
+  const launched = new Map();
+  const notified = new Set();
+  for (const line of lines) {
+    const launch = line.includes('async_launched');
+    const note = line.includes('task-notification');
+    if (!launch && !note) continue;
+    let entry;
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (entry.type !== 'user') continue;
+    if (note) {
+      for (const m of textOf(entry.message).matchAll(TASK_NOTIFIED)) notified.add(m[1]);
+    }
+    const result = entry.toolUseResult;
+    if (launch && result && typeof result === 'object' && result.status === 'async_launched') {
+      const blocks = Array.isArray(entry.message?.content) ? entry.message.content : [];
+      const id = blocks.find((b) => b?.type === 'tool_result' && b.tool_use_id)?.tool_use_id;
+      if (!id) continue;
+      launched.set(id, {
+        description: typeof result.description === 'string' ? result.description.slice(0, 120) : null,
+        at: entry.timestamp ? Date.parse(entry.timestamp) || null : null,
+      });
+    }
+  }
+  return [...launched].filter(([id]) => !notified.has(id)).map(([, agent]) => agent);
+}
+
 /**
  * The last thing Claude said, and the state the transcript was left in.
  *
@@ -835,7 +883,8 @@ export async function lastExchange(file, windows = TAIL_WINDOWS) {
 
     if (last || tail.complete) {
       const settled = state || 'idle';
-      return { state: settled, stateAt, last, title, cutOff, question: withPending(question, settled), ...meta };
+      const agents = pendingAgents(lines);
+      return { state: settled, stateAt, last, title, cutOff, question: withPending(question, settled), agents, ...meta };
     }
     // Nothing sayable in this window and there is more file behind it: widen.
   }
@@ -843,7 +892,7 @@ export async function lastExchange(file, windows = TAIL_WINDOWS) {
   // "Unknown" only when the windows really said nothing. A state read from one of
   // them is knowledge, and reporting it as ignorance sends a device to ask again.
   const settled = state || 'unknown';
-  return { state: settled, stateAt, last: null, title, cutOff, question: withPending(question, settled), ...meta };
+  return { state: settled, stateAt, last: null, title, cutOff, question: withPending(question, settled), agents: [], ...meta };
 }
 
 /**
@@ -1188,6 +1237,11 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
     state = mine?.working ? 'working' : 'idle';
     source = 'broker';
   }
+  const agents = waitingOn(transcript, mine, startMs);
+  if (state === 'idle' && agents.length) {
+    state = 'agents';
+    source = 'transcript';
+  }
 
   return {
     cwd,
@@ -1209,6 +1263,9 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
     title: transcript?.title || null,
     state,
     source,
+    // What a turn in `agents` is waiting on: one line each, the description the agent
+    // was launched with. Empty in every other state.
+    agents: state === 'agents' ? agents.map((a) => ({ description: a.description, at: a.at })) : [],
     // Whether a process for this conversation exists at all. Null when the broker
     // could not be asked, which is not the same as "no".
     live: live ? Boolean(mine) : null,
@@ -1262,6 +1319,20 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
 }
 
 /**
+ * The background agents a conversation is still waiting on, or none.
+ *
+ * Only with a live process, and only agents that process launched: an agent is a
+ * child of the CLI that started it, so a conversation whose process has gone — or
+ * was resumed by a newer one — has no agent left to wait for, whatever the file
+ * says. A launch with no clock is believed only when the process start is unknown
+ * too, the same fallback `wroteIt` takes.
+ */
+function waitingOn(transcript, running, startMs) {
+  if (!running || !transcript?.agents?.length) return [];
+  return transcript.agents.filter((a) => (startMs !== null && a.at ? a.at > startMs : startMs === null));
+}
+
+/**
  * One line about each conversation in the project: what it is called, what it
  * last said, and whether anything is running it.
  *
@@ -1296,7 +1367,7 @@ async function summarise(files, { liveFor, live, sessionId }) {
         if (tail?.state === 'question' && running) return 'question';
         if (running?.working) return quiet && tail?.state === 'idle' ? 'idle' : 'working';
         if (running && tail?.state === 'working' && wroteIt) return 'working';
-        return 'idle';
+        return waitingOn(tail, running, startMs).length ? 'agents' : 'idle';
       };
       const state = verdict();
       return {

@@ -209,6 +209,31 @@ section('A turn that was killed says so, instead of claiming it finished:');
   ok(sent.length === 1, 'a cut-off turn that was picked up again notified again');
 }
 
+section('A turn waiting on background sub-agents is not announced as finished:');
+{
+  const launch = (id) => JSON.stringify({
+    type: 'user',
+    timestamp: new Date().toISOString(),
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: 'Async agent launched successfully.' }] },
+    toolUseResult: { isAsync: true, status: 'async_launched', description: 'Map the routes' },
+  });
+  const notice = (id) => JSON.stringify({
+    type: 'user',
+    timestamp: new Date().toISOString(),
+    message: { role: 'user', content: `<task-notification>\n<tool-use-id>${id}</tool-use-id>\n<status>completed</status>\n</task-notification>` },
+  });
+  const { watcher, sent } = watcherWith();
+  await watcher.scan(); // seed
+  await write(DEMO, S3, userText('look into it'), launch('toolu_X'), assistant('An agent is looking; back when it reports.'));
+  await watcher.scan();
+  ok(sent.length === 0, 'a turn that handed off to a sub-agent buzzed "finished"');
+  await write(DEMO, S3, userText('look into it'), launch('toolu_X'), assistant('An agent is looking.'),
+    notice('toolu_X'), assistant('The agent found it: the route was unguarded.'));
+  await watcher.scan();
+  ok(sent.length === 1 && sent[0].payload.body === 'The agent found it: the route was unguarded.',
+    'the answer after the agent reported back was not announced');
+}
+
 section('A finished turn, on a session this app is not driving:');
 {
   const { watcher, sent } = watcherWith();

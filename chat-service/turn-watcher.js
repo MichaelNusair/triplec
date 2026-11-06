@@ -385,7 +385,11 @@ export function createTurnWatcher({
         // conversation this app is driving, a turn that is still going and not
         // waiting on anyone, a repeat of what was already sent, or something that
         // happened long ago.
-        const worthSaying = exchange.state === 'idle' || asking;
+        // A turn that ended by handing work to background agents is not finished: it
+        // carries on by itself when they report back, and that answer is the one to
+        // announce. See pendingAgents in claude-status.js.
+        const waiting = exchange.state === 'idle' && exchange.agents?.length > 0;
+        const worthSaying = (exchange.state === 'idle' && !waiting) || asking;
         if (!seeded || !changed || ours.has(sessionId) || !worthSaying) continue;
         // A question's clock starts when it was asked, not when the last message was
         // said — that one is older, sometimes by the length of a turn, and a question

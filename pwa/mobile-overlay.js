@@ -2785,6 +2785,8 @@
     const line =
       s.state === 'working'
         ? 'Claude is working…'
+        : s.state === 'agents'
+          ? agentsLine(s)
         : s.last?.text
           ? plainLine(s.last.text)
           : s.state === 'unknown'
@@ -2830,7 +2832,7 @@
     const note = replay ? answeredNote(s) : '';
     chipNote.textContent = note;
     chipNote.classList.toggle('cmo-on', Boolean(note));
-    chipDot.classList.toggle('cmo-busy', s.state === 'working');
+    chipDot.classList.toggle('cmo-busy', inFlight(s.state));
     chipDot.classList.toggle('cmo-ask', s.state === 'question');
     chip.classList.remove('cmo-gone');
     if (!chip.isConnected) document.body.appendChild(chip);
@@ -2840,9 +2842,23 @@
     // stronger version of the same reason — it is the one state that will not
     // resolve on its own, so a chip that times out takes the only notice of it
     // away with it.
-    const sticky = s.state === 'working' || s.state === 'question';
+    const sticky = inFlight(s.state) || s.state === 'question';
     chipTimer = linger && !sticky ? setTimeout(hideChip, CHIP_LINGER_MS) : null;
   }
+
+  /*
+   * A turn that handed work to background sub-agents and is waiting for them to
+   * report back. Not finished — it carries on by itself — and not "working" either,
+   * because nothing is being written until an agent returns. See pendingAgents in
+   * chat-service/claude-status.js.
+   */
+  function agentsLine(s) {
+    const n = s.agents?.length || 0;
+    if (n === 1 && s.agents[0].description) return `Claude is waiting for a sub-agent · ${s.agents[0].description}`;
+    return n > 1 ? `Claude is waiting for ${n} sub-agents` : 'Claude is waiting for sub-agents';
+  }
+  // Still in flight, either way: the states a turn has not ended in.
+  const inFlight = (state) => state === 'working' || state === 'agents';
 
   function stopStatusPoll() {
     if (statusPollTimer) clearTimeout(statusPollTimer);
@@ -2865,7 +2881,7 @@
     status = next;
 
     const switched = Boolean(prev?.sessionId && next.sessionId && prev.sessionId !== next.sessionId);
-    const finished = prev?.state === 'working' && next.state !== 'working';
+    const finished = inFlight(prev?.state) && !inFlight(next.state);
     // Being asked something is news of the same order as a turn ending, and a
     // dismissed chip must come back for it: this is the state where nothing happens
     // until the person acts.
@@ -2881,7 +2897,7 @@
     // for something new. Otherwise a dismissed chip would return every 15s.
     if (!silent || switched || finished || asked || chip.isConnected) showChip(next, { replay });
 
-    if (next.state === 'working' || next.state === 'question') {
+    if (inFlight(next.state) || next.state === 'question') {
       if (!statusPollTimer) statusPollingSince = Date.now();
       stopStatusPoll();
       statusPollTimer = setTimeout(pollStatus, STATUS_POLL_MS);
@@ -3021,6 +3037,7 @@
     // is the more specific truth about it: it is in flight and it is stuck on you.
     if (s?.state === 'question') return 'Claude is waiting for your answer.';
     if (s?.state === 'working') return 'Still working.';
+    if (s?.state === 'agents') return 'Still waiting for sub-agents.';
     if (s?.cutOff === 'overflow') return 'Claude stopped: this conversation is too long to continue.';
     if (s?.cutOff) return 'Claude stopped before finishing.';
     return null;
@@ -3487,6 +3504,7 @@
       return 'Nothing more happens in this conversation until this is answered, in its pane. Nothing out here can answer on your behalf.';
     }
     if (s.state === 'working') return 'The turn is still running; this is the latest thing it has written.';
+    if (s.state === 'agents') return 'Claude is waiting for sub-agents to report back, and carries on by itself when they do.';
     if (s.cutOff === 'overflow') return 'The last turn could not run: this conversation is too long to continue. Start a new one to carry on.';
     if (s.cutOff) return 'The last turn was cut off before it finished. Send “continue” in the pane and it picks up where it stopped.';
     return 'This is the last thing Claude said in this slot.';
@@ -3566,7 +3584,9 @@
       <p class="cmo-title">${
         asking
           ? 'Claude is waiting for your answer'
-          : working ? 'Claude is working' : s.cutOff ? 'Claude stopped' : 'Your turn'
+          : working ? 'Claude is working'
+            : s.state === 'agents' ? agentsLine(s)
+              : s.cutOff ? 'Claude stopped' : 'Your turn'
       }</p>
       <p class="cmo-hint" id="cmo-status-name"></p>
       <p class="cmo-hint" id="cmo-status-detail"></p>
@@ -3615,6 +3635,8 @@
           ? 'Nothing more happens in this conversation until this is answered. It has to be answered in the panel — tap the question card at the bottom of it. Nothing out here can answer on your behalf.'
           : working
             ? 'The panel is still loading the history; the end of it has not been written yet.'
+            : s.state === 'agents'
+              ? 'Claude is waiting for sub-agents to report back, and carries on by itself when they do.'
             : s.cutOff === 'overflow'
               ? 'The last turn could not run: this conversation is too long to continue. Start a new one to carry on.'
               : s.cutOff
@@ -3732,7 +3754,7 @@
      */
     const list = panel.querySelector('#cmo-convos');
     if (list) {
-      const busy = others.filter((c) => c.state === 'working').length;
+      const busy = others.filter((c) => inFlight(c.state)).length;
       // Counted separately and said first: a conversation waiting on an answer is the
       // one to open, and it is the one that will still be waiting in an hour.
       const waiting = others.filter((c) => c.state === 'question').length;
@@ -3747,7 +3769,7 @@
         row.className = `cmo-convo${c.current ? ' cmo-current' : ''}`;
         const dot = document.createElement('span');
         dot.className = `cmo-dot${
-          c.state === 'working' ? ' cmo-busy' : c.state === 'question' ? ' cmo-ask' : ''
+          inFlight(c.state) ? ' cmo-busy' : c.state === 'question' ? ' cmo-ask' : ''
         }`;
         const label = document.createElement('span');
         label.className = 'cmo-convo-label';
@@ -3761,7 +3783,9 @@
           // earns it twice over — that row will never move on its own.
           c.state === 'question'
             ? 'waiting on you'
-            : c.state === 'working' ? 'working' : c.cutOff ? 'stopped' : 'your turn',
+            : c.state === 'working' ? 'working'
+              : c.state === 'agents' ? 'waiting for sub-agents'
+                : c.cutOff ? 'stopped' : 'your turn',
           sinceText(c.at),
           // Which worktree, when this conversation is in one. A project's
           // conversations no longer all share its checkout — see projectPlaces in
