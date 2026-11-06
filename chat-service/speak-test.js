@@ -694,6 +694,8 @@ section('The default voice is the free one:');
   const hebrew = Array.from({ length: 20 }, (_, i) => String.fromCodePoint(0x05d0 + i)).join('');
 
   ok(preferredVoice(polly).id === 'Ruth', 'a box with only Polly reads in Ruth, as it always did');
+  ok(preferredVoice(openai)?.id === 'marin',
+    'a box with only an OpenAI key reads in marin, not in a Polly voice it does not have');
 
   const free = preferredVoice([...polly, ...azure, ...openai]);
   ok(

@@ -1009,7 +1009,21 @@ async function describeVoices() {
  * unambiguous instead of resolving to whichever list was searched first.
  */
 async function knownVoices() {
-  const polly = (probed?.voices?.length ? probed.voices : FALLBACK_VOICES).map((v) => ({
+  /*
+   * The assumed Polly list only where there is nothing else to read with.
+   *
+   * A box that has never had AWS — a host install on another cloud — fails the probe
+   * for good, and assuming Polly anyway made `Ruth` the default there: every read
+   * without a voice named, and every phone that still remembered Ruth, was sent to
+   * Polly and refused with a 403, while a working OpenAI key sat unused beside it.
+   * With another provider configured, a Polly the probe could not reach is a Polly
+   * this box does not have. Alone, the assumed list stays, because its refusal names
+   * the permission to grant, which is the useful answer on an AWS box.
+   */
+  const probe = await describeVoices();
+  const others = (await azureSpeechConfigured()) || Boolean(await openAiKey());
+  const pollyList = probe.voices.length ? probe.voices : (others ? [] : FALLBACK_VOICES);
+  const polly = pollyList.map((v) => ({
     ...v,
     provider: 'polly',
     engine: ENGINE,
@@ -1102,7 +1116,7 @@ export function preferredVoice(known) {
   const free = known.find(
     (v) => v.provider === 'azure' && /^en/i.test(String(v.language || '')),
   );
-  return (SPEAK_VOICE ? byName(SPEAK_VOICE) : null) || free || byName(POLLY_VOICE);
+  return (SPEAK_VOICE ? byName(SPEAK_VOICE) : null) || free || byName(POLLY_VOICE) || byName(OPENAI_VOICE);
 }
 
 /**
