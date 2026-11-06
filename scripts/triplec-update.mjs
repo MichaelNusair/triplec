@@ -244,7 +244,10 @@ function runAs(s, cmd, args, { cwd, env = {}, log, allowFail = false, stage = 'r
   if (r.error) throw new StepFailed(stage, `${cmd}: ${r.error.message}`);
   if (r.status !== 0 && !allowFail) {
     const why = log === undefined ? (r.stderr || r.stdout || '').trim().split('\n').slice(-3).join(' / ') : '';
-    throw new StepFailed(stage, `${[cmd, ...args].join(' ').slice(0, 160)} exited ${r.status ?? r.signal}${why ? `: ${why}` : ''}`);
+    // Short names, not paths: this ends up in a push notification, where a command
+    // line cut off at a length limit names neither the script nor what it was given.
+    const what = [cmd, ...args.filter((a) => !a.startsWith('-'))].map((a) => path.basename(a)).slice(0, 3).join(' ');
+    throw new StepFailed(stage, `${what} exited ${r.status ?? r.signal}${why ? `: ${why}` : ''}`);
   }
   return r;
 }
