@@ -43,6 +43,7 @@ import { join } from 'path';
 // person typed. Imported rather than copied — two lists of those patterns would
 // drift, and the cost of the drift is showing someone a "prompt" they never sent.
 import {
+  CLAUDE_HOME,
   PROJECTS_ROOT,
   projectPlaces,
   isSyntheticUserText,
@@ -346,8 +347,69 @@ async function resumingSessions() {
     /* no /proc: nothing more can be said, and the broker's answer stands alone */
   }
 
+  await registeredSessions(sessions);
+
   resumeScan = { at: Date.now(), sessions };
   return sessions;
+}
+
+/**
+ * The conversations Claude Code says its own processes are holding.
+ *
+ * The argv sweep above finds a conversation only where the command line names it,
+ * and the commonest way to run Claude here does not: a mux terminal pane starts a
+ * bare `claude` (through `bin/cc`), and the conversation it then opens is in nobody's
+ * argv. Measured 2026-11-06: the phone, open on a mux conversation twenty tool calls
+ * into a turn, was told `live: false · idle` throughout — and so said "Claude
+ * finished." out loud after every message that turn wrote, because to a status that
+ * cannot see the process, each new message on a conversation is a turn that ended.
+ *
+ * The CLI keeps a registry of its own: `$CLAUDE_HOME/sessions/<pid>.json`, one file
+ * per running process, naming the `sessionId` it holds and rewritten when that
+ * changes. That is exactly the missing half — a pid for the conversation — and the
+ * pid is all the rest of this file needs, because `unseen` then compares the
+ * process's start with the transcript's mid-turn entry the same way it does for one
+ * found by argv.
+ *
+ * Deliberately not read from it: the `status` field. It looks like the answer, but
+ * nothing out here can tell a stale "busy" from a live one, and a wrong "working"
+ * with no broker to clear it would outlast the turn. The transcript already answers
+ * that question well once the process is known.
+ *
+ * A file is believed only while its pid is alive and is something called claude,
+ * because a crashed process leaves its file behind and its pid can be reused. Where
+ * argv already found the conversation, argv stands.
+ */
+async function registeredSessions(sessions) {
+  const dir = join(CLAUDE_HOME, 'sessions');
+  let names;
+  try {
+    names = await readdir(dir);
+  } catch {
+    return; // an older CLI, or nothing has run yet
+  }
+  await Promise.all(names.map(async (name) => {
+    if (!/^\d+\.json$/.test(name)) return;
+    let entry;
+    try {
+      entry = JSON.parse(await readFile(join(dir, name), 'utf8'));
+    } catch {
+      return; // mid-rewrite, or not one of these
+    }
+    const pid = Number(entry?.pid);
+    const id = typeof entry?.sessionId === 'string' ? entry.sessionId : '';
+    if (!Number.isInteger(pid) || pid <= 0 || !/^[0-9a-fA-F-]{8,64}$/.test(id)) return;
+    if (sessions.has(id)) return;
+    let argv;
+    try {
+      argv = await readFile(`/proc/${pid}/cmdline`, 'utf8');
+    } catch {
+      return; // exited, and left its file behind
+    }
+    if (!argv.includes('claude')) return; // the pid was reused
+    if (sessions.has(id)) return; // found twice in this sweep: the first one stands
+    sessions.set(id, offBrokerSession(id, pid, printMode(argv.split('\0'))));
+  }));
 }
 
 /**

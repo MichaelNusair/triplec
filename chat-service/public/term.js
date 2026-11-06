@@ -461,6 +461,10 @@
       return a;
     }));
     sheet.classList.remove('hidden');
+    // The newest lines are at the bottom, and they are nearly always the ones wanted.
+    const area = $('#term-copy-text');
+    area.scrollTop = area.scrollHeight;
+    toast('Press and hold the text to select it', 2500);
   }
   $('#term-copy-all').addEventListener('click', async () => {
     toast(await writeClipboard($('#term-copy-text').value) ? 'Copied' : 'Could not copy');
@@ -469,23 +473,53 @@
 
   // And so does a finger, on a phone. A tap that does not move is a tap: on one
   // of the numbered choices Claude Code draws, it chooses it — see chooseAt.
+  //
+  // And a finger held still is a long-press, which on a phone means "select this".
+  // A terminal canvas has nothing a phone can select, and the Copy key at the end of
+  // the row was out of sight, so on Android there was no way to copy at all; the
+  // long-press opens the screen as plain text, where the phone's own selection
+  // handles work. See openCopySheet.
+  const LONG_PRESS_MS = 500;
   let touchY = null;
   let touchStart = null;
+  let pressTimer = null;
+  const cancelPress = () => {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+  };
   $('#term').addEventListener('touchstart', (e) => {
     const t = e.touches[0];
     touchY = t?.clientY ?? null;
     touchStart = t && e.touches.length === 1 ? { x: t.clientX, y: t.clientY, at: Date.now() } : null;
+    cancelPress();
+    if (touchStart) {
+      pressTimer = setTimeout(() => {
+        pressTimer = null;
+        touchStart = null; // so lifting the finger is not also a tap
+        navigator.vibrate?.(15);
+        openCopySheet();
+      }, LONG_PRESS_MS);
+    }
   }, { passive: true });
   $('#term').addEventListener('touchmove', (e) => {
+    const y = e.touches[0]?.clientY;
+    if (touchStart && Math.hypot(e.touches[0].clientX - touchStart.x, y - touchStart.y) > 10) {
+      touchStart = null;
+      cancelPress();
+    }
     if (touchY === null || state.status !== 'attached') return;
-    const y = e.touches[0].clientY;
-    if (touchStart && Math.hypot(e.touches[0].clientX - touchStart.x, y - touchStart.y) > 10) touchStart = null;
     const lines = Math.trunc((touchY - y) / 18);
     if (!lines) return;
     touchY = y;
     send({ type: 'scroll', lines });
   }, { passive: true });
+  $('#term').addEventListener('touchcancel', cancelPress);
+  // The browser's own long-press menu would land on top of the sheet.
+  $('#term').addEventListener('contextmenu', (e) => {
+    if (COARSE) e.preventDefault();
+  });
   $('#term').addEventListener('touchend', (e) => {
+    cancelPress();
     const start = touchStart;
     touchStart = null;
     if (!start || Date.now() - start.at > 600 || state.status !== 'attached') return;

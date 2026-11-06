@@ -567,6 +567,32 @@ console.log('terminal page, on a phone');
   fake.selection = { start: { x: 0, y: 7 }, end: { x: 26, y: 8 } };
   check('…and ordinary rows keep their line breaks', t.selectionText() === 'Steps:\n1. First install the tools',
     JSON.stringify(t.selectionText()));
+
+  const touch = (type, x, y) => {
+    const e = new w.Event(type, { bubbles: true, cancelable: true });
+    e.touches = type === 'touchend' ? [] : [{ clientX: x, clientY: y }];
+    w.document.querySelector('#term').dispatchEvent(e);
+  };
+  const sheet = w.document.querySelector('#term-copy');
+  check('the Copy key is the first one in the row, not off the end of it',
+    w.document.querySelector('#term-keys button')?.dataset.act === 'copy');
+  touch('touchstart', 20, 45);
+  touch('touchend', 20, 45);
+  await sleep(600);
+  check('a quick tap does not open the copy sheet', sheet.classList.contains('hidden'));
+  const before = inputs().length;
+  touch('touchstart', 20, 45);
+  await sleep(600);
+  check('a finger held still opens the screen as selectable text',
+    !sheet.classList.contains('hidden') && /Steps:/.test(w.document.querySelector('#term-copy-text').value));
+  touch('touchend', 20, 45);
+  check('…and lifting it is not also a tap on the menu line under it', inputs().length === before);
+  w.document.querySelector('#term-copy-close').click();
+  touch('touchstart', 20, 45);
+  touch('touchmove', 20, 120);
+  await sleep(600);
+  check('a finger that moves is scrolling, not a long-press', sheet.classList.contains('hidden'));
+  touch('touchend', 20, 120);
   w.close();
 }
 

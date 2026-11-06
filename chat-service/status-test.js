@@ -768,6 +768,44 @@ status = await settle((s) => s.live === false, 6000, TIMED);
 ok(status.live === false && status.state === 'idle',
   'and once it has exited the answer it left behind is your turn, in the ordinary way');
 
+section('A bare `claude` in a mux pane is found through the CLI’s own registry:');
+/*
+ * The mux starts `claude` with no conversation in its argv, so neither sweep above
+ * can see it, and the phone said "Claude finished." after every message of a turn
+ * still in flight. Claude Code names the conversation in `sessions/<pid>.json`;
+ * that is the fixture. Its `status` says idle on purpose: the file is trusted for
+ * the pid and nothing else, and the transcript decides the state.
+ */
+const MUXED = 'c3d4e5f6-1111-4000-8000-000000000000';
+const MUXED_TRANSCRIPT = path.join(PROJECT_DIR, `${MUXED}.jsonl`);
+const REGISTRY = path.join(CLAUDE_HOME, 'sessions');
+fs.mkdirSync(REGISTRY, { recursive: true });
+const muxed = spawn(FAKE_CLAUDE, [SLEEPER], { stdio: 'ignore' });
+muxed.unref();
+const muxedEntry = path.join(REGISTRY, `${muxed.pid}.json`);
+fs.writeFileSync(muxedEntry, JSON.stringify({ pid: muxed.pid, sessionId: MUXED, status: 'idle' }));
+// A crashed process's file, whose pid nothing holds: must not make anything live.
+fs.writeFileSync(path.join(REGISTRY, '999999999.json'), JSON.stringify({ pid: 999999999, sessionId: SESSION }));
+brokerReply = { ok: true, v: 1, sessions: [] };
+await new Promise((resolve) => setTimeout(resolve, 1000));
+writeConvo(MUXED_TRANSCRIPT, title('Working in a pane', MUXED), assistant('let me look', 'tool_use'));
+
+status = await settle((s) => s.live === true, 6000, MUXED);
+ok(status.live === true && status.state === 'working',
+  'a turn in flight in a pane whose argv names no conversation is working, not finished');
+ok(status.brokered === false, 'and is a process the broker never heard of');
+
+writeConvo(MUXED_TRANSCRIPT, title('Working in a pane', MUXED), assistant('done'));
+status = await settle((s) => s.state === 'idle', 6000, MUXED);
+ok(status.live === true && status.state === 'idle',
+  'and when the transcript ends the turn, it is your turn with the process still there');
+
+status = await claudeStatus(CWD, { sessionId: SESSION });
+ok(status.live === false, 'a registry file whose process is gone makes nothing live');
+
+muxed.kill();
+fs.rmSync(REGISTRY, { recursive: true, force: true });
+
 section('One project is never answered with another project’s conversation:');
 /*
  * The case the user had not tried yet. Sessions are matched on cwd, and this is
