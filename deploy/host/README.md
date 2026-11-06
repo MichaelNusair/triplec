@@ -41,6 +41,7 @@ sed -n s/^AUTH_PASSWORD=//p ~/.config/triplec/secrets.env
 | --- | --- |
 | `deploy/host/install.sh [--config F] [--profile F] [--source DIR] [--dry-run]` | Install, or bring an install in line with the config. A second run on an unchanged machine changes nothing and prints `no changes`. Exit 3 means everything was installed but the service is not answering `/healthz`. |
 | `deploy/host/upgrade.sh [--config F] [--source DIR] [--no-pull]` | Runs `git pull --ff-only` on the checkout, then the installer. It never makes a shallow fetch, a merge or a rebase. |
+| `~/.local/share/triplec/bin/triplec-update status \| check \| run [--now]` | The updater. `run --now` is a one-command upgrade from the upstream branch, in its own clone, with the test suite first and a rollback if the check after it fails. With `autoUpdate` set in the config it also runs hourly on a timer. See [docs/UPDATES.md](../../docs/UPDATES.md). |
 | `deploy/host/uninstall.sh [--config F] [--purge]` | Removes what the installer added. Keeps `~/.config/triplec` (and with it the password) unless you pass `--purge`. |
 
 ## The config

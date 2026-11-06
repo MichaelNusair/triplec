@@ -130,6 +130,23 @@
     "iconDir": "pwa-icons"
   },
 
+  "$comment_autoUpdate": [
+    "Whether this deployment updates itself from the repository. 'off' (the",
+    "default) updates by hand only: sudo triplec-update run --now on the box.",
+    "'notify' sends a push notification when an update is ready; 'install'",
+    "installs it, after it has been on the branch soakHours, inside window",
+    "('' for any time, or 'HH-HH' UTC), once no conversation has been active for",
+    "idleMinutes, with the test suite first and a rollback if the check after it",
+    "fails. A change to the stack itself is held for ./deploy.sh. It travels in",
+    "the payload, so changing it is an app-only deploy. See docs/UPDATES.md."
+  ],
+  "autoUpdate": {
+    "mode": "off",
+    "soakHours": 24,
+    "window": "",
+    "idleMinutes": 30
+  },
+
   "$comment_git": "Author on commits Claude makes in the workspace.",
   "gitUserName": "Your Name",
   "gitUserEmail": "you@example.com",

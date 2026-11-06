@@ -282,6 +282,26 @@ test('get: scalars bare, nested by dots', () => {
   assert.throws(() => get(c, 'listen.nope'), /no such key/);
 });
 
+// --- autoUpdate ------------------------------------------------------------------------------------
+test('autoUpdate: absent is off, following upstream main', () => {
+  const c = resolve({ mode: 'host' }, ctx);
+  assert.equal(c.autoUpdate.mode, 'off');
+  assert.equal(c.autoUpdate.branch, 'main');
+  assert.match(c.autoUpdate.repo, /^https:\/\/github\.com\/.+\/triplec\.git$/);
+  assert.equal(get(c, 'autoUpdate.mode'), 'off');
+});
+test('autoUpdate: a partial value takes the rest from the defaults', () => {
+  const c = resolve(withChange('autoUpdate', { mode: 'install', window: '02-06' }), ctx);
+  assert.equal(c.autoUpdate.soakHours, 24);
+  assert.equal(c.autoUpdate.window, '02-06');
+});
+test('autoUpdate: an unknown key is named once, under autoUpdate', () => {
+  const errs = errorsOf(withChange('autoUpdate', { mode: 'install', soakhours: 1 }));
+  assert.deepEqual(errs, ['autoUpdate.soakhours: unknown key']);
+});
+test('autoUpdate: a bad mode', () => rejects(withChange('autoUpdate.mode', 'auto'), 'autoUpdate.mode', /off, notify, install/));
+test('autoUpdate: a bad window', () => rejects(withChange('autoUpdate.window', '2-6'), 'autoUpdate.window'));
+
 // --- the CLI ------------------------------------------------------------------------------------------
 test('CLI: validate exits 0 on the example and 1 on a bad file', () => {
   const cli = join(here, 'config.mjs');

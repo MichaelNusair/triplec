@@ -231,6 +231,58 @@ check "second upgrade: no changes" grep -qx 'no changes' <<<"$LAST_OUT"
 check "no depth flags in any command in deploy/host" bash -c "! grep -nE -- '--(depth|deepen|unshallow)' '$REPO'/deploy/host/*.sh | grep -vE '^[^:]+:[0-9]+: *#'"
 
 # --- uninstall, twice ------------------------------------------------------------------------------------------
+step "auto-update, through the real timer unit"
+# A bare clone of the checkout plays GitHub. Pushed to from ~/triplec, followed by
+# the updater, which installs from a clone of its own under stateDir.
+set_update() {
+  as_dev "node -e 'const f=process.argv[1],c=JSON.parse(require(\"fs\").readFileSync(f));c.autoUpdate=JSON.parse(process.argv[2]);require(\"fs\").writeFileSync(f,JSON.stringify(c,null,2))' ~/.config/triplec/config.json '$1'"
+}
+push_commit() { as_dev "cd ~/triplec && $1 && git add -A && git -c user.name=t -c user.email=t@t commit -qm '$2' && git push -q origin HEAD:main 2>/dev/null && git rev-parse --short HEAD"; }
+installed_build() { as_dev 'node -p "require(process.env.HOME + \"/.local/share/triplec/chat-service/build.json\").commit"'; }
+update_unit() {
+  as_root 'systemctl start triplec-update.service; journalctl -u triplec-update -n 40 --no-pager -o cat'
+  # The whole log of the run, for when a check below fails.
+  as_dev 'cat ~/.local/state/triplec/update/last-run.log 2>/dev/null' >"$SCRATCH/update-$1.log" || true
+}
+as_dev 'cd ~/triplec && git branch -qM main && git clone -q --bare ~/triplec ~/origin.git && git remote add origin ~/origin.git'
+set_update '{"mode":"install","repo":"/home/dev/origin.git","soakHours":0,"idleMinutes":0,"push":false}'
+run_install update-on "$INSTALL" || bad "install with autoUpdate on exits 0"
+check "the update timer is installed and enabled" as_root 'systemctl is-enabled --quiet triplec-update.timer && grep -q "run --host /home/dev/.config/triplec/config.json" /etc/systemd/system/triplec-update.service'
+check "the triplec-update command is installed" as_dev '[ -x ~/.local/share/triplec/bin/triplec-update ]'
+out="$(as_dev '~/.local/share/triplec/bin/triplec-update check' 2>&1 || true)"
+printf '%s\n' "$out" >"$SCRATCH/update-check.log"
+check "check: up to date with nothing pushed" grep -q '^up to date at' <<<"$out"
+
+GOOD="$(push_commit 'echo "<!-- update test -->" >> docs/HOST.md' 'a good commit')"
+out="$(as_dev '~/.local/share/triplec/bin/triplec-update check' 2>&1 || true)"
+check "check: names the pushed commit" grep -q "would update .* → $GOOD" <<<"$out"
+check "check: and installs nothing" bash -c '[ "$1" != "$2" ]' _ "$(installed_build)" "$GOOD"
+out="$(update_unit good)"
+printf '%s\n' "$out" | tail -n 6 | sed 's/^/    | /'
+check "the timer's service ran the suite and installed the good commit" test "$(installed_build)" = "$GOOD"
+check "and recorded it" as_dev 'grep -q "\"outcome\": \"installed\"" ~/.local/state/triplec/update/state.json'
+check "and the app answers after it" as_root 'curl -fs http://127.0.0.1:8080/healthz | grep -q "\"ok\":true"'
+
+# At the top: the file ends in process.exit(0), so a line appended would never run.
+BROKEN_TEST="$(push_commit 'sed -i "1i process.exit(1);" chat-service/build-test.js' 'a commit that breaks the tests')"
+out="$(update_unit broken-test)"
+check "a commit that fails the suite is not installed" test "$(installed_build)" = "$GOOD"
+check "and says so" grep -q "failed: $BROKEN_TEST at tests" <<<"$out"
+
+BROKEN_INSTALL="$(push_commit 'git checkout HEAD~1 -- chat-service/build-test.js && sed -i "0,/^set -euo pipefail$/s//set -euo pipefail\nexit 7/" deploy/host/install.sh' 'a commit whose installer fails')"
+out="$(update_unit broken-install)"
+printf '%s\n' "$out" | grep -E '^(failed|updating)' | sed 's/^/    | /'
+check "a commit whose install fails is rolled back to the one that was running" test "$(installed_build)" = "$GOOD"
+check "and says it rolled back" grep -q "failed: $BROKEN_INSTALL at install: .*Rolled back to $GOOD" <<<"$out"
+check "and the app still answers" as_root 'curl -fs http://127.0.0.1:8080/healthz | grep -q "\"ok\":true"'
+out="$(update_unit retry)"
+check "the failed commit is not retried by the timer" grep -q "is not retried" <<<"$out"
+
+as_dev "cd ~/triplec && git reset -q --hard $GOOD"
+set_update '{"mode":"off"}'
+run_install update-off "$INSTALL" || bad "install with autoUpdate off exits 0"
+check "mode off removes the timer" as_root '[ ! -e /etc/systemd/system/triplec-update.timer ] && [ ! -e /etc/systemd/system/triplec-update.service ]'
+
 step "uninstall"
 if out="$(as_dev 'bash ~/triplec/deploy/host/uninstall.sh' 2>&1)"; then ok "uninstall exits 0"; else bad "uninstall exits 0"; fi
 printf '%s\n' "$out" | sed 's/^/    | /'

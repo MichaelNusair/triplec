@@ -29,6 +29,9 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// Shared with the AWS config and the updater. A relative path that holds from the
+// checkout and from installDir alike, because install.sh stages scripts/ there.
+import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../../scripts/auto-update-config.mjs';
 
 export const FEATURES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire'];
 export const AUTH_MODES = ['login', 'bedrock', 'vertex', 'apiKey'];
@@ -68,6 +71,8 @@ export const DEFAULTS = {
   secrets: { backend: 'file' },
   maxLiveSessions: 8,
   pwa: { name: '' },
+  // Whether this install updates itself, and how. See docs/UPDATES.md.
+  autoUpdate: AUTO_UPDATE_DEFAULTS,
 };
 
 const PROJECT_DEFAULTS = { name: '', path: '', slots: { count: 10, postCreate: '' } };
@@ -114,6 +119,8 @@ export function validate(raw) {
         if (!SECRET_KEY.test(key) || NOT_SECRET_KEYS.has(key)) err(path, 'unknown key');
         continue;
       }
+      // autoUpdate has a validator of its own, shared with the AWS config.
+      if (path === 'autoUpdate') continue;
       if (isObject(shape[key])) {
         if (!isObject(obj[key])) err(path, 'must be an object');
         else checkKeys(obj[key], shape[key], path);
@@ -274,6 +281,7 @@ export function validate(raw) {
     err('secrets.backend', 'must be "file" or "env"');
   }
   if (!isInt(c.maxLiveSessions, 1, 64)) err('maxLiveSessions', 'must be an integer from 1 to 64');
+  errors.push(...validateAutoUpdate(raw.autoUpdate));
   if (!isObject(c.pwa) || typeof c.pwa.name !== 'string' || !/^[A-Za-z0-9 ._-]{0,40}$/.test(c.pwa.name)) {
     err('pwa.name', 'must be at most 40 letters, digits, spaces, dots, underscores or hyphens');
   }
@@ -347,6 +355,7 @@ export function resolve(raw, ctx = {}) {
     slots: { ...PROJECT_DEFAULTS.slots, ...(p.slots || {}) },
   }));
   if (c.claude.permissionMode === 'default') c.claude.permissionMode = 'manual';
+  c.autoUpdate = resolveAutoUpdate(raw.autoUpdate);
   return c;
 }
 

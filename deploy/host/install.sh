@@ -168,6 +168,9 @@ AUTH_MODE="$(cfg auth.mode)"
 F_EDITOR="$(cfg features.editor)"
 F_VOICE="$(cfg features.voice)"
 F_MUX="$(cfg features.mux)"
+AUTO_UPDATE="$(cfg autoUpdate.mode)"
+# Absolute, because the update timer's unit names it and runs from /.
+CONFIG="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
 
 # The service runs as the configured user, and every file below is written as the
 # user running this. Those have to be the same person, or the unit would start a
@@ -180,6 +183,16 @@ case "$INSTALL_DIR" in "$SOURCE" | "$SOURCE"/*) die "installDir $INSTALL_DIR is 
 say "TripleC host mode: installing from $SOURCE"
 say "  config $CONFIG -> $INSTALL_DIR, as $USER_NAME"
 [ "$DRY" = 1 ] && say "  (dry run: nothing will be changed)"
+
+# One install at a time: the update timer runs this too (scripts/triplec-update.mjs),
+# and two runs interleaving would each restart what the other just wrote. The lock
+# is on the state directory itself, opened read-only, so taking it writes nothing:
+# a lock file would get a new mtime every run, and a second run changes nothing.
+if [ "$DRY" = 0 ]; then
+  mkdir -p "$STATE_DIR"
+  exec 9<"$STATE_DIR"
+  flock -w 900 9 || die "another install has held a lock on $STATE_DIR for 15 minutes"
+fi
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/triplec-install.XXXXXX")"
 trap 'rm -rf "$WORK" "$APT_LOG"' EXIT
@@ -283,6 +296,17 @@ mkdir -p "$STAGE/chat-service/public/pwa-icons"
 done
 mkdir -p "$STAGE/scripts" "$STAGE/docs" "$STAGE/deploy/host"
 cp "$SOURCE/scripts/cc-session.sh" "$STAGE/scripts/"
+# The updater, and the settings module it shares with config.mjs (which imports
+# it, so uninstall.sh needs it here too). Staged whatever autoUpdate.mode says:
+# `triplec-update run --now` is the upgrade command in every mode.
+cp "$SOURCE/scripts/triplec-update.mjs" "$SOURCE/scripts/auto-update-config.mjs" "$STAGE/scripts/"
+mkdir -p "$STAGE/bin"
+cat >"$STAGE/bin/triplec-update" <<UPD
+#!/bin/sh
+# Written by TripleC's deploy/host/install.sh. status | check | run [--now]; see docs/UPDATES.md.
+exec "$NODE" "$INSTALL_DIR/scripts/triplec-update.mjs" "\$@" --host "$CONFIG"
+UPD
+chmod 0755 "$STAGE/bin/triplec-update"
 for doc in SECURITY.md HOST.md; do
   [ -f "$SOURCE/docs/$doc" ] && cp "$SOURCE/docs/$doc" "$STAGE/docs/"
 done
@@ -753,6 +777,43 @@ UNIT
   sync_file "$WORK/triplec-broker.service" "$UNIT_DIR/triplec-broker.service" 0644 root && UNITS_CHANGED=1
 fi
 
+if [ "$AUTO_UPDATE" != off ]; then
+  # The update check, hourly, as this user. It runs this installer itself, from a
+  # clone of its own under stateDir, so it needs sudo without a password to
+  # install; without that it holds and says so. See docs/UPDATES.md.
+  cat >"$WORK/triplec-update.service" <<UNIT
+# Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
+[Unit]
+Description=TripleC update check (autoUpdate in $CONFIG)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=$USER_NAME
+Group=$MY_GROUP
+Environment=HOME=$HOME_DIR
+ExecStart=$NODE $INSTALL_DIR/scripts/triplec-update.mjs run --host $CONFIG
+Nice=10
+TimeoutStartSec=1h
+UNIT
+  sync_file "$WORK/triplec-update.service" "$UNIT_DIR/triplec-update.service" 0644 root && UNITS_CHANGED=1
+  cat >"$WORK/triplec-update.timer" <<UNIT
+# Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
+[Unit]
+Description=Check for TripleC updates hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+  sync_file "$WORK/triplec-update.timer" "$UNIT_DIR/triplec-update.timer" 0644 root && UNITS_CHANGED=1
+fi
+
 if [ "$UNITS_CHANGED" = 1 ]; then
   changed "systemctl daemon-reload"
   [ "$DRY" = 1 ] || sudo systemctl daemon-reload
@@ -787,6 +848,7 @@ if [ "$PAYLOAD_CHANGED$ENV_CHANGED$CHAT_UNIT_CHANGED$NPM_RAN" != 0000 ] && ! sta
   changed "systemctl restart triplec-chat (payload, config or unit changed)"
   [ "$DRY" = 1 ] || sudo systemctl restart triplec-chat.service
 fi
+[ "$AUTO_UPDATE" != off ] && ensure_up triplec-update.timer
 TMUX_NOTE=""
 [ "$TMUX_UNIT_CHANGED" = 1 ] && ! started triplec-tmux.service &&
   TMUX_NOTE="triplec-tmux.service changed but was not restarted (that ends every terminal session). When convenient: sudo systemctl restart triplec-tmux"
@@ -803,6 +865,19 @@ for pair in "triplec-tmux:$F_MUX" "triplec-editor:$F_EDITOR" "triplec-broker:$F_
     fi
   fi
 done
+# The same for the update timer when autoUpdate.mode is off. The service is a
+# oneshot; stopping the timer is what stops it from running.
+if [ "$AUTO_UPDATE" = off ]; then
+  for unit in triplec-update.timer triplec-update.service; do
+    [ -f "$UNIT_DIR/$unit" ] || continue
+    changed "stop, disable and remove $unit (autoUpdate.mode is off)"
+    if [ "$DRY" = 0 ]; then
+      sudo systemctl disable --now --quiet "$unit" 2>/dev/null || true
+      sudo rm -f "$UNIT_DIR/$unit"
+      sudo systemctl daemon-reload
+    fi
+  done
+fi
 # After its unit has stopped, not before.
 if [ "$F_EDITOR" != true ] && [ -d "$INSTALL_DIR/code-server" ]; then
   changed "remove $INSTALL_DIR/code-server (features.editor is off)"

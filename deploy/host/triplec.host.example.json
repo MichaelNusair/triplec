@@ -27,5 +27,6 @@
   },
   "secrets": { "backend": "file" },
   "maxLiveSessions": 8,
-  "pwa": { "name": "" }
+  "pwa": { "name": "" },
+  "autoUpdate": { "mode": "off", "soakHours": 24, "window": "", "idleMinutes": 30 }
 }

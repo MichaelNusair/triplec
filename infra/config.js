@@ -17,6 +17,7 @@
 import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../scripts/auto-update-config.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -192,6 +193,19 @@ const DEFAULTS = {
 
   gitUserName: 'TripleC',
   gitUserEmail: 'triplec@example.invalid',
+
+  /**
+   * Whether this deployment updates itself from the repository, and how
+   * cautiously. Off by default: `"mode": "notify"` sends a push notification when
+   * an update is ready, `"install"` installs it. The keys and their defaults are
+   * in scripts/auto-update-config.mjs, the same file a host install reads, and
+   * docs/UPDATES.md explains them.
+   *
+   * It reaches the box in the payload, not in UserData, so changing it is an
+   * app-only deploy. An update that changes the stack itself (anything under
+   * infra/ other than infra/userdata/) is held for a full deploy, whatever the mode.
+   */
+  autoUpdate: { ...AUTO_UPDATE_DEFAULTS },
 
   /**
    * The machine full deploys are driven from — `./deploy-remote.sh` reads this.
@@ -423,6 +437,9 @@ export function loadConfig() {
     pwa: { ...DEFAULTS.pwa, ...(fromFile.pwa || {}) },
     deployFrom: { ...DEFAULTS.deployFrom, ...(fromFile.deployFrom || {}) },
     security: { ...DEFAULTS.security, ...(fromFile.security || {}) },
+    // Validated on the file's own value below, so an unknown key in it is caught
+    // rather than merged over and forgotten.
+    autoUpdate: fromFile.autoUpdate,
   };
 
   for (const [envVar, key] of Object.entries(ENV_MAP)) {
@@ -692,6 +709,13 @@ export function loadConfig() {
       );
     }
   }
+
+  // --- Updates --------------------------------------------------------------
+  const updateErrors = validateAutoUpdate(config.autoUpdate);
+  if (updateErrors.length) {
+    fail(`${updateErrors.join('; ')}. See docs/UPDATES.md.`);
+  }
+  config.autoUpdate = resolveAutoUpdate(config.autoUpdate);
 
   if (config.gitUserEmail === DEFAULTS.gitUserEmail) {
     // Not fatal: commits still work, they just carry a placeholder author.

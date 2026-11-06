@@ -442,20 +442,22 @@ step "Checking the Claude broker"
 ) || { echo "broker tests failed — not deploying." >&2; exit 1; }
 
 # ---------------------------------------------------------------------------
-step "Packaging the voice dictation extension"
+step "Checking the updater and the host config"
 # ---------------------------------------------------------------------------
-mkdir -p dist
-for ext in voice-extension mobile-extension; do
-  out="claude-voice.vsix"
-  [ "$ext" = "mobile-extension" ] && out="claude-mobile.vsix"
-  (
-    cd "$ext"
-    npx --yes @vscode/vsce@latest package \
-      --skip-license \
-      --allow-missing-repository \
-      --out "$ROOT/dist/$out"
-  )
-done
+# The updater ships in this payload and installs code on its own, so its
+# decisions (soak, fast-forward only, hold a stack change, roll back) are checked
+# before it can reach a box.
+node scripts/update-test.mjs || { echo "updater tests failed — not deploying." >&2; exit 1; }
+node deploy/host/config-test.mjs || { echo "host config tests failed — not deploying." >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+step "Building the application payload"
+# ---------------------------------------------------------------------------
+# Before the stack is touched, so a packaging failure costs nothing. Shipped
+# separately from userdata so editing the voice extension or PWA assets doesn't
+# force an EC2 replacement. A script of its own because the on-box updater builds
+# the same payload on the instance (see scripts/triplec-update.mjs).
+bash scripts/build-payload.sh dist/payload.tar.gz
 
 if [ "$APP_ONLY" -eq 1 ]; then
 # ---------------------------------------------------------------------------
@@ -573,103 +575,6 @@ while true; do
   sleep 15
 done
 
-# ---------------------------------------------------------------------------
-step "Uploading application payload"
-# ---------------------------------------------------------------------------
-# Shipped separately from userdata so editing the voice extension or PWA assets
-# doesn't force an EC2 replacement.
-rm -rf dist/stage && mkdir -p dist/stage
-cp -R chat-service dist/stage/chat-service
-rm -rf dist/stage/chat-service/node_modules
-# ---------------------------------------------------------------------------
-# Which build this is
-# ---------------------------------------------------------------------------
-# Stamped into the payload here because here is the only place that knows. A
-# deploy ships a tarball with no `.git` in it, so the running service cannot ask
-# git what it is; and the checkout on the box answers for the checkout, which on
-# the shared workspace instance is routinely several commits away from what is
-# installed. Without this, "am I running what I pushed" has no answer inside the
-# app — which is the whole reason chat-service/build.js exists.
-#
-# `dirty` is recorded rather than refused: `--app-only` deliberately ships the
-# working tree, and a sha that quietly stood for uncommitted work would be the one
-# kind of version number worse than none. The app shows it as `<sha>+`.
-BUILD_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || true)"
-BUILD_COMMIT_AT="$(git log -1 --format=%ct 2>/dev/null || true)"
-BUILD_SUBJECT="$(git log -1 --format=%s 2>/dev/null || true)"
-# -uno: an untracked scratch file in a shared checkout is not a different build.
-if [ -n "$(git status --porcelain -uno 2>/dev/null || true)" ]; then
-  BUILD_DIRTY=true
-else
-  BUILD_DIRTY=false
-fi
-python3 - "$BUILD_COMMIT" "$BUILD_COMMIT_AT" "$BUILD_SUBJECT" "$BUILD_DIRTY" \
-  > dist/stage/chat-service/build.json <<'STAMP'
-import json, sys, time
-commit, commit_at, subject, dirty = sys.argv[1:5]
-try:
-    version = json.load(open('package.json'))['version']
-except Exception:
-    version = ''
-json.dump(
-    {
-        'version': version,
-        'commit': commit,
-        'commitAt': int(commit_at) * 1000 if commit_at.isdigit() else None,
-        'subject': subject,
-        'dirty': dirty == 'true',
-        'builtAt': int(time.time() * 1000),
-    },
-    sys.stdout,
-    indent=2,
-)
-sys.stdout.write('\n')
-STAMP
-if [ "$BUILD_DIRTY" = true ]; then
-  echo "  build: ${BUILD_COMMIT:-unknown}+ (uncommitted changes in this tree)"
-else
-  echo "  build: ${BUILD_COMMIT:-unknown}"
-fi
-# The overlay script is injected into the editor shell by nginx, so it ships as
-# a top-level asset rather than inside the chat service.
-mkdir -p dist/stage/pwa && cp pwa/mobile-overlay.js dist/stage/pwa/
-# Ships in the payload rather than baked into userdata, so `cc` can be updated
-# without replacing the instance.
-mkdir -p dist/stage/scripts && cp scripts/cc-session.sh dist/stage/scripts/
-# The provisioning script, as the template it is — placeholders unsubstituted. The
-# instance's own UserData is what substitutes them (see the refresh block below),
-# because it already holds the values CloudFormation wrote and this deploy does not.
-mkdir -p dist/stage/userdata && cp infra/userdata/bootstrap.sh dist/stage/userdata/
-# The broker that keeps one `claude` per conversation for the editor's panel. No
-# dependencies beyond node, so it ships as plain files with no npm install.
-mkdir -p dist/stage/claude-broker
-# package.json is not decoration here: `wrapper` has no file extension, so its
-# `"type": "module"` is what makes node load it as an ES module.
-cp claude-broker/broker.js claude-broker/wrapper claude-broker/package.json \
-  claude-broker/claude-broker.service claude-broker/install.sh dist/stage/claude-broker/
-mkdir -p dist/stage/vsix
-cp dist/claude-voice.vsix dist/claude-mobile.vsix dist/stage/vsix/
-# The chat UI serves its own PWA assets, so bundle them into its public dir. The
-# overlay as well: the mux loads it from /chat/ for its voice (see mux.js).
-cp pwa/manifest.webmanifest pwa/sw.js pwa/reset.html pwa/mobile-overlay.js dist/stage/chat-service/public/
-mkdir -p dist/stage/chat-service/public/pwa-icons
-# Which icon set, from the config: two deployments of this repository are two apps
-# on the same phone, and an icon is how you tell them apart. Named files rather
-# than a glob so the set can keep its source artwork next to it, and so a missing
-# one is an error here instead of an icon that silently does not exist on a home
-# screen — config.js has already checked all of them are present.
-for icon in $CFG_PWA_ICON_FILES; do
-  cp "$CFG_PWA_ICON_DIR/$icon" dist/stage/chat-service/public/pwa-icons/
-done
-echo "  icons: $CFG_PWA_ICON_DIR"
-# COPYFILE_DISABLE stops macOS tar from emitting AppleDouble `._*` companions for
-# every file carrying an extended attribute (macOS adds com.apple.provenance to
-# downloaded and newly written files). Those stubs land on the instance, show up
-# as phantom files in the editor, and left a non-empty directory behind that
-# broke the vsix cleanup below.
-COPYFILE_DISABLE=1 tar -czf dist/payload.tar.gz -C dist/stage \
-  chat-service pwa vsix scripts claude-broker userdata
-
 # Staged through S3 rather than inlined into the SSM command.
 #
 # SSM caps a parameter value at ~100 KB, and base64 inflates by a third, so the
@@ -698,145 +603,10 @@ cmds = [
   f"aws s3 cp s3://{bucket}/{key} /tmp/payload.tar.gz --region {region}",
   "tar -xzf /tmp/payload.tar.gz -C /opt/claude-web",
   "rm -f /tmp/payload.tar.gz",
-  # Delete AppleDouble stubs FIRST. They are prevented at the tar end now, but
-  # this must still run before anything else walks the tree: when it ran after
-  # the vsix move below, a leftover `._claude-voice.vsix` made the directory
-  # non-empty and `rmdir` failed the whole deploy.
-  "find /opt/claude-web -name '._*' -delete || true",
-  # `rm -rf` rather than `rmdir`: this directory is ours and disposable, and
-  # failing the deploy over an unexpected file in it buys nothing.
-  "mv -f /opt/claude-web/vsix/*.vsix /opt/claude-web/ && rm -rf /opt/claude-web/vsix",
-  # Fail loudly: a silent npm failure leaves the service dead with a confusing
-  # 'CHDIR' error, which has happened more than once.
-  "cd /opt/claude-web/chat-service && npm install --omit=dev",
-  "test -d /opt/claude-web/chat-service/node_modules || { echo 'npm install produced no node_modules'; exit 1; }",
-  "chown -R coder:coder /opt/claude-web",
-  # `cc <project>` starts or rejoins a permanent Claude session under tmux. On
-  # PATH for both the editor terminal and an SSM shell.
-  # NOTE: no apostrophes in comments here — this block sits inside a command
-  # substitution, and bash tracks single quotes through it, so one stray
-  # apostrophe breaks the whole script with a confusing EOF error.
-  "install -m 0755 /opt/claude-web/scripts/cc-session.sh /usr/local/bin/cc",
-  "command -v tmux >/dev/null || dnf install -y tmux",
-  # The broker that lets one conversation be driven from several devices: its
-  # systemd unit, and the editor setting that points the panel at it.
-  #
-  # A script rather than commands here, because the unit and the settings merge
-  # belong next to the code they install, and because this block is a python
-  # heredoc inside a command substitution — a nested heredoc is exactly the shape
-  # that breaks it.
-  "bash /opt/claude-web/claude-broker/install.sh",
-  # Both extensions changed publisher with the rename to TripleC, and a VS Code
-  # extension's identity is publisher.name — so installing the new .vsix does not
-  # replace the old one, it sits down next to it. Two copies of the voice
-  # extension means the command registers twice and the overlay applies twice, on
-  # a box where nothing would say which copy answered.
-  #
-  # Uninstalling by the old id is therefore part of shipping the rename, not
-  # tidying after it. `|| true` because on every box provisioned after the rename
-  # there is nothing there to remove, and that is not an error.
-  "sudo -u coder HOME=/home/coder /usr/bin/code-server"
-  " --user-data-dir /workspace/code-server-data"
-  " --extensions-dir /workspace/code-server-ext"
-  " --uninstall-extension claude-web.claude-voice || true",
-  "sudo -u coder HOME=/home/coder /usr/bin/code-server"
-  " --user-data-dir /workspace/code-server-data"
-  " --extensions-dir /workspace/code-server-ext"
-  " --uninstall-extension claude-web.claude-mobile-shell || true",
-  "sudo -u coder HOME=/home/coder /usr/bin/code-server"
-  " --user-data-dir /workspace/code-server-data"
-  " --extensions-dir /workspace/code-server-ext"
-  " --install-extension /opt/claude-web/claude-voice.vsix --force",
-  "sudo -u coder HOME=/home/coder /usr/bin/code-server"
-  " --user-data-dir /workspace/code-server-data"
-  " --extensions-dir /workspace/code-server-ext"
-  " --install-extension /opt/claude-web/claude-mobile.vsix --force",
-  "systemctl enable --now claude-chat",
-  # Install the provisioning script from the payload, the way a boot installs it.
-  #
-  # Nothing else does. UserData is what writes /opt/bootstrap.sh, and it runs once
-  # per instance: CloudFormation applies a UserData change to a running box by
-  # stopping it, rewriting the attribute and starting it again, and cloud-init does
-  # not re-run its scripts-user stage on a restart. So an edit to
-  # infra/userdata/bootstrap.sh used to reach this box only via a replacement that
-  # no longer happens, and the deploy below would re-run whatever ancient copy was
-  # on disk while reporting success.
-  #
-  # The substitution values are the ones CloudFormation wrote, and they live in the
-  # instance UserData rather than in this deploy — so the boot script is reused
-  # verbatim with two edits: its S3 fetch becomes a copy from the payload, and its
-  # own install and run are cut off so the placeholder check below happens before
-  # anything reaches /opt.
-  "BOOTSRC=/opt/claude-web/userdata/bootstrap.sh",
-  "IMDS=$(curl -sf -X PUT http://169.254.169.254/latest/api/token"
-  " -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' || true)",
-  "curl -sf -H \"X-aws-ec2-metadata-token: $IMDS\" -o /tmp/userdata.boot"
-  " http://169.254.169.254/latest/user-data || true",
-  "if [ -s \"$BOOTSRC\" ] && grep -q '__PASSWORD_SECRET_ARN__' \"$BOOTSRC\""
-  " && grep -q 'install -m 0755 /tmp/bootstrap.sh /opt/bootstrap.sh' /tmp/userdata.boot; then"
-  # The boot script names /tmp/bootstrap.sh, and this now runs on every deploy
-  # rather than once on a fresh instance — so the predictable path is cleared
-  # first. rm -f unlinks a symlink rather than following it, which is the point:
-  # everything below this line runs as root.
-  " rm -f /tmp/bootstrap.sh /tmp/userdata.local;"
-  " sed -E -e \"s#^aws s3 cp .*bootstrap[.]sh.*#cp $BOOTSRC /tmp/bootstrap.sh#\""
-  " -e '/^install -m 0755 .tmp.bootstrap[.]sh/d' -e '/^bash .opt.bootstrap[.]sh/d'"
-  " /tmp/userdata.boot > /tmp/userdata.local;"
-  " bash /tmp/userdata.local > /var/log/bootstrap-refresh.log 2>&1 || "
-  "{ echo 'bootstrap refresh failed:'; tail -20 /var/log/bootstrap-refresh.log; exit 1; };"
-  # A leftover __PLACEHOLDER__ would write a config with no secret in it, so this
-  # is checked while the file is still in /tmp and nothing has run it.
-  " if grep -qE '__[A-Z_]+__' /tmp/bootstrap.sh; then"
-  " echo 'bootstrap refresh left placeholders unsubstituted'; exit 1; fi;"
-  " install -m 0755 /tmp/bootstrap.sh /opt/bootstrap.sh;"
-  " echo 'bootstrap refreshed from payload';"
-  " else echo \"WARNING: no bootstrap refresh; re-running the copy on disk\" >&2; fi",
-  # Re-run provisioning on the live instance. The instance is no longer
-  # replaced on every script edit (see userDataCausesReplacement in stack.js),
-  # so this is what applies bootstrap changes — nginx routing, editor settings,
-  # the built-in-chat removal. It is written to be idempotent.
-  "if [ -x /opt/bootstrap.sh ]; then bash /opt/bootstrap.sh > /var/log/reprovision.log 2>&1 || "
-  "{ echo 'reprovision failed:'; tail -20 /var/log/reprovision.log; exit 1; }; fi",
-  # The restarts, and they belong *after* that reprovision.
-  #
-  # The reprovision is what writes the systemd units and the editor settings, and
-  # bootstrap.sh deliberately never restarts anything — `enable --now` leaves a unit
-  # that is already running exactly as it is, because restarting it is what kills
-  # live sessions. So a deploy that restarts first and reprovisions second leaves the
-  # service running with the *previous* unit: the file on disk is new, the process
-  # environment is not, and `systemctl show` reads the file, so it all looks applied.
-  #
-  # That shipped on 2026-09-20 with `PWA_NAME`. Payload 12:49:35, restart 12:49:44,
-  # unit rewritten 12:50:11 — the deploy reported success and every title still said
-  # "Claude", and the variable would have arrived one deploy late, looking like it had
-  # worked all along. Anything a deploy adds to a unit has this shape.
-  "systemctl restart claude-chat",
-  "systemctl restart code-server",
-  # A reload that nginx refuses is silent from out here. `nginx -t` loads the
-  # config from scratch, so it never sees a conflict with the shared memory the
-  # running master already holds; `systemctl reload` only sends SIGHUP and exits 0
-  # whatever comes of it. When the master then rejects the new config it logs
-  # [emerg], keeps serving the *old* one, and stays up — so every signal this
-  # deploy had said success while nothing had changed. That happened on 2026-09-19
-  # with a limit_req zone whose key changed under an unchanged name, and it cost an
-  # hour of looking for the bug in a config file that was correct and simply was
-  # not running. So read the error log across the reload and fail on [emerg].
-  "ERRLOG=/var/log/nginx/error.log",
-  "if [ ! -f \"$ERRLOG\" ]; then echo \"cannot verify the nginx reload: $ERRLOG does not exist\"; exit 1; fi",
-  "BEFORE=$(stat -c %s \"$ERRLOG\")",
-  "nginx -t && systemctl reload nginx",
-  "sleep 3",
-  "NEW=$(tail -c +$((BEFORE + 1)) \"$ERRLOG\" | grep '\\[emerg\\]' || true)",
-  "if [ -n \"$NEW\" ]; then echo 'nginx refused the new config and is still serving the old one:';"
-  " printf '%s\\n' \"$NEW\"; exit 1; fi",
-  # `is-active` exits non-zero if any unit is down, which fails the SSM command
-  # — so a half-broken deploy can no longer report success.
-  # claude-broker included so a broker that dies after install.sh checked it —
-  # during the reprovision above, say — fails the deploy rather than quietly
-  # leaving every browser page with its own Claude again.
-  "systemctl is-active claude-chat code-server nginx claude-broker",
-  "curl -fsS -o /dev/null http://127.0.0.1:9997/healthz || { echo 'chat service not answering'; exit 1; }",
-  "curl -fsS -o /dev/null http://127.0.0.1:9999/healthz || curl -fsS -o /dev/null http://127.0.0.1:9999/ || { echo 'code-server not answering'; exit 1; }",
+  # Everything after the unpack is scripts/install-payload.sh, which shipped in the
+  # tarball just unpacked. The on-box updater runs the same script, so a deploy and
+  # an update install exactly the same way, and take the same lock to do it.
+  "bash /opt/claude-web/scripts/install-payload.sh",
 ]
 print(json.dumps({"Parameters": {"commands": cmds}}))
 PY

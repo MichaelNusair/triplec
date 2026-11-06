@@ -405,12 +405,13 @@ function checkLaunchContract() {
   );
 
   // Absent when this test runs from the deployed payload, which ships the broker
-  // without deploy.sh.
-  const deployPath = path.join(HERE, '..', 'deploy.sh');
-  if (fs.existsSync(deployPath)) {
+  // without the script that builds it (scripts/build-payload.sh, run by deploy.sh
+  // and by the on-box updater).
+  const buildPath = path.join(HERE, '..', 'scripts', 'build-payload.sh');
+  if (fs.existsSync(buildPath)) {
     ok(
-      /claude-broker\/wrapper(?![.\w-])/.test(read(deployPath)),
-      'deploy.sh puts it in the payload, so the box gets this file and not a stale one',
+      /claude-broker\/wrapper(?![.\w-])/.test(read(buildPath)),
+      'build-payload.sh puts it in the payload, so the box gets this file and not a stale one',
     );
   }
 }

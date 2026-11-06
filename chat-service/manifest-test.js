@@ -430,14 +430,20 @@ ok(
  * what happened on 2026-09-20: restart 12:49:44, unit rewritten 12:50:11, deploy
  * green, every title still "Claude".
  */
-const deploySrc = fs.readFileSync(path.join(root, 'deploy.sh'), 'utf8');
-const reprovisionAt = deploySrc.indexOf('bash /opt/bootstrap.sh > /var/log/reprovision.log');
-const chatRestartAt = deploySrc.indexOf('"systemctl restart claude-chat"');
-ok(reprovisionAt > 0 && chatRestartAt > 0, 'deploy.sh no longer reprovisions and restarts the way this checks');
+// install-payload.sh, which deploy.sh runs over SSM and the on-box updater runs too.
+const installSrc = fs.readFileSync(path.join(root, 'scripts', 'install-payload.sh'), 'utf8');
+const reprovisionAt = installSrc.indexOf('bash /opt/bootstrap.sh > /var/log/reprovision.log');
+const chatRestartAt = installSrc.search(/^systemctl restart claude-chat$/m);
+ok(reprovisionAt > 0 && chatRestartAt > 0, 'install-payload.sh no longer reprovisions and restarts the way this checks');
 ok(
   chatRestartAt > reprovisionAt,
-  'deploy.sh restarts claude-chat before the reprovision that writes its unit, so anything ' +
-    'the deploy adds to that unit reaches the running process one deploy late',
+  'install-payload.sh restarts claude-chat before the reprovision that writes its unit, so ' +
+    'anything an install adds to that unit reaches the running process one install late',
+);
+ok(
+  /^\s*"bash \/opt\/claude-web\/scripts\/install-payload\.sh",$/m.test(fs.readFileSync(path.join(root, 'deploy.sh'), 'utf8')),
+  'deploy.sh no longer installs through scripts/install-payload.sh, so a deploy and an update ' +
+    'install differently',
 );
 /*
  * The editor half. code-server writes document.title from `window.title` and rewrites

@@ -1459,6 +1459,15 @@ Things that have burned people, in this codebase specifically:
   the script this expects, it says so and re-runs the copy on disk. What
   `--app-only` still cannot do is change an AWS resource in `infra/lib` — a security
   group, an ALB rule, an IAM policy. That needs a full deploy, from another machine.
+- **A payload is built by one script and installed by another, and two callers run
+  both.** `scripts/build-payload.sh` stages and tars it; `scripts/install-payload.sh`
+  is everything the box does as root once it is unpacked into `/opt/claude-web`.
+  `deploy.sh` runs the first locally and the second over SSM; the on-box updater
+  (`scripts/triplec-update.mjs`, [docs/UPDATES.md](docs/UPDATES.md)) runs both on the
+  box. So a change to how the box installs goes in `install-payload.sh`, never in
+  `deploy.sh`'s SSM command, or updates and deploys install differently. Both take
+  `/run/triplec-install.lock`. The payload also carries `deployment/config.json`,
+  the resolved config, because the updater builds the next payload with it.
 - **A deploy disturbs the chat *and* the editor, and agents are working in both.**
   `deploy.sh` restarts `claude-chat` and `code-server` on consecutive lines (580-581),
   and each one costs something different.

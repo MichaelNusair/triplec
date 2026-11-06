@@ -622,6 +622,52 @@ TIMER
 systemctl daemon-reload
 systemctl enable --now claude-code-update.timer
 
+# TripleC's own updates: scripts/triplec-update.mjs, from the payload, on a timer.
+# Installed on every box and harmless on most: with autoUpdate.mode "off" (the
+# default) a run reads the deployment config and exits before any network. The
+# mode, the soak and the rest are in the deployment config the payload carries,
+# so changing them is an app-only deploy. See docs/UPDATES.md.
+#
+# Root, because an install is: the updater drops to $USER_NAME for git, npm, the
+# tests and the build, and runs scripts/install-payload.sh (the same script a
+# deploy runs over SSM) as root. Its own unit, so the chat service and editor it
+# restarts are not its parents. ConditionPathExists because on a first boot this
+# runs before the payload has arrived.
+cat > /etc/systemd/system/triplec-update.service <<'SVC'
+[Unit]
+Description=TripleC update check (autoUpdate in the deployment config)
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/claude-web/deployment/config.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/node /opt/claude-web/scripts/triplec-update.mjs run --aws
+Nice=10
+TimeoutStartSec=1h
+SVC
+cat > /etc/systemd/system/triplec-update.timer <<'TIMER'
+[Unit]
+Description=Check for TripleC updates hourly
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=15m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+# `triplec-update status`, `check`, and `sudo triplec-update run --now` (the
+# upgrade command, whatever the mode) from any shell on the box.
+cat > /usr/local/bin/triplec-update <<'WRAP'
+#!/bin/sh
+exec /usr/bin/node /opt/claude-web/scripts/triplec-update.mjs "$@" --aws
+WRAP
+chmod 755 /usr/local/bin/triplec-update
+systemctl daemon-reload
+systemctl enable --now triplec-update.timer
+
 # The official extension is published on Open VSX, which is the marketplace
 # code-server uses. Install the arm64 build to match this Graviton instance.
 EXT_VSIX="/tmp/claude-code.vsix"

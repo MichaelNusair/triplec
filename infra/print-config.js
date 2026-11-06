@@ -24,6 +24,15 @@ try {
   process.exit(0);
 }
 
+// `--json`: the whole resolved config, for the payload. scripts/build-payload.sh
+// ships it to the box so the on-box updater can build the next payload with the
+// configuration this one was built with, defaults and environment overrides
+// already applied.
+if (process.argv.includes('--json')) {
+  process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+  process.exit(0);
+}
+
 const exported = {
   CFG_DOMAIN: config.domainName,
   CFG_REGION: config.region,
@@ -62,6 +71,8 @@ const exported = {
   // checked they are all there.
   CFG_PWA_ICON_DIR: config.pwa.iconDir,
   CFG_PWA_ICON_FILES: requiredPwaIcons().join(' '),
+  // How this deployment takes updates, so the deploy summary can say so.
+  CFG_AUTO_UPDATE: config.autoUpdate.mode,
   CFG_DEPLOY_INSTANCE: config.deployFrom.instanceId,
   CFG_DEPLOY_PATH: config.deployFrom.repoPath,
   CFG_DEPLOY_USER: config.deployFrom.user,

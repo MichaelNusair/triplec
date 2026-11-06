@@ -134,6 +134,15 @@ If you skip all of this, nothing breaks — you simply cannot change infrastruct
 from inside the workspace, and `deploy.sh` will tell you so instead of half-applying
 a stack.
 
+## Updating
+
+Every box has `triplec-update`. `sudo triplec-update run --now` updates it from
+the upstream branch in one command, with the test suite run first and a rollback
+if the login check afterwards fails. Set `autoUpdate` in the config and it does
+the same by itself on an hourly timer, as cautiously as you choose. Changes to the
+stack itself still need `./deploy.sh` from a machine with AWS credentials; the box
+holds those and tells you so. [UPDATES.md](UPDATES.md) has the details.
+
 ## More than one deployment
 
 Two workspaces that share nothing — a personal one and a work one, or one per
@@ -250,6 +259,7 @@ defaults and validation.
 | `permissionMode` | `bypassPermissions` | The main risk/UX tradeoff |
 | `gitUserName` / `gitUserEmail` | placeholder | Author on Claude's commits |
 | `deployFrom` | none | The machine full deploys run on. See above — set it |
+| `autoUpdate` | `{"mode": "off"}` | Whether the box updates itself from the repository: `"notify"` or `"install"`, with a soak period, an install window and a wait for idle. An app-only deploy applies it. See [UPDATES.md](UPDATES.md) |
 
 Any key can also be set through the environment — useful in CI, where a config
 file is awkward:
