@@ -163,8 +163,12 @@ await chmod(secretsFile, 0o600);
  * Nothing from this process's own environment that could change the answer: no
  * deployment auth, no provider, no AWS. B3 is "the service starts with AWS_* unset",
  * so the base environment here has none of it.
+ *
+ * No GitHub token either. E5 is "with no workspace token, gh's own login is used",
+ * and a shell that exports GH_TOKEN or GITHUB_TOKEN (any TripleC workspace terminal
+ * does, from /etc/profile.d) handed one to the server, which passed it to the fake gh.
  */
-const STRIP = /^(AUTH_PASSWORD|SESSION_SECRET|CW_.*|AWS_.*|CLAUDE_CODE_.*|ANTHROPIC_.*|GITHUB_SECRET_ARN|TRIPLEC_.*|PROJECTS_ROOT|CLAUDE_HOME|CODER_HOME|WORKSPACE_USER|PWA_NAME|DEFAULT_.*|MAX_LIVE_SESSIONS|BIND_ADDRESS|ALLOW_PUBLIC_BIND|CLAUDECODE)$/;
+const STRIP = /^(AUTH_PASSWORD|SESSION_SECRET|CW_.*|AWS_.*|CLAUDE_CODE_.*|ANTHROPIC_.*|GITHUB_SECRET_ARN|GH_TOKEN|GITHUB_TOKEN|TRIPLEC_.*|PROJECTS_ROOT|CLAUDE_HOME|CODER_HOME|WORKSPACE_USER|PWA_NAME|DEFAULT_.*|MAX_LIVE_SESSIONS|BIND_ADDRESS|ALLOW_PUBLIC_BIND|CLAUDECODE)$/;
 const ambient = Object.fromEntries(Object.entries(process.env).filter(([k]) => !STRIP.test(k)));
 
 let nextPort = 21970;
