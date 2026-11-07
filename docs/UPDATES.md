@@ -25,7 +25,7 @@ Two more commands, neither of which changes anything:
 
 ```bash
 triplec-update check     # fetch, and say what an update would do right now
-triplec-update status    # the settings, what is installed, and the last run
+triplec-update status    # the settings, what is installed, and the last run (--json for a program)
 ```
 
 The routes you had before still work. On a host install that is
@@ -43,7 +43,8 @@ Set `autoUpdate` in your deployment's config: `triplec.config.json` for AWS,
   "mode": "install",
   "soakHours": 24,
   "window": "02-06",
-  "idleMinutes": 30
+  "idleMinutes": 30,
+  "checkMinutes": 60
 }
 ```
 
@@ -55,6 +56,7 @@ Set `autoUpdate` in your deployment's config: `triplec.config.json` for AWS,
 | `soakHours` | `24` | How long a commit must have been on the branch before it is taken. `0` takes the tip. |
 | `window` | `""` | When an install may happen: `""` for any time, or `"HH-HH"` in the box's local time (UTC on AWS). `"02-06"` is 02:00 to 05:59, and `"22-04"` wraps past midnight. |
 | `idleMinutes` | `30` | Install only after this many minutes in which no Claude conversation has written to its transcript. `0` doesn't wait. |
+| `checkMinutes` | `60` | How often the timer looks at the branch, from `5` to `1440`. A deployment that should follow its branch closely sets `5` with `soakHours: 0`. |
 | `push` | `true` | Send push notifications when an update is installed, ready, held or failed. |
 
 Then apply the config the usual way. That is `./deploy.sh --app-only` on AWS,
@@ -62,12 +64,21 @@ because the setting travels in the payload and not in the stack. On a host
 install it is `deploy/host/install.sh`, which writes the timer when `mode` isn't
 `"off"` and removes it when `mode` is.
 
-A timer runs the check every hour, `triplec-update.timer`. On AWS it is installed
-on every box and exits straight away while `mode` is `"off"`; on a host install it
-exists only while `mode` is on. Its output is in
+A timer, `triplec-update.timer`, fires every 5 minutes. A run that is not yet
+`checkMinutes` past the last one exits before touching the network, so
+`checkMinutes` is the interval. On AWS the timer is installed on every box and
+exits straight away while `mode` is `"off"`; on a host install it exists only
+while `mode` is on. Its output is in
 `journalctl -u triplec-update`, and the full log of the last update is in
 `last-run.log` under the state directory: `/workspace/triplec-update` on AWS,
 `~/.local/state/triplec/update` on a host install.
+
+The box page, `/chat/admin`, shows the same thing as `triplec-update status`
+under **Updates**: the mode and every caution, what is installed and what the
+branch tip is, when the next check is, and what the last run did. A failed or
+held update is also one of the findings at the top. The page only shows the
+settings. They live in the config file, which a deploy writes over the box, so
+change them there.
 
 ## What an update does
 

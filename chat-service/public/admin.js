@@ -402,6 +402,102 @@ function buildCard(build) {
     </div>`;
 }
 
+/**
+ * The `autoUpdate` setting and what it has done, from the updater's own
+ * `status --json` (scripts/triplec-update.mjs, via chat-service/admin.js).
+ *
+ * Read-only on purpose. The setting lives in the deployment's config file, which
+ * outranks the box: a value changed here would be overwritten by the next deploy,
+ * so this page says where to change it rather than pretending it can.
+ */
+const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+const when = (ms) => {
+  const d = new Date(ms);
+  return d.toDateString() === new Date().toDateString()
+    ? clock(ms)
+    : `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${clock(ms)}`;
+};
+const ago = (ms) => `${duration((Date.now() - ms) / 1000)} ago`;
+const repoName = (url) => String(url || '').replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '');
+const MODE_NOTE = {
+  off: 'updates are by hand',
+  notify: 'pushes a notification when one is ready; never installs',
+  install: 'installs by itself, tests first, rolls back on failure',
+};
+
+function updatesCards(u) {
+  if (u.error) {
+    return `
+    <div class="card full">
+      <div class="card-label">Auto-update</div>
+      <div class="card-value">unknown</div>
+      <div class="card-note">${escapeHtml(u.error)}</div>
+    </div>`;
+  }
+  const s = u.settings || {};
+  const on = s.mode !== 'off';
+  const card = (label, value, note = '') => `
+    <div class="card">
+      <div class="card-label">${escapeHtml(label)}</div>
+      <div class="card-value">${escapeHtml(value)}</div>
+      <div class="card-note">${escapeHtml(note)}</div>
+    </div>`;
+
+  // Where things stand, in one line: the question this section exists to answer.
+  const installed = u.installed ? `${u.installed.commit}${u.installed.dirty ? '+' : ''}` : 'unknown';
+  let state;
+  let stateNote;
+  if (u.current) {
+    state = `up to date at ${installed}`;
+    stateNote = u.tip?.seenAt ? `${s.branch} tip, seen ${ago(u.tip.seenAt)}` : '';
+  } else if (u.tip) {
+    state = `${installed} → ${u.tip.sha.slice(0, 7)}`;
+    stateNote = u.soakingUntil
+      ? `soaking until ${when(u.soakingUntil)}`
+      : u.last?.outcome === 'waiting' || u.last?.outcome === 'ready' ? u.last.detail : `${s.branch} has moved on`;
+  } else {
+    state = installed;
+    stateNote = 'the branch has not been checked yet';
+  }
+  const last = u.last
+    ? `last run ${ago(u.last.at)}: ${u.last.outcome}${u.last.outcome === 'installed' ? ` ${u.last.detail}` : ''}`
+    : 'no update has run on this box';
+
+  return `
+    <div class="card full">
+      <div class="card-label">Auto-update</div>
+      <div class="card-value">${escapeHtml(s.mode)}</div>
+      <div class="card-note">${escapeHtml([
+        MODE_NOTE[s.mode],
+        `follows ${s.branch} of ${repoName(s.repo)}`,
+        on && u.nextCheckAt ? `next check ${clock(u.nextCheckAt)}` : '',
+      ].filter(Boolean).join(' · '))}</div>
+    </div>
+    <div class="card full">
+      <div class="card-label">Status</div>
+      <div class="card-value">${escapeHtml(state)}</div>
+      <div class="card-note">${escapeHtml([stateNote, last].filter(Boolean).join(' · '))}</div>
+    </div>
+    ${card('Checks', `${s.checkMinutes} min`, on ? `timer ${u.timer?.active ? 'running' : u.timer?.state || 'unknown'}` : 'while mode is on')}
+    ${card('Soak', `${s.soakHours} h`, s.soakHours ? 'on the branch before it is taken' : 'takes the tip')}
+    ${card('Window', s.window || 'any time', s.window ? (u.platform === 'aws' ? 'UTC' : 'local time') : 'installs whenever ready')}
+    ${card('Idle wait', `${s.idleMinutes} min`, s.idleMinutes ? 'with no conversation writing' : 'does not wait')}
+    <div class="card full">
+      <div class="card-label">Change</div>
+      <div class="card-note">${escapeHtml(u.platform === 'aws'
+        ? 'autoUpdate in the deploying checkout’s triplec.config.json, then ./deploy.sh --app-only. '
+        : 'autoUpdate in ~/.config/triplec/config.json, then deploy/host/install.sh. ')}Update now: <code>${escapeHtml(u.command)}</code> · push ${s.push ? 'on' : 'off'}</div>
+    </div>`;
+}
+
+function renderUpdates(updates) {
+  const el = $('#updates');
+  const show = Boolean(updates);
+  el.classList.toggle('hidden', !show);
+  $('#updates-label').classList.toggle('hidden', !show);
+  el.innerHTML = show ? updatesCards(updates) : '';
+}
+
 function renderUnits(units) {
   const el = $('#units');
   el.innerHTML = units
@@ -558,6 +654,7 @@ async function refresh() {
 
     renderFindings(data.findings);
     renderHost(data.host);
+    renderUpdates(data.updates);
     renderUnits(data.units);
     renderChat(data.surfaces.chat);
     renderBroker(data.surfaces.broker);
@@ -615,7 +712,7 @@ document.addEventListener('visibilitychange', () => {
 // Exposed for admin-test.js, which boots this file in jsdom for the same reason
 // smoke-test.js boots app.js: a runtime error at load leaves a page that looks
 // like the server is down, and this is the page you would be checking.
-window.__adminForTest = { refresh, kill, stopAll, reap, renderFindings, buildCard, duration, rss };
+window.__adminForTest = { refresh, kill, stopAll, reap, renderFindings, buildCard, updatesCards, duration, rss };
 
 refresh();
 startPolling();

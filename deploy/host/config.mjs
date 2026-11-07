@@ -407,6 +407,8 @@ export function envPairs(c) {
     // directory, not under ~/.claude, which belongs to Claude Code and to the
     // developer and which uninstall promises to leave exactly as it found it.
     ['CW_PUSH_DIR', `${c.stateDir}/push`],
+    // The box page asks it for `status --json`. Staged whatever autoUpdate.mode says.
+    ['TRIPLEC_UPDATE_BIN', `${c.installDir}/bin/triplec-update`],
   );
   if (c.claude.authMode === 'vertex') {
     pairs.push(['CLOUD_ML_REGION', c.claude.vertex.region], ['ANTHROPIC_VERTEX_PROJECT_ID', c.claude.vertex.projectId]);

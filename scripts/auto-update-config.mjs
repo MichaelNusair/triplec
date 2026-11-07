@@ -54,6 +54,13 @@ export const AUTO_UPDATE_DEFAULTS = {
    * turn in flight. 0 installs without waiting.
    */
   idleMinutes: 30,
+  /**
+   * How often the timer looks at the branch, in minutes. The timer itself fires
+   * every 5 minutes and a run that is not yet due exits before any network, so this
+   * is what decides. 60 is the old hourly check. A box that should follow its branch
+   * closely (soakHours 0, a deployment whose owner pushes to it) sets 5.
+   */
+  checkMinutes: 60,
   /** Send a push notification for an update installed, ready, held or failed. */
   push: true,
 };
@@ -101,6 +108,9 @@ export function validateAutoUpdate(value, prefix = 'autoUpdate') {
   }
   if (!Number.isInteger(v.idleMinutes) || v.idleMinutes < 0 || v.idleMinutes > 1440) {
     err('idleMinutes', 'must be a whole number of minutes from 0 to 1440');
+  }
+  if (!Number.isInteger(v.checkMinutes) || v.checkMinutes < 5 || v.checkMinutes > 1440) {
+    err('checkMinutes', 'must be a whole number of minutes from 5 (how often the timer fires) to 1440');
   }
   if (typeof v.push !== 'boolean') err('push', 'must be true or false');
   return errors;

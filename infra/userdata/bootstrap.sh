@@ -628,6 +628,10 @@ systemctl enable --now claude-code-update.timer
 # mode, the soak and the rest are in the deployment config the payload carries,
 # so changing them is an app-only deploy. See docs/UPDATES.md.
 #
+# Every 5 minutes, which is the shortest checkMinutes allows: a run that is not
+# due yet (60 minutes unless set) reads one file and exits, so how often the box
+# looks at the branch is a config value, and one this script never has to read.
+#
 # Root, because an install is: the updater drops to $USER_NAME for git, npm, the
 # tests and the build, and runs scripts/install-payload.sh (the same script a
 # deploy runs over SSM) as root. Its own unit, so the chat service and editor it
@@ -648,11 +652,11 @@ TimeoutStartSec=1h
 SVC
 cat > /etc/systemd/system/triplec-update.timer <<'TIMER'
 [Unit]
-Description=Check for TripleC updates hourly
+Description=Check for TripleC updates (every autoUpdate.checkMinutes)
 
 [Timer]
-OnCalendar=hourly
-RandomizedDelaySec=15m
+OnCalendar=*:0/5
+RandomizedDelaySec=30s
 Persistent=true
 
 [Install]

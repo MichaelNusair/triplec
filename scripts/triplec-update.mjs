@@ -5,13 +5,14 @@
  *
  *   triplec-update.mjs run    --aws | --host <config.json>   [--now]
  *   triplec-update.mjs check  --aws | --host <config.json>   [--now]
- *   triplec-update.mjs status --aws | --host <config.json>
+ *   triplec-update.mjs status --aws | --host <config.json>   [--json]
  *
  * `run` updates if it should, `check` says what `run` would do and changes
  * nothing, and `status` reports the last run without touching the network.
  *
- * A systemd timer runs `run` hourly on every deployment; with `autoUpdate.mode`
- * "off" (the default) it exits before touching the network. docs/UPDATES.md is
+ * A systemd timer runs `run` every 5 minutes on every deployment; with
+ * `autoUpdate.mode` "off" (the default) it exits before touching the network, and
+ * otherwise it looks at the branch every `checkMinutes` (60 unless set). docs/UPDATES.md is
  * the reader's guide; scripts/auto-update-config.mjs has the settings.
  *
  * No releases and no version numbers: the branch is the release. What makes taking
@@ -83,6 +84,18 @@ export function recordTip(tips, sha, now) {
   if (last && last.sha === sha) return list;
   const before = list.find((t) => t.sha === sha);
   return [...list.filter((t) => t.sha !== sha), { sha, seenAt: before ? before.seenAt : now }].slice(-MAX_TIPS);
+}
+
+/**
+ * Whether a timer run should look at the branch now. The timer fires every
+ * TIMER_MINUTES, so half of that is allowed as slack: without it, a run that
+ * happened to land a few seconds early would skip, and an hourly check would
+ * become a 65-minute one.
+ */
+export const TIMER_MINUTES = 5;
+export function checkDue(last, now, checkMinutes) {
+  if (!last || !Number.isFinite(last.at)) return true;
+  return now - last.at >= checkMinutes * MINUTE - (TIMER_MINUTES / 2) * MINUTE;
 }
 
 /** Tips that have soaked, newest first. */
@@ -507,6 +520,14 @@ export async function run(s, { now = Date.now(), force = false, steps = {} } = {
     console.log('autoUpdate.mode is "off"; nothing to do. See docs/UPDATES.md to turn it on.');
     return 0;
   }
+  // The timer fires more often than most deployments want to look; this is what
+  // makes checkMinutes the interval. Read without the lock: it only decides whether
+  // to try, and a run that is under way has `last` from its previous pass.
+  const lastLook = readJson(path.join(s.stateDir, 'state.json'), {}).last;
+  if (!force && !checkDue(lastLook, now, au.checkMinutes)) {
+    console.log(`not due: looked ${ago(now - lastLook.at)} ago, and checks every ${au.checkMinutes} min`);
+    return 0;
+  }
   // Before anything is recorded: a forgotten sudo is not a failed commit, and
   // recording it as one would stop the timer from ever trying that commit.
   if (s.platform === 'aws' && process.getuid?.() !== 0 && !steps.build) {
@@ -670,6 +691,42 @@ function printTail(file) {
   } catch { /* nothing to show */ }
 }
 
+/**
+ * What `status --json` prints, which is what the box page shows
+ * (chat-service/admin.js). The same facts as `describe`, as data, plus the two
+ * times a reader wants: when the next look at the branch is due, and when a commit
+ * that is soaking will be taken.
+ */
+export function statusOf(s, state, now = Date.now()) {
+  const au = s.autoUpdate;
+  const build = installedBuild(s);
+  const seen = state.tip ? (state.tips || []).find((t) => t.sha === state.tip) : null;
+  const current = Boolean(build && state.tip && state.tip.startsWith(build.commit));
+  // Soaking means "newer than what runs". A tip installed with --now is still inside
+  // its soak window, and saying it will be taken tomorrow would be wrong.
+  const newer = build ? (state.tips || []).filter((t) => !t.sha.startsWith(build.commit)) : [];
+  const soakingUntil = current || au.mode === 'off' ? null : nextSoakAt(newer, now, au.soakHours);
+  const lastAt = state.last?.at;
+  return {
+    platform: s.platform,
+    settings: au,
+    timerMinutes: TIMER_MINUTES,
+    installed: build,
+    tip: state.tip ? { sha: state.tip, seenAt: seen?.seenAt ?? null } : null,
+    current,
+    soakingUntil,
+    // The first timer run at or after this time looks; null when nothing will.
+    nextCheckAt: au.mode === 'off' ? null
+      : Number.isFinite(lastAt) ? Math.max(now, lastAt + au.checkMinutes * MINUTE - (TIMER_MINUTES / 2) * MINUTE)
+        : now,
+    installedAt: state.installedAt ?? null,
+    last: state.last || null,
+    failed: state.failed || null,
+    held: Boolean(state.heldKey),
+    command: s.platform === 'aws' ? 'sudo triplec-update run --now' : `${s.installDir}/bin/triplec-update run --now`,
+  };
+}
+
 /** What `status` prints. */
 export function describe(s, state, now = Date.now()) {
   const au = s.autoUpdate;
@@ -678,6 +735,7 @@ export function describe(s, state, now = Date.now()) {
     `mode        ${au.mode}${au.mode === 'off' ? ' (updates are by hand; see docs/UPDATES.md)' : ''}`,
     `following   ${au.branch} of ${au.repo}`,
     `cautions    soak ${au.soakHours} h · window ${au.window || 'any time'} · wait for ${au.idleMinutes} min idle · push ${au.push ? 'on' : 'off'}`,
+    `checks      every ${au.checkMinutes} min${au.mode === 'off' ? ' (while mode is on)' : ''}`,
     `installed   ${build ? `${build.commit}${build.dirty ? '+' : ''}` : 'unknown (no build.json)'}`,
   ];
   if (state.tip) {
@@ -710,7 +768,7 @@ async function settingsFrom(args) {
 
 async function main(argv) {
   const [cmd, ...args] = argv;
-  const usage = 'usage: triplec-update.mjs run|check|status --aws | --host <config.json> [--now]';
+  const usage = 'usage: triplec-update.mjs run|check|status --aws | --host <config.json> [--now] [--json]';
   if (!['run', 'check', 'status'].includes(cmd)) {
     console.error(usage);
     return 2;
@@ -723,7 +781,8 @@ async function main(argv) {
     return 2;
   }
   if (cmd === 'status') {
-    console.log(describe(s, readJson(path.join(s.stateDir, 'state.json'), {})));
+    const state = readJson(path.join(s.stateDir, 'state.json'), {});
+    console.log(args.includes('--json') ? JSON.stringify(statusOf(s, state)) : describe(s, state));
     return 0;
   }
   if (cmd === 'check') return dryRun(s, { force: args.includes('--now') });

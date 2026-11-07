@@ -778,9 +778,11 @@ UNIT
 fi
 
 if [ "$AUTO_UPDATE" != off ]; then
-  # The update check, hourly, as this user. It runs this installer itself, from a
-  # clone of its own under stateDir, so it needs sudo without a password to
-  # install; without that it holds and says so. See docs/UPDATES.md.
+  # The update check, as this user. The timer fires every 5 minutes and the
+  # updater decides whether a check is due (autoUpdate.checkMinutes, 60 unless
+  # set). It runs this installer itself, from a clone of its own under stateDir,
+  # so it needs sudo without a password to install; without that it holds and
+  # says so. See docs/UPDATES.md.
   cat >"$WORK/triplec-update.service" <<UNIT
 # Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
 [Unit]
@@ -801,11 +803,11 @@ UNIT
   cat >"$WORK/triplec-update.timer" <<UNIT
 # Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
 [Unit]
-Description=Check for TripleC updates hourly
+Description=Check for TripleC updates (every autoUpdate.checkMinutes)
 
 [Timer]
-OnCalendar=hourly
-RandomizedDelaySec=15m
+OnCalendar=*:0/5
+RandomizedDelaySec=30s
 Persistent=true
 
 [Install]

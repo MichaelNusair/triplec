@@ -137,14 +137,17 @@
     "installs it, after it has been on the branch soakHours, inside window",
     "('' for any time, or 'HH-HH' UTC), once no conversation has been active for",
     "idleMinutes, with the test suite first and a rollback if the check after it",
-    "fails. A change to the stack itself is held for ./deploy.sh. It travels in",
-    "the payload, so changing it is an app-only deploy. See docs/UPDATES.md."
+    "fails. checkMinutes is how often it looks at the branch (5 to follow it",
+    "closely). A change to the stack itself is held for ./deploy.sh. It travels in",
+    "the payload, so changing it is an app-only deploy. The box page (/chat/admin)",
+    "shows the settings and the last run. See docs/UPDATES.md."
   ],
   "autoUpdate": {
     "mode": "off",
     "soakHours": 24,
     "window": "",
-    "idleMinutes": 30
+    "idleMinutes": 30,
+    "checkMinutes": 60
   },
 
   "$comment_git": "Author on commits Claude makes in the workspace.",

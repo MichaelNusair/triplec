@@ -139,7 +139,7 @@ a stack.
 Every box has `triplec-update`. `sudo triplec-update run --now` updates it from
 the upstream branch in one command, with the test suite run first and a rollback
 if the login check afterwards fails. Set `autoUpdate` in the config and it does
-the same by itself on an hourly timer, as cautiously as you choose. Changes to the
+the same by itself on a timer, as often and as cautiously as you choose. Changes to the
 stack itself still need `./deploy.sh` from a machine with AWS credentials; the box
 holds those and tells you so. [UPDATES.md](UPDATES.md) has the details.
 

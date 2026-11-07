@@ -96,6 +96,29 @@ function makeState() {
       'claude-broker': { active: true, sub: 'running', mainPid: BROKER_PID, memoryBytes: 1200 * 1024 * 1024 },
       'claude-tmux': { active: true, sub: 'running', mainPid: TMUX_PID, memoryBytes: null },
       nginx: { active: true, sub: 'running', mainPid: 300, memoryBytes: 12 * 1024 * 1024 },
+      'triplec-update.timer': { active: true, sub: 'waiting', mainPid: 0, memoryBytes: null },
+    },
+    // What `triplec-update status --json` answers (statusOf in
+    // scripts/triplec-update.mjs): this box, following its own pushes closely.
+    update: {
+      platform: 'aws',
+      settings: {
+        mode: 'install', repo: 'https://github.com/MichaelNusair/triplec.git', branch: 'main',
+        soakHours: 0, window: '', idleMinutes: 0, checkMinutes: 5, push: true,
+      },
+      timerMinutes: 5,
+      installed: { commit: 'abc1234', dirty: false },
+      tip: { sha: 'abc1234def5678abc1234def5678abc1234def56', seenAt: Date.now() - 20 * 60_000 },
+      current: true,
+      soakingUntil: null,
+      // Two minutes past a five-minute mark, which the page must not show as such:
+      // nothing runs until the timer's next mark.
+      nextCheckAt: Math.floor(Date.now() / 300_000) * 300_000 + 120_000,
+      installedAt: Date.now() - 20 * 60_000,
+      last: { at: Date.now() - 20 * 60_000, outcome: 'installed', detail: '1 commit(s), 0123abc → abc1234: <b>Tidy</b> the box page' },
+      failed: null,
+      held: false,
+      command: 'sudo triplec-update run --now',
     },
     tmux: [
       { name: 'claude-demo', createdAt: 1_699_930_000_000, attached: 1, panePid: 960 },
@@ -171,6 +194,10 @@ function makeDeps(state) {
       if (cmd === 'tmux' && args[0] === 'kill-session') {
         state.killedSessions.push(args[2]);
         return { ok: true, out: '' };
+      }
+      if (cmd === '/usr/local/bin/triplec-update') {
+        if (!state.update) return { ok: false, out: '', err: 'spawn /usr/local/bin/triplec-update ENOENT' };
+        return { ok: true, out: JSON.stringify(state.update) };
       }
       if (cmd === 'df') {
         return {
@@ -420,6 +447,44 @@ console.log('\nStill draws the page when the broker will not say who is who:');
   check('and the fork is still named from argv', view.findings.some((f) => f.text.includes('resuming session')));
 }
 
+console.log('\nSays how this box updates:');
+{
+  const u = overview.updates;
+  check('the updater is asked for its own status, not read around',
+    state.commands.includes('/usr/local/bin/triplec-update status --json'), state.commands.join(' | '));
+  check('the settings come through', u?.settings?.mode === 'install' && u.settings.checkMinutes === 5, JSON.stringify(u));
+  check('with the timer that runs them', u?.timer?.active === true && u.timer.name === 'triplec-update.timer');
+  check('the next check is the timer\'s next five-minute mark, not the instant it is due',
+    u?.nextCheckAt % 300_000 === 0 && u.nextCheckAt > state.update.nextCheckAt, String(u?.nextCheckAt));
+  check('a healthy updater raises no finding', !overview.findings.some((f) => /update/.test(f.text)),
+    overview.findings.map((f) => f.text).join(' | '));
+
+  const off = makeState();
+  off.units['triplec-update.timer'] = { active: false, sub: 'dead', mainPid: 0, memoryBytes: null };
+  const view = await createAdmin({ manager: makeManager([]), deps: makeDeps(off) }).overview();
+  check('a stopped timer while the mode is on is an error',
+    view.findings.some((f) => f.level === 'error' && f.text.includes('triplec-update.timer is inactive')),
+    view.findings.map((f) => f.text).join(' | '));
+  off.update = { ...off.update, settings: { ...off.update.settings, mode: 'off' } };
+  const quietOff = await createAdmin({ manager: makeManager([]), deps: makeDeps(off) }).overview();
+  check('but not while the mode is off', !quietOff.findings.some((f) => f.text.includes('triplec-update')));
+
+  const failedBox = makeState();
+  failedBox.update = { ...failedBox.update, current: false, last: { at: Date.now(), outcome: 'failed', detail: 'def5678 at tests: npm test exited 1. Nothing was installed.' } };
+  const failedView = await createAdmin({ manager: makeManager([]), deps: makeDeps(failedBox) }).overview();
+  check('a failed update is a finding, with what failed',
+    failedView.findings.some((f) => f.level === 'warn' && f.text === 'the last update failed' && /npm test exited 1/.test(f.detail)));
+  failedBox.update.last = { at: Date.now(), outcome: 'held', detail: 'change the stack itself' };
+  const heldView = await createAdmin({ manager: makeManager([]), deps: makeDeps(failedBox) }).overview();
+  check('so is a held one', heldView.findings.some((f) => f.text === 'updates are held'));
+
+  const old = makeState();
+  old.update = null;
+  const oldView = await createAdmin({ manager: makeManager([]), deps: makeDeps(old) }).overview();
+  check('a box without the updater says so instead of failing the page',
+    /not installed/.test(oldView.updates?.error) && oldView.units.length === 5, JSON.stringify(oldView.updates));
+}
+
 // --- 3. The refusals --------------------------------------------------------
 
 console.log('\nRefuses to stop a chat that is mid-turn:');
@@ -637,6 +702,25 @@ const $ = (sel) => w.document.querySelector(sel);
     $('#host').textContent);
   check('the volume too', $('#host').textContent.includes('38 GB of 95 GB'), $('#host').textContent);
   check('a hot meter reads hot', $('#host').innerHTML.includes('class="hot"'));
+
+  const updates = $('#updates');
+  check('the updates section is shown', !updates.classList.contains('hidden') && !$('#updates-label').classList.contains('hidden'));
+  check('it says the mode', updates.textContent.includes('install') && updates.textContent.includes('installs by itself'), updates.textContent);
+  check('what it follows', updates.textContent.includes('follows main of MichaelNusair/triplec'), updates.textContent);
+  check('where it stands', updates.textContent.includes('up to date at abc1234'), updates.textContent);
+  check('and what it last did', updates.textContent.includes('last run 20m ago: installed'), updates.textContent);
+  check('every caution, with its value', ['5 min', '0 h', 'any time', 'takes the tip', 'does not wait', 'timer running']
+    .every((t) => updates.textContent.includes(t)), updates.textContent);
+  check('how to change it and how to update now', updates.textContent.includes('autoUpdate in')
+    && updates.textContent.includes('sudo triplec-update run --now'), updates.textContent);
+  check('a commit subject is text, not markup', !updates.innerHTML.includes('<b>') && updates.textContent.includes('<b>Tidy</b>'));
+  const soaking = w.__adminForTest.updatesCards({
+    ...payload.updates, current: false, soakingUntil: Date.now() + 3600e3,
+    settings: { ...payload.updates.settings, soakHours: 24, mode: 'notify' },
+    tip: { sha: 'fedcba9876543210', seenAt: Date.now() - 600e3 },
+  });
+  check('a newer commit that is soaking says so', soaking.includes('abc1234 → fedcba9') && soaking.includes('soaking until'), soaking);
+  check('the unknown case is a card, not a crash', w.__adminForTest.updatesCards({ error: 'x is not installed on this box' }).includes('not installed'));
 
   check('five service rows', $('#units').querySelectorAll('.unit').length === 5);
   check('all up, so none marked down', $('#units').querySelectorAll('.unit.down').length === 0);

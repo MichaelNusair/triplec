@@ -239,7 +239,13 @@ set_update() {
 }
 push_commit() { as_dev "cd ~/triplec && $1 && git add -A && git -c user.name=t -c user.email=t@t commit -qm '$2' && git push -q origin HEAD:main 2>/dev/null && git rev-parse --short HEAD"; }
 installed_build() { as_dev 'node -p "require(process.env.HOME + \"/.local/share/triplec/chat-service/build.json\").commit"'; }
+# Each of these stands for the timer an hour later, so the last look is moved back
+# an hour first: inside checkMinutes of it, a timer run does not look at all.
+backdate_last_look() {
+  as_dev "node -e 'const f=process.argv[1];try{const s=JSON.parse(require(\"fs\").readFileSync(f));if(s.last){s.last.at-=3600e3;require(\"fs\").writeFileSync(f,JSON.stringify(s))}}catch{}' ~/.local/state/triplec/update/state.json"
+}
 update_unit() {
+  backdate_last_look
   as_root 'systemctl start triplec-update.service; journalctl -u triplec-update -n 40 --no-pager -o cat'
   # The whole log of the run, for when a check below fails.
   as_dev 'cat ~/.local/state/triplec/update/last-run.log 2>/dev/null' >"$SCRATCH/update-$1.log" || true
@@ -277,6 +283,8 @@ check "and says it rolled back" grep -q "failed: $BROKEN_INSTALL at install: .*R
 check "and the app still answers" as_root 'curl -fs http://127.0.0.1:8080/healthz | grep -q "\"ok\":true"'
 out="$(update_unit retry)"
 check "the failed commit is not retried by the timer" grep -q "is not retried" <<<"$out"
+out="$(as_root 'systemctl start triplec-update.service; journalctl -u triplec-update -n 5 --no-pager -o cat')"
+check "a timer run straight after another does not look again" grep -q "^not due: looked" <<<"$out"
 
 as_dev "cd ~/triplec && git reset -q --hard $GOOD"
 set_update '{"mode":"off"}'

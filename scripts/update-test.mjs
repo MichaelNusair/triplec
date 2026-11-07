@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  inWindow, recordTip, soakedTips, needsFullDeploy, lastActivity, run, describe,
+  inWindow, recordTip, soakedTips, needsFullDeploy, lastActivity, run, describe, checkDue, statusOf,
 } from './triplec-update.mjs';
 import { validateAutoUpdate, resolveAutoUpdate, UPSTREAM_REPO } from './auto-update-config.mjs';
 
@@ -176,9 +176,10 @@ check('U9: a conversation written to 5 minutes ago holds the install', r.calls.l
 check('U9: and lastActivity names its transcript', lastActivity([claude]).file === transcript);
 fs.utimesSync(transcript, new Date(t2 - 45 * 60e3), new Date(t2 - 45 * 60e3));
 
-// The install breaks: roll back to what was running.
+// The install breaks: roll back to what was running. An hour on, because a timer
+// run inside checkMinutes of the last one does not look (U25).
 r = recorder({ fail: { apply: 1 } });
-await run(s, { now: t2, steps: r.steps });
+await run(s, { now: t2 + HOUR, steps: r.steps });
 check('U10: a failed install is rolled back by installing the previous commit the same way',
   r.calls.join() === `checkout:${c3.slice(0, 7)},runTests,build,apply,checkout:${c2.slice(0, 7)},build,apply,verify:${c2.slice(0, 7)}`, r.calls.join());
 const failedState = stateOf(s);
@@ -186,15 +187,15 @@ check('U10: and recorded as failed, rolled back, and announced', failedState.las
   && installed() === c2.slice(0, 7) && r.notes.some((x) => /update failed: .*Rolled back to/.test(x)), JSON.stringify(failedState.last) + r.notes.join(' | '));
 
 r = recorder();
-await run(s, { now: t2 + HOUR, steps: r.steps });
+await run(s, { now: t2 + 2 * HOUR, steps: r.steps });
 check('U11: a commit that failed is not retried by the timer', r.calls.length === 0 && stateOf(s).last.outcome === 'held' && r.notes.length === 0, JSON.stringify(stateOf(s).last));
-await run(s, { now: t2 + HOUR, force: true, steps: r.steps });
+await run(s, { now: t2 + 2 * HOUR, force: true, steps: r.steps });
 check('U11: --now retries it', installed() === c3.slice(0, 7) && stateOf(s).last.outcome === 'installed' && stateOf(s).failed === null, r.calls.join());
 
 // The tests break: nothing was touched, so nothing is rolled back.
 const c4 = commit();
 r = recorder({ fail: { runTests: true } });
-const t3 = t2 + 2 * HOUR;
+const t3 = t2 + 3 * HOUR;
 await run(s, { now: t3, steps: r.steps });
 await run(s, { now: t3 + 25 * HOUR, steps: r.steps });
 check('U12: failing tests stop the update before anything is built or installed', r.calls.join() === `checkout:${c4.slice(0, 7)},runTests` && installed() === c3.slice(0, 7), r.calls.join());
@@ -289,6 +290,50 @@ check('U23: in notify mode too', installed() === git(work, 'rev-parse', 'HEAD').
 setInstalled(git(work, 'rev-parse', 'HEAD'));
 const st = describe(s, stateOf(s), t5);
 check('U24: status names the mode, the branch, the cautions and the last run', /mode {8}install/.test(st) && /following {3}main of /.test(st) && /soak 24 h/.test(st) && /last run/.test(st), st);
+
+console.log('how often the timer looks');
+const MIN = 60e3;
+check('U25: a box that has never looked is due', checkDue(null, 0, 60) && checkDue({}, 0, 60));
+check('U25: 30 minutes after a look, an hourly check is not due', !checkDue({ at: 0 }, 30 * MIN, 60));
+check('U25: a timer run landing a few seconds early still counts as on time', checkDue({ at: 0 }, 60 * MIN - 10e3, 60));
+check('U25: checkMinutes 5 looks on every timer run', checkDue({ at: 0 }, 5 * MIN - 20e3, 5));
+const c9 = commit();
+const sc = settings({ soakHours: 0, idleMinutes: 0 });
+r = recorder();
+await run(sc, { now: t5 + 30 * HOUR, steps: r.steps });
+const lookedAt = stateOf(sc).last.at;
+const c10 = commit();
+await run(sc, { now: t5 + 30 * HOUR + 20 * MIN, steps: r.steps });
+check('U25: a timer run inside checkMinutes does not fetch, decide or record anything', stateOf(sc).last.at === lookedAt && stateOf(sc).tip !== c10 && installed() !== c10.slice(0, 7), JSON.stringify(stateOf(sc).last));
+await run(sc, { now: t5 + 30 * HOUR + 20 * MIN, force: true, steps: r.steps });
+check('U25: --now is not a timer run and always looks', installed() === c10.slice(0, 7), r.calls.join());
+check('U25: (c9 was taken first, c10 after)', git(work, 'merge-base', '--is-ancestor', c9, c10) === '');
+const s5 = settings({ soakHours: 0, idleMinutes: 0, checkMinutes: 5 });
+setInstalled(c9);
+r = recorder();
+await run(s5, { now: t5 + 40 * HOUR, steps: r.steps });
+setInstalled(c9);
+await run(s5, { now: t5 + 40 * HOUR + 5 * MIN, steps: r.steps });
+check('U25: with checkMinutes 5 the next timer run looks again', r.calls.filter((c) => c === 'runTests').length === 2, r.calls.join());
+check('U25: checkMinutes below the timer period is refused', validateAutoUpdate({ checkMinutes: 1 }).some((e) => e.startsWith('autoUpdate.checkMinutes:')));
+
+console.log('status for the box page');
+const now6 = t5 + 41 * HOUR;
+const js = statusOf(s5, stateOf(s5), now6);
+check('U26: status --json carries the settings, what is installed and the tip',
+  js.settings.mode === 'install' && js.settings.checkMinutes === 5 && js.installed?.commit === c10.slice(0, 7) && js.tip?.sha === c10 && js.current === true, JSON.stringify(js));
+check('U26: and the last run and when the next look is due', js.last?.outcome === 'installed' && js.nextCheckAt === now6, JSON.stringify(js));
+check('U26: an installed tip is not called soaking', js.soakingUntil === null);
+const c11 = commit();
+const ssk = settings({ soakHours: 24 });
+setInstalled(c10);
+r = recorder();
+await run(ssk, { now: now6, steps: r.steps });
+const jk = statusOf(ssk, stateOf(ssk), now6 + MIN);
+check('U26: a newer commit that is soaking says when it will be taken', jk.current === false && jk.tip.sha === c11 && jk.soakingUntil === now6 + 24 * HOUR, JSON.stringify(jk));
+check('U26: and an hourly check is next due an hour after the last, less the slack', jk.nextCheckAt === now6 + 60 * MIN - 2.5 * MIN, JSON.stringify(jk));
+const jo = statusOf(settings({ mode: 'off' }), {}, now6);
+check('U26: mode off has no next check, and says how to update by hand', jo.nextCheckAt === null && /run --now/.test(jo.command) && jo.last === null);
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passed}/${passed + failed} checks passed`);

@@ -72,6 +72,40 @@ const UNITS = [
 const DATA_MOUNT = PROJECTS_ROOT;
 
 /**
+ * The updater, asked for `status --json` (scripts/triplec-update.mjs). It owns the
+ * settings, the paths and the state file, so this reads none of them itself: a
+ * second reader of state.json would be a second definition of what "up to date"
+ * means. On AWS bootstrap.sh installs the wrapper; a host install says where its
+ * own is (deploy/host/config.mjs). Read-only, and needs no privilege.
+ */
+const UPDATE_BIN = process.env.TRIPLEC_UPDATE_BIN || (HOST_MODE ? '' : '/usr/local/bin/triplec-update');
+const UPDATE_TIMER = 'triplec-update.timer';
+// The timer fires on the wall clock's five-minute marks (OnCalendar=*:0/5), so the
+// first run at or after "due" is the next such mark, give or take its 30 s jitter.
+const TIMER_MS = 5 * 60_000;
+
+async function updateStatus(deps) {
+  if (!UPDATE_BIN) return null;
+  const res = await deps.run(UPDATE_BIN, ['status', '--json']);
+  if (!res.ok) {
+    const why = (res.err || res.out || '').trim().split('\n').pop() || 'no answer';
+    return { error: /ENOENT/.test(why) ? `${UPDATE_BIN} is not installed on this box` : why };
+  }
+  let status;
+  try {
+    status = JSON.parse(res.out);
+  } catch {
+    return { error: 'triplec-update status --json did not answer JSON' };
+  }
+  const timer = await unitState(deps, UPDATE_TIMER);
+  return {
+    ...status,
+    timer: { name: UPDATE_TIMER, active: timer.active, state: timer.state },
+    nextCheckAt: Number.isFinite(status.nextCheckAt) ? Math.ceil(status.nextCheckAt / TIMER_MS) * TIMER_MS : null,
+  };
+}
+
+/**
  * A refusal the UI can act on, rather than a crash. Same shape as the one
  * `session-manager.js` throws for a project removal, and for the same reason:
  * stopping a process that may hold a turn in flight is a question for the user,
@@ -372,7 +406,7 @@ async function diskUsage(deps, path) {
  * The findings. This is the part worth having: each one is a failure this project
  * has already had, phrased as the thing you would want to be told.
  */
-function findings({ units, chat, broker, tmux, memory, disk }) {
+function findings({ units, chat, broker, tmux, memory, disk, updates = null }) {
   const out = [];
   const unit = (name) => units.find((u) => u.name === name);
 
@@ -470,6 +504,23 @@ function findings({ units, chat, broker, tmux, memory, disk }) {
     out.push({ level: disk.percent >= 93 ? 'error' : 'warn', text: `${disk.path} is ${disk.percent}% full` });
   }
 
+  // Updates. Only what needs a person: a timer that is not there while the setting
+  // says it should run, a failed update, or one that is held. Being behind while a
+  // commit soaks is the setting doing its job, and stays in the Updates section.
+  const au = updates?.settings;
+  if (au && au.mode !== 'off' && updates.timer && !updates.timer.active) {
+    out.push({
+      level: 'error',
+      text: `autoUpdate is "${au.mode}", but ${updates.timer.name} is ${updates.timer.state}`,
+      detail: 'nothing will check for updates until it runs',
+    });
+  }
+  if (updates?.last?.outcome === 'failed' || updates?.last?.outcome === 'error') {
+    out.push({ level: 'warn', text: 'the last update failed', detail: updates.last.detail });
+  } else if (updates?.last?.outcome === 'held') {
+    out.push({ level: 'info', text: 'updates are held', detail: updates.last.detail });
+  }
+
   return out;
 }
 
@@ -502,11 +553,12 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
       };
     });
 
-    const [broker, tmux, disk, build] = await Promise.all([
+    const [broker, tmux, disk, build, updates] = await Promise.all([
       brokerSessions(deps, table, brokerUnit?.mainPid || null),
       tmuxSessions(deps, table, tmuxUnit?.mainPid || null),
       diskUsage(deps, DATA_MOUNT),
       deps.build(),
+      updateStatus(deps),
     ]);
 
     const mem = deps.memory();
@@ -527,8 +579,9 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
         build,
       },
       units,
+      updates,
       surfaces: { chat, broker, tmux },
-      findings: findings({ units, chat, broker, tmux, memory, disk }),
+      findings: findings({ units, chat, broker, tmux, memory, disk, updates }),
     };
   }
 

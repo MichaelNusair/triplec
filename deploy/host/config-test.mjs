@@ -207,6 +207,7 @@ test('env: the default contract, exactly', () => {
     ['PWA_NAME', ''],
     ['TRIPLEC_AUDIT', '1'],
     ['CW_PUSH_DIR', '/home/dev/.local/state/triplec/push'],
+    ['TRIPLEC_UPDATE_BIN', '/home/dev/.local/share/triplec/bin/triplec-update'],
     ['CC_SCRIPT', '/home/dev/.local/share/triplec/bin/cc'],
   ]);
 });
@@ -300,6 +301,10 @@ test('autoUpdate: an unknown key is named once, under autoUpdate', () => {
   assert.deepEqual(errs, ['autoUpdate.soakhours: unknown key']);
 });
 test('autoUpdate: a bad mode', () => rejects(withChange('autoUpdate.mode', 'auto'), 'autoUpdate.mode', /off, notify, install/));
+test('autoUpdate: checkMinutes defaults to hourly and cannot go below the timer', () => {
+  assert.equal(resolve(withChange('autoUpdate', { mode: 'install' }), ctx).autoUpdate.checkMinutes, 60);
+  rejects(withChange('autoUpdate.checkMinutes', 1), 'autoUpdate.checkMinutes');
+});
 test('autoUpdate: a bad window', () => rejects(withChange('autoUpdate.window', '2-6'), 'autoUpdate.window'));
 
 // --- the CLI ------------------------------------------------------------------------------------------
