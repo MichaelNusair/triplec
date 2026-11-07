@@ -387,6 +387,9 @@ const invokedDirectly = () => {
     return false;
   }
 };
+// Not a top-level await: saving validates with infra/config.js, which imports this
+// module, and a module still awaiting at its top level cannot be imported by one
+// it is waiting on. That cycle deadlocked `set` on the box (node exits 13).
 if (process.argv[1] && invokedDirectly()) {
-  process.exitCode = await main(process.argv.slice(2));
+  main(process.argv.slice(2)).then((code) => { process.exitCode = code; });
 }

@@ -156,6 +156,21 @@ console.log('saving, with each platform\'s validation');
   }));
   check('B11: but the payload carries the file\'s own values, which the box compares with',
     payloadConfig.instanceType === resolved.instanceType && payloadConfig.defaultModel === 'sonnet');
+  // The command itself, as the page runs it: a save it must validate with
+  // infra/config.js, which imports this module back.
+  const cli = (...args) => {
+    try {
+      return { code: 0, out: execFileSync('node', [path.join(HERE, 'box-config.mjs'), ...args, '--aws'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000 }) };
+    } catch (e) {
+      return { code: e.status, out: `${e.stdout || ''}${e.stderr || ''}` };
+    }
+  };
+  const refusedCli = cli('set', '--value', '{"domainName":"not a host"}');
+  check('B15: the command refuses an invalid value with the config\'s message, and exits 1',
+    refusedCli.code === 1 && /is not a hostname/.test(refusedCli.out), `${refusedCli.code}: ${refusedCli.out.slice(0, 200)}`);
+  const savedCli = cli('set', '--value', '{"effortLevel":"low"}');
+  check('B15: and saves a valid one, answering the new status', savedCli.code === 0
+    && JSON.parse(savedCli.out).fields.find((f) => f.path === 'effortLevel')?.value === 'low', `${savedCli.code}: ${savedCli.out.slice(0, 200)}`);
   delete process.env.TRIPLEC_INSTALL_DIR;
   delete process.env.TRIPLEC_BOX_OVERRIDES;
 
