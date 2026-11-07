@@ -176,6 +176,52 @@ REFUSE
 fi
 
 # ---------------------------------------------------------------------------
+# Settings saved on the box page
+# ---------------------------------------------------------------------------
+# Every key of the config can be changed from the box page (/chat/admin), and a
+# change there is kept on the instance rather than in this machine's config file:
+# scripts/box-config.mjs explains why. The stack's own keys only take effect in a
+# full deploy, so a full deploy reads them from the box first and deploys them
+# (infra/config.js layers them over the file, key by key, unless the file has
+# changed that key since). It fails rather than deploying without them: a deploy
+# that could not read the box would put back every stack value an earlier deploy
+# took from it. TRIPLEC_BOX_OVERRIDES names a file to use instead, /dev/null for
+# none.
+BOX_FETCHED=0
+if [ "$APP_ONLY" -eq 0 ] && [ -z "${TRIPLEC_BOX_OVERRIDES:-}" ] &&
+  [ -n "${STACK_INSTANCE:-}" ] && [ "$STACK_INSTANCE" != "None" ]; then
+  step "Reading settings saved on the box page"
+  mkdir -p "$ROOT/dist"
+  BOX_CMD="$(aws ssm send-command --instance-ids "$STACK_INSTANCE" \
+    --document-name AWS-RunShellScript --comment "read the box page's settings" \
+    --parameters 'commands=["cat /workspace/triplec-config/overrides.json 2>/dev/null || echo {}"]' \
+    --query 'Command.CommandId' --output text "${AWS_ARGS[@]}")" ||
+    { echo "Cannot ask $STACK_INSTANCE for the box page's settings over SSM. Fix that, or deploy without them: TRIPLEC_BOX_OVERRIDES=/dev/null ./deploy.sh" >&2; exit 1; }
+  box_status=Pending
+  for _ in $(seq 1 30); do
+    box_status="$(aws ssm get-command-invocation --command-id "$BOX_CMD" --instance-id "$STACK_INSTANCE" \
+      --query Status --output text "${AWS_ARGS[@]}" 2>/dev/null || echo Pending)"
+    case "$box_status" in Success|Failed|Cancelled|TimedOut) break ;; esac
+    sleep 2
+  done
+  [ "$box_status" = Success ] ||
+    { echo "Reading the box page's settings ended $box_status. Deploy without them with TRIPLEC_BOX_OVERRIDES=/dev/null." >&2; exit 1; }
+  aws ssm get-command-invocation --command-id "$BOX_CMD" --instance-id "$STACK_INSTANCE" \
+    --query StandardOutputContent --output text "${AWS_ARGS[@]}" > "$ROOT/dist/box-overrides.json"
+  python3 - "$ROOT/dist/box-overrides.json" <<'PY' || { echo "The box page's settings are not JSON; see dist/box-overrides.json." >&2; exit 1; }
+import json, sys
+d = json.load(open(sys.argv[1]))
+paths = sorted((d.get('values') or {}).keys())
+print('  saved on the box: ' + (', '.join(paths) if paths else 'nothing'))
+PY
+  export TRIPLEC_BOX_OVERRIDES="$ROOT/dist/box-overrides.json"
+  BOX_FETCHED=1
+  # Again, with them: they may change what this deploy is.
+  eval "$(node infra/print-config.js)"
+  DOMAIN="$CFG_DOMAIN"
+fi
+
+# ---------------------------------------------------------------------------
 step "Installing what the tests need"
 # ---------------------------------------------------------------------------
 # This used to be `[ -d node_modules/ws ] || npm install` inside the auth step,
@@ -678,6 +724,24 @@ if [ "$AUTH_OK" -ne 0 ]; then
   printf 'remote-execution endpoint. Restrict allowedCidrs or stop the instance now:\n' >&2
   printf '  aws ec2 stop-instances --instance-ids %s %s\n\n' "$INSTANCE_ID" "${AWS_ARGS[*]}" >&2
   exit 1
+fi
+
+# What this deploy took from the box page, recorded on the box, so the page can
+# tell a stack setting that is deployed from one still waiting for a deploy.
+if [ "$BOX_FETCHED" -eq 1 ]; then
+  DEPLOYED_B64="$(python3 - "$TRIPLEC_BOX_OVERRIDES" <<'PY'
+import base64, json, sys, time
+d = json.load(open(sys.argv[1]))
+out = {'values': d.get('values') or {}, 'at': int(time.time() * 1000)}
+print(base64.b64encode(json.dumps(out).encode()).decode())
+PY
+)"
+  aws ssm send-command --instance-ids "$INSTANCE_ID" --document-name AWS-RunShellScript \
+    --comment "record what the deploy took from the box page" \
+    --parameters "commands=[\"mkdir -p /workspace/triplec-config\",\"echo $DEPLOYED_B64 | base64 -d > /workspace/triplec-config/deployed.json\",\"chown -R coder: /workspace/triplec-config\"]" \
+    --query 'Command.CommandId' --output text "${AWS_ARGS[@]}" >/dev/null &&
+    echo "  recorded on the box what was deployed from its settings" ||
+    echo "  (could not record on the box what was deployed; the page will still call those settings pending)"
 fi
 
 # ---------------------------------------------------------------------------

@@ -47,7 +47,7 @@ import os from 'os';
 import { dirname } from 'path';
 import { brokerSessions as liveBrokerSessions } from './claude-status.js';
 import { buildInfo } from './build.js';
-import { HOST_MODE, PROJECTS_ROOT, feature } from './host.js';
+import { HOST_MODE, PROJECTS_ROOT, WORKSPACE_USER, feature } from './host.js';
 import { projectLabel } from './projects.js';
 
 const execFileAsync = promisify(execFile);
@@ -80,8 +80,40 @@ const DATA_MOUNT = PROJECTS_ROOT;
  */
 const UPDATE_BIN = process.env.TRIPLEC_UPDATE_BIN || (HOST_MODE ? '' : '/usr/local/bin/triplec-update');
 const UPDATE_TIMER = 'triplec-update.timer';
-// The keys the page may set. The updater checks the values; this keeps anything else out.
-const UPDATE_KEYS = ['mode', 'repo', 'branch', 'soakHours', 'window', 'idleMinutes', 'checkMinutes', 'push'];
+/**
+ * Every other setting, the same way: `triplec-config` (scripts/box-config.mjs) owns
+ * the store, the catalogue of keys and their validation, and this passes the page's
+ * edits to it as one argv element, never through a shell.
+ */
+const CONFIG_BIN = process.env.TRIPLEC_CONFIG_BIN || (HOST_MODE ? '' : '/usr/local/bin/triplec-config');
+
+async function configStatus(deps, args = ['status']) {
+  if (!CONFIG_BIN) return null;
+  const res = await deps.run(CONFIG_BIN, args, { timeout: 30_000 });
+  if (!res.ok) {
+    const why = (res.err || res.out || '').trim().split('\n').pop() || 'no answer';
+    return { error: /ENOENT/.test(why) ? `${CONFIG_BIN} is not installed on this box yet` : why.replace(/^box-config: /, '') };
+  }
+  try {
+    return JSON.parse(res.out);
+  } catch {
+    return { error: 'triplec-config did not answer JSON' };
+  }
+}
+
+/**
+ * Which saved box-scope settings are not installed yet: what is saved now, against
+ * what the last apply installed (state.applied in the updater). A setting the
+ * config file has since superseded counts too, since the box still runs it.
+ */
+function pendingApply(config, updates) {
+  if (!config?.fields) return [];
+  const installed = updates?.applied?.values || {};
+  return config.fields
+    .filter((f) => f.scope === 'box')
+    .filter((f) => JSON.stringify(f.changed ? f.value : undefined) !== JSON.stringify(installed[f.path]))
+    .map((f) => f.path);
+}
 // The timer fires on the wall clock's five-minute marks (OnCalendar=*:0/5), so the
 // first run at or after "due" is the next such mark, give or take its 30 s jitter.
 const TIMER_MS = 5 * 60_000;
@@ -556,13 +588,15 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
       };
     });
 
-    const [broker, tmux, disk, build, updates] = await Promise.all([
+    const [broker, tmux, disk, build, updates, config] = await Promise.all([
       brokerSessions(deps, table, brokerUnit?.mainPid || null),
       tmuxSessions(deps, table, tmuxUnit?.mainPid || null),
       diskUsage(deps, DATA_MOUNT),
       deps.build(),
       updateStatus(deps),
+      configStatus(deps),
     ]);
+    if (config && !config.error) config.pendingApply = pendingApply(config, updates);
 
     const mem = deps.memory();
     const memory = {
@@ -583,6 +617,7 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
       },
       units,
       updates,
+      config,
       surfaces: { chat, broker, tmux },
       findings: findings({ units, chat, broker, tmux, memory, disk, updates }),
     };
@@ -693,24 +728,45 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
   }
 
   /**
-   * Change the auto-update settings from the box page. The updater validates and
-   * stores them (`triplec-update set`, scripts/triplec-update.mjs) beside its state,
-   * where a deploy does not overwrite them; this only passes them on, as one argv
-   * element, never through a shell. Only the setting's own keys get that far.
+   * Save the page's edits ({ "dotted.path": value }), or drop some (`reset`, a list
+   * of paths; empty for all). triplec-config validates the whole result the way the
+   * config file is validated, and refuses with the reason.
    */
-  async function saveUpdates(changes) {
-    if (!UPDATE_BIN) throw new AdminBlocked('this install has no updater to configure');
+  async function saveConfig({ changes = null, reset = null } = {}) {
+    if (!CONFIG_BIN) throw new AdminBlocked('this install has no settings store');
     let args;
-    if (changes === 'reset') args = ['set', '--reset'];
-    else {
-      if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new AdminBlocked('settings must be an object');
-      const picked = Object.fromEntries(Object.entries(changes).filter(([k]) => UPDATE_KEYS.includes(k)));
-      args = ['set', '--value', JSON.stringify(picked)];
+    if (Array.isArray(reset)) {
+      args = ['reset', ...reset.filter((p) => typeof p === 'string' && /^[A-Za-z0-9_.]+$/.test(p)).flatMap((p) => ['--path', p])];
+    } else {
+      if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new AdminBlocked('changes must be an object of { "dotted.path": value }');
+      args = ['set', '--value', JSON.stringify(changes)];
     }
-    const result = await updateStatus(deps, args);
-    if (result?.error) throw new AdminBlocked(result.error.replace(/^triplec-update: /, ''));
+    const result = await configStatus(deps, args);
+    if (result?.error) throw new AdminBlocked(result.error);
     return result;
   }
 
-  return { overview, kill, reap, saveUpdates };
+  /**
+   * Install the saved settings: `triplec-update apply`, as root on AWS, in a unit of
+   * its own. Its own unit because it restarts this service, and a child of this
+   * service would die with it halfway through. The page follows it through the
+   * updater's status (state.applied) on its next polls.
+   */
+  async function applyConfig() {
+    if (!UPDATE_BIN) throw new AdminBlocked('this install has no updater to apply settings with');
+    const unit = `triplec-apply-${deps.now()}`;
+    const args = HOST_MODE
+      ? ['-n', 'systemd-run', `--uid=${WORKSPACE_USER}`, '--collect', '--quiet', `--unit=${unit}`, UPDATE_BIN, 'apply']
+      : ['-n', 'systemd-run', '--collect', '--quiet', `--unit=${unit}`, UPDATE_BIN, 'apply'];
+    const res = await deps.run('sudo', args, { timeout: 15_000 });
+    if (!res.ok) {
+      const why = (res.err || res.out || '').trim().split('\n').pop() || 'no answer';
+      throw new AdminBlocked(/password/.test(why)
+        ? 'applying installs as root, and sudo here asks for a password; run triplec-update apply from a terminal instead'
+        : `could not start the apply: ${why}`);
+    }
+    return { started: unit };
+  }
+
+  return { overview, kill, reap, saveConfig, applyConfig };
 }

@@ -41,9 +41,13 @@
     <!-- Hidden until the server says there is an updater to report on. -->
     <div class="section-label hidden" id="updates-label">Updates</div>
     <div id="updates" class="cards hidden"></div>
-    <!-- The settings themselves, editable. Built once and only refilled while
-         untouched, so the 5-second poll never wipes what someone is typing. -->
-    <form id="updates-form" class="settings-form hidden" autocomplete="off"></form>
+
+    <!-- Every setting of this deployment, editable (admin.js, renderSettings). Built
+         once and refilled field by field, so the 5-second poll never wipes what
+         someone is typing. -->
+    <div class="section-label hidden" id="settings-label">Settings</div>
+    <p class="hint hidden" id="settings-error"></p>
+    <form id="settings-form" class="settings-form hidden" autocomplete="off"></form>
 
     <div class="section-label">Services</div>
     <div id="units" class="units"></div>

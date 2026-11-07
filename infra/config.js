@@ -18,6 +18,7 @@ import { readFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../scripts/auto-update-config.mjs';
+import { AWS_FILE, layer, readStore } from '../scripts/box-config.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -409,7 +410,31 @@ export function requiredPwaIcons() {
   return [...new Set(names)];
 }
 
-export function loadConfig() {
+/**
+ * The deployment's configuration: the config file, then the environment, then —
+ * unless `box` is false — the settings saved on the box page.
+ *
+ * Those live on the instance, not in the file (scripts/box-config.mjs explains
+ * why). On the instance itself the file is read directly; a deploy from anywhere
+ * else fetches it over SSM first and names it in TRIPLEC_BOX_OVERRIDES (deploy.sh).
+ * Each saved value applies only while the file still says what it said when the
+ * value was saved; a later change to the file wins.
+ *
+ * `box: false` is the file's own values, which is what the payload carries as
+ * deployment/config.json: the box compares against it to tell when the file
+ * changed, so it must never contain the box's edits.
+ */
+export function loadConfig({ box = true } = {}) {
+  const config = resolveConfig(readConfigFile());
+  if (!box) return config;
+  const storeFile = process.env.TRIPLEC_BOX_OVERRIDES || (existsSync(AWS_FILE) ? AWS_FILE : '');
+  if (!storeFile) return config;
+  const { config: merged, applied } = layer(config, readStore(storeFile));
+  if (!applied.length) return config;
+  return resolveConfig(merged, { env: {}, quiet: true });
+}
+
+function readConfigFile() {
   const file = configPath();
   let fromFile = {};
   if (existsSync(file)) {
@@ -424,7 +449,15 @@ export function loadConfig() {
       Object.entries(fromFile).filter(([key]) => !key.startsWith('$')),
     );
   }
+  return fromFile;
+}
 
+/**
+ * Defaults, the environment and every check, over a config object: a file's
+ * contents, or a resolved config with the box page's edits on it. Throws with the
+ * message a person needs. `env` is what the environment overrides are read from.
+ */
+export function resolveConfig(fromFile, { env = process.env, quiet = false, repoFiles = true } = {}) {
   const config = {
     ...DEFAULTS,
     ...fromFile,
@@ -443,12 +476,12 @@ export function loadConfig() {
   };
 
   for (const [envVar, key] of Object.entries(ENV_MAP)) {
-    if (process.env[envVar]) config[key] = process.env[envVar];
+    if (env[envVar]) config[key] = env[envVar];
   }
 
   // Booleans and numbers survive a round trip through the environment. Both
   // prefixes, for the reason given above ENV_SUFFIXES.
-  const adminAccess = process.env.TRIPLEC_ADMIN_ACCESS ?? process.env.CLAUDE_WEB_ADMIN_ACCESS;
+  const adminAccess = env.TRIPLEC_ADMIN_ACCESS ?? env.CLAUDE_WEB_ADMIN_ACCESS;
   if (adminAccess) config.instanceAdminAccess = adminAccess === 'true';
 
   // --- Validation ----------------------------------------------------------
@@ -577,7 +610,11 @@ export function loadConfig() {
     );
   }
   config.pwa.iconDir = iconDir;
-  const missingIcons = requiredPwaIcons().filter((name) => !existsSync(join(REPO_ROOT, iconDir, name)));
+  // Not on the box, which validates the box page's edits without a checkout to
+  // look in: the deploy that builds the payload checks the icons are there.
+  const missingIcons = repoFiles
+    ? requiredPwaIcons().filter((name) => !existsSync(join(REPO_ROOT, iconDir, name)))
+    : [];
   if (missingIcons.length) {
     fail(
       `pwa.iconDir "${iconDir}" is missing ${missingIcons.join(', ')}, which ` +
@@ -717,7 +754,7 @@ export function loadConfig() {
   }
   config.autoUpdate = resolveAutoUpdate(config.autoUpdate);
 
-  if (config.gitUserEmail === DEFAULTS.gitUserEmail) {
+  if (config.gitUserEmail === DEFAULTS.gitUserEmail && !quiet) {
     // Not fatal: commits still work, they just carry a placeholder author.
     console.warn(
       '[config] gitUserEmail is unset, so commits Claude makes on the workspace ' +

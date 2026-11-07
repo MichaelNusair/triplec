@@ -829,3 +829,21 @@ html.embed .bar .icon-btn { width: 32px; height: 32px; }
   border: 1px solid var(--border); background: var(--bg-input); color: var(--text); cursor: pointer; }
 .settings-actions .settings-save { background: var(--accent); color: #141413; border-color: var(--accent); font-weight: 600; }
 .settings-actions button:disabled { opacity: .45; cursor: default; }
+.settings-group { border-bottom: 1px solid var(--border); }
+.settings-group:last-of-type { border-bottom: none; }
+.settings-group > summary { padding: 11px 0; font-weight: 600; font-size: 14px; cursor: pointer; }
+.settings-count { font-weight: 400; color: var(--accent); font-size: 12.5px; }
+.settings-group .setting:last-child { border-bottom: none; }
+.setting-input textarea { flex: 1; min-width: 0; padding: 6px 8px; border-radius: 8px; resize: vertical;
+  font: 12.5px ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+.setting.dirty .setting-label { color: var(--accent); }
+.setting-scope { font-size: 11px; padding: 1px 6px; border-radius: 999px; border: 1px solid var(--border); }
+.setting-scope.stack { border-color: var(--accent); }
+.setting-reset { background: none; border: none; color: var(--accent); font: inherit; font-size: 12px;
+  padding: 0 0 0 6px; cursor: pointer; text-decoration: underline; }
+.settings-intro:empty { display: none; }
+.settings-intro { margin: 10px 0 0; font-size: 12.5px; color: var(--text-dim); }
+.settings-bar { position: sticky; bottom: 0; background: var(--bg-raised); padding-top: 4px; }
+.settings-pending { margin: 10px 0 0; padding: 9px 11px; border-radius: 10px; font-size: 12.5px; line-height: 1.4;
+  border-left: 3px solid var(--accent); background: var(--bg-input); }

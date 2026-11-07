@@ -99,6 +99,11 @@ mkdir -p dist/stage/scripts && cp scripts/cc-session.sh dist/stage/scripts/
 # and the updater itself with the settings module it shares with the configs. See
 # docs/UPDATES.md.
 cp scripts/install-payload.sh scripts/triplec-update.mjs scripts/auto-update-config.mjs dist/stage/scripts/
+# The box page's settings (scripts/box-config.mjs), and the config's own validation
+# to check them with: infra/config.js, which imports only node and the two modules
+# beside it in scripts/. Nothing else of infra/ ships.
+cp scripts/box-config.mjs dist/stage/scripts/
+mkdir -p dist/stage/infra && cp infra/config.js dist/stage/infra/
 # This deployment's configuration, resolved, for the updater on the box: it builds
 # the next payload there with this script, which needs the same config this run
 # had. Nothing in it is a secret (secrets are ARNs; their values stay in Secrets

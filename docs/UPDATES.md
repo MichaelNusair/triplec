@@ -78,14 +78,10 @@ under **Updates**: the mode and every caution, what is installed and what the
 branch tip is, when the next check is, and what the last run did. A failed or
 held update is also one of the findings at the top.
 
-The settings can be changed there too, in a form, with no file to edit and no
-deploy. A change saved on the page is kept on the box (`settings.json` in the
-state directory) rather than in the config file, because a deploy rewrites the
-box's copy of that file. It lasts across deploys until someone changes
-`autoUpdate` in the config file itself. That change wins, and the page says
-so. The page marks which values were set there and has **Use the config's
-values** to drop them. From a shell, `triplec-update set --value '{"mode":"notify"}'`
-does the same, and `triplec-update set --reset` undoes it.
+The settings can be changed there too, under **Settings → Auto-update**, with
+no file to edit and no deploy: the next timer run uses them. That is the same
+mechanism as every other setting on the page; see [Changing settings from the
+box page](DEPLOY.md#changing-settings-from-the-box-page).
 
 On a host install the timer exists only while the config file's `mode` is on,
 so turning updates on from the page needs that once. The page flags a mode

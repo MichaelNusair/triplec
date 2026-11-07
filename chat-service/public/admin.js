@@ -478,152 +478,260 @@ function updatesCards(u) {
     </div>`;
 }
 
-/** The form's fields: what each key is called, what kind of input, and what it means. */
-const UPDATE_FIELDS = [
-  { key: 'mode', label: 'Mode', type: 'select', options: ['off', 'notify', 'install'],
-    note: (v) => MODE_NOTE[v] || '' },
-  { key: 'checkMinutes', label: 'Check every', type: 'number', unit: 'min', min: 5, max: 1440,
-    note: () => 'how often the box looks at the branch' },
-  { key: 'soakHours', label: 'Soak', type: 'number', unit: 'h', min: 0, max: 720,
-    note: (v) => (Number(v) ? 'on the branch this long before it is taken' : 'takes the tip as soon as it is seen') },
-  { key: 'idleMinutes', label: 'Idle wait', type: 'number', unit: 'min', min: 0, max: 1440,
-    note: (v) => (Number(v) ? 'with no conversation writing, since an install restarts the chat' : 'installs without waiting for quiet') },
-  { key: 'window', label: 'Window', type: 'text', placeholder: 'any time, or HH-HH',
-    note: (v, u) => (v ? `installs only inside it, ${u?.platform === 'aws' ? 'UTC' : 'local time'}` : 'installs whenever ready') },
-  { key: 'push', label: 'Notify', type: 'checkbox',
-    note: () => 'push a notification when an update is installed, ready, held or failed' },
-  { key: 'branch', label: 'Branch', type: 'text', note: () => 'the branch to follow; it is the release' },
-  { key: 'repo', label: 'Repository', type: 'text', placeholder: 'upstream',
-    note: () => 'whoever can push here can run code on this box once it installs' },
-];
+/**
+ * Every setting of this deployment, editable: the Settings section.
+ *
+ * The list comes from the server (`triplec-config status`, scripts/box-config.mjs):
+ * every key of the config, its value in the config file, what applies now, and
+ * where a change to it takes effect. So a key added to the config later appears
+ * here without this page changing.
+ *
+ * A save is kept on the box, not in the config file — a deploy rewrites the box's
+ * copy of the file and would undo it — and lasts until that key changes in the
+ * file itself. Where it takes effect depends on the key:
+ *   timer  auto-update: on the updater's next run
+ *   box    when Apply is pressed, which reinstalls and restarts the chat service
+ *   stack  on AWS, at the next full ./deploy.sh, which reads it from this box
+ */
+const SCOPE_NOTE = {
+  timer: 'applies on the next update check',
+  box: 'applies when you press Apply',
+  stack: 'needs a full deploy',
+};
+const ENUMS = { 'autoUpdate.mode': ['off', 'notify', 'install'] };
+const settings = { built: false, dirty: new Map(), saving: false, last: null, fieldsKey: '' };
 
-const updatesForm = { built: false, dirty: false, saving: false, last: null };
+const sectionOf = (p) => (p.includes('.') ? p.split('.')[0] : 'general');
+const labelOf = (p) => (p.includes('.') ? p.split('.').slice(1).join('.') : p);
+const SECTION_TITLE = { general: 'General', oidc: 'Sign-in (OIDC)', pwa: 'App', autoUpdate: 'Auto-update', security: 'Security stack', landing: 'Landing site', deployFrom: 'Deploy box' };
 
-function buildUpdatesForm(form) {
+function kindOf(f) {
+  if (ENUMS[f.path]) return 'enum';
+  const v = f.file ?? f.value;
+  if (typeof v === 'boolean') return 'bool';
+  if (typeof v === 'number') return 'number';
+  if (Array.isArray(v)) return v.every((x) => typeof x === 'string') ? 'list' : 'json';
+  if (v !== null && typeof v === 'object') return 'json';
+  return 'text';
+}
+
+function inputFor(f) {
+  const kind = kindOf(f);
+  const name = escapeHtml(f.path);
+  if (kind === 'enum') return `<select name="${name}">${ENUMS[f.path].map((o) => `<option value="${o}">${o}</option>`).join('')}</select>`;
+  if (kind === 'bool') return `<input type="checkbox" name="${name}">`;
+  if (kind === 'number') return `<input type="number" name="${name}" step="1">`;
+  if (kind === 'list') return `<textarea name="${name}" rows="2" placeholder="one per line"></textarea>`;
+  if (kind === 'json') return `<textarea name="${name}" rows="3" spellcheck="false"></textarea>`;
+  return `<input type="text" name="${name}" spellcheck="false">`;
+}
+
+function readField(form, f) {
+  const el = form.elements[f.path];
+  const kind = kindOf(f);
+  if (kind === 'bool') return el.checked;
+  if (kind === 'number') return el.value === '' ? null : Number(el.value);
+  if (kind === 'list') return el.value.split('\n').map((x) => x.trim()).filter(Boolean);
+  if (kind === 'json') {
+    try {
+      return JSON.parse(el.value);
+    } catch {
+      return el.value; // refused by the server, with the reason
+    }
+  }
+  return el.value;
+}
+
+function writeField(form, f) {
+  const el = form.elements[f.path];
+  const kind = kindOf(f);
+  const v = f.value;
+  if (kind === 'bool') el.checked = Boolean(v);
+  else if (kind === 'list') el.value = (v || []).join('\n');
+  else if (kind === 'json') el.value = JSON.stringify(v, null, 1);
+  else el.value = v ?? '';
+}
+
+function buildSettings(form, config) {
+  const groups = new Map();
+  for (const f of config.fields) {
+    const key = sectionOf(f.path);
+    groups.set(key, [...(groups.get(key) || []), f]);
+  }
   form.innerHTML = `
-    ${UPDATE_FIELDS.map((f) => `
-      <label class="setting" data-key="${f.key}">
-        <span class="setting-label">${escapeHtml(f.label)}<span class="setting-origin"></span></span>
-        <span class="setting-input">${f.type === 'select'
-          ? `<select name="${f.key}">${f.options.map((o) => `<option value="${o}">${o}</option>`).join('')}</select>`
-          : f.type === 'checkbox'
-            ? `<input type="checkbox" name="${f.key}">`
-            : `<input type="${f.type}" name="${f.key}"${f.min != null ? ` min="${f.min}" max="${f.max}" step="1"` : ''}${f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : ''}>`}
-          ${f.unit ? `<span class="setting-unit">${f.unit}</span>` : ''}</span>
-        <span class="setting-note"></span>
-      </label>`).join('')}
-    <p class="settings-status" role="status"></p>
-    <div class="settings-actions">
-      <button type="submit" class="settings-save">Save</button>
-      <button type="button" class="settings-revert">Undo changes</button>
-      <button type="button" class="settings-reset hidden">Use the config's values</button>
+    <div class="settings-intro"></div>
+    ${[...groups].map(([key, fields]) => `
+      <details class="settings-group" data-section="${escapeHtml(key)}"${key === 'general' || key === 'autoUpdate' ? ' open' : ''}>
+        <summary>${escapeHtml(SECTION_TITLE[key] || key)}<span class="settings-count"></span></summary>
+        ${fields.map((f) => `
+          <label class="setting" data-key="${escapeHtml(f.path)}">
+            <span class="setting-label">${escapeHtml(labelOf(f.path))}<span class="setting-origin"></span></span>
+            <span class="setting-input">${inputFor(f)}</span>
+            <span class="setting-note"><span class="setting-scope ${f.scope}">${SCOPE_NOTE[f.scope]}</span><span class="setting-file"></span>
+              <button type="button" class="setting-reset hidden" data-reset="${escapeHtml(f.path)}">use the file's</button></span>
+          </label>`).join('')}
+      </details>`).join('')}
+    <div class="settings-bar">
+      <p class="settings-status" role="status"></p>
+      <div class="settings-actions">
+        <button type="submit" class="settings-save">Save</button>
+        <button type="button" class="settings-revert hidden">Undo changes</button>
+        <button type="button" class="settings-apply hidden">Apply now</button>
+      </div>
+      <p class="settings-pending hidden"></p>
     </div>`;
-  form.addEventListener('input', () => {
-    updatesForm.dirty = true;
-    paintUpdatesForm(form);
+  form.addEventListener('input', (e) => {
+    const p = e.target?.name;
+    if (!p) return;
+    settings.dirty.set(p, true);
+    paintSettings(form);
   });
   form.addEventListener('submit', (e) => {
     e.preventDefault();
-    saveUpdates(form, { autoUpdate: readUpdatesForm(form) });
+    const changes = {};
+    for (const p of settings.dirty.keys()) {
+      const f = settings.last.fields.find((x) => x.path === p);
+      if (f) changes[p] = readField(form, f);
+    }
+    postSettings(form, { changes });
+  });
+  form.addEventListener('click', (e) => {
+    const p = e.target?.dataset?.reset;
+    if (!p) return;
+    e.preventDefault();
+    postSettings(form, { reset: [p] });
   });
   form.querySelector('.settings-revert').addEventListener('click', () => {
-    updatesForm.dirty = false;
-    fillUpdatesForm(form, updatesForm.last);
+    settings.dirty.clear();
+    for (const f of settings.last.fields) writeField(form, f);
+    paintSettings(form);
   });
-  form.querySelector('.settings-reset').addEventListener('click', () => {
-    if (confirm('Go back to the values in the deployment config file? What was changed here is discarded.')) {
-      saveUpdates(form, { reset: true });
-    }
-  });
-  updatesForm.built = true;
+  form.querySelector('.settings-apply').addEventListener('click', applySettings);
+  settings.built = true;
+  settings.fieldsKey = config.fields.map((f) => f.path).join('|');
 }
 
-function readUpdatesForm(form) {
-  const out = {};
-  for (const f of UPDATE_FIELDS) {
-    const input = form.elements[f.key];
-    if (f.type === 'checkbox') out[f.key] = input.checked;
-    else if (f.type === 'number') out[f.key] = input.value === '' ? input.value : Number(input.value);
-    else out[f.key] = input.value.trim();
+function paintSettings(form) {
+  const c = settings.last;
+  if (!c?.fields) return;
+  for (const f of c.fields) {
+    const row = form.querySelector(`[data-key="${CSS.escape(f.path)}"]`);
+    if (!row) continue;
+    row.classList.toggle('changed', f.changed);
+    row.classList.toggle('dirty', settings.dirty.has(f.path));
+    row.querySelector('.setting-origin').textContent = f.changed ? ' · set here' : f.superseded ? ' · replaced by the file' : '';
+    const shown = (v) => (Array.isArray(v) ? v.join(', ') || '(none)' : v === '' ? '(empty)' : typeof v === 'object' ? JSON.stringify(v) : String(v));
+    row.querySelector('.setting-file').textContent = f.changed ? ` · the file says ${shown(f.file)}` : '';
+    row.querySelector('.setting-reset').classList.toggle('hidden', !f.changed);
   }
-  return out;
-}
+  for (const group of form.querySelectorAll('.settings-group')) {
+    const n = group.querySelectorAll('.setting.changed').length;
+    group.querySelector('.settings-count').textContent = n ? ` · ${n} set here` : '';
+  }
+  const dirty = settings.dirty.size;
+  form.querySelector('.settings-save').disabled = !dirty || settings.saving;
+  form.querySelector('.settings-save').textContent = dirty ? `Save ${dirty} change${dirty === 1 ? '' : 's'}` : 'Save';
+  form.querySelector('.settings-revert').classList.toggle('hidden', !dirty);
 
-function fillUpdatesForm(form, u) {
-  if (!u?.settings) return;
-  for (const f of UPDATE_FIELDS) {
-    const input = form.elements[f.key];
-    let value = u.settings[f.key];
-    // The upstream repository reads as empty, which is how the config says it.
-    if (f.key === 'repo' && value === 'https://github.com/MichaelNusair/triplec.git') value = '';
-    if (f.type === 'checkbox') input.checked = Boolean(value);
-    else input.value = value ?? '';
-  }
-  paintUpdatesForm(form);
-}
+  const applyPaths = c.pendingApply || [];
+  const apply = form.querySelector('.settings-apply');
+  apply.classList.toggle('hidden', !applyPaths.length || dirty > 0);
+  apply.disabled = settings.applying;
+  apply.textContent = settings.applying ? 'Applying…' : `Apply ${applyPaths.length} setting${applyPaths.length === 1 ? '' : 's'}`;
 
-/** The notes beside each field, which values are the box's own, and the buttons. */
-function paintUpdatesForm(form) {
-  const u = updatesForm.last;
-  const values = readUpdatesForm(form);
-  const own = new Set(u?.boxSettings?.keys || []);
-  for (const f of UPDATE_FIELDS) {
-    const row = form.querySelector(`[data-key="${f.key}"]`);
-    row.querySelector('.setting-note').textContent = f.note(values[f.key], u);
-    row.querySelector('.setting-origin').textContent = own.has(f.key) ? ' · set here' : '';
-    row.classList.toggle('changed', own.has(f.key));
-  }
-  form.querySelector('.settings-save').disabled = !updatesForm.dirty || updatesForm.saving;
-  form.querySelector('.settings-revert').classList.toggle('hidden', !updatesForm.dirty);
-  form.querySelector('.settings-reset').classList.toggle('hidden', !own.size || updatesForm.dirty);
   const status = form.querySelector('.settings-status');
-  if (updatesForm.dirty) status.textContent = 'Not saved yet.';
-  else if (u?.boxSettings?.superseded) status.textContent = 'Changes made here earlier were replaced by a later change to the config file.';
-  else if (own.size) status.textContent = `Changed here${u.boxSettings.savedAt ? ` ${ago(u.boxSettings.savedAt)}` : ''}; kept across deploys until autoUpdate changes in the config file. The timer reads it on its next run.`;
-  else status.textContent = 'These are the config file’s values. A change saved here applies on the next timer run, and lasts across deploys.';
+  const applied = settings.applied;
+  if (dirty) status.textContent = 'Not saved yet.';
+  else if (applyPaths.length) status.textContent = `Saved, not installed yet: ${applyPaths.join(', ')}. Apply reinstalls this box with them and restarts the chat service, which ends any chat turn in progress; terminals and the editor keep running. If the app then answers without a login, the previous settings are put back.`;
+  else if (applied?.outcome === 'failed') status.textContent = `The last apply failed: ${applied.detail}`;
+  else status.textContent = 'Saved here, a setting lasts across deploys until that key changes in the config file, which then wins.';
+
+  const pending = form.querySelector('.settings-pending');
+  const stack = c.pending?.stack || [];
+  pending.classList.toggle('hidden', !stack.length);
+  pending.textContent = stack.length
+    ? `Waiting for a full deploy: ${stack.join(', ')}. This box cannot redeploy its own stack. From a machine with AWS credentials, run ./deploy.sh in a checkout of this repository; it reads these settings from this box before it deploys.`
+    : '';
+  form.querySelector('.settings-intro').textContent = c.superseded?.length
+    ? `The config file has changed ${c.superseded.join(', ')} since it was set here, so the file's value applies.`
+    : '';
 }
 
-async function saveUpdates(form, body) {
-  updatesForm.saving = true;
-  paintUpdatesForm(form);
+async function postSettings(form, body) {
+  settings.saving = true;
+  paintSettings(form);
   try {
-    const res = await api('/api/admin/updates', {
+    const res = await api('/api/admin/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok) {
-      toast(result.error || `Server returned ${res.status}`, 8000);
+      toast(result.error || `Server returned ${res.status}`, 10000);
       return;
     }
-    updatesForm.dirty = false;
-    toast(body.reset ? 'Back to the config file’s values.' : 'Saved. The next timer run uses it.');
-    renderUpdates(result);
+    if (body.changes) for (const p of Object.keys(body.changes)) settings.dirty.delete(p);
+    toast(body.reset ? 'Back to the config file’s value.' : 'Saved.');
+    renderSettings({ ...result, pendingApply: result.pendingApply ?? settings.last?.pendingApply }, settings.applied);
+    refresh();
   } catch (err) {
     if (!redirecting) toast(err.message);
   } finally {
-    updatesForm.saving = false;
-    paintUpdatesForm(form);
+    settings.saving = false;
+    paintSettings(form);
   }
+}
+
+async function applySettings() {
+  const paths = settings.last?.pendingApply || [];
+  if (!confirm(`Install ${paths.join(', ')} on this box now?\n\nThis restarts the chat service, which ends any chat turn in progress. Terminals and the editor keep running.`)) return;
+  settings.applying = true;
+  paintSettings($('#settings-form'));
+  try {
+    const res = await api('/api/admin/config/apply', { method: 'POST' });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(result.error || `Server returned ${res.status}`, 10000);
+      settings.applying = false;
+    } else {
+      toast('Applying. This page reconnects when the chat service is back.', 8000);
+    }
+  } catch (err) {
+    settings.applying = false;
+    if (!redirecting) toast(err.message);
+  }
+  paintSettings($('#settings-form'));
+}
+
+function renderSettings(config, applied) {
+  const form = $('#settings-form');
+  const show = Boolean(config?.fields?.length);
+  form.classList.toggle('hidden', !show);
+  $('#settings-label').classList.toggle('hidden', !config);
+  $('#settings-error').classList.toggle('hidden', !config?.error);
+  $('#settings-error').textContent = config?.error ? `Settings could not be read: ${config.error}` : '';
+  if (!show) return;
+  // An apply in flight finishes when the updater records one newer than it started.
+  if (settings.applying && applied && applied.at !== settings.applied?.at) settings.applying = false;
+  settings.last = config;
+  settings.applied = applied;
+  const key = config.fields.map((f) => f.path).join('|');
+  if (!settings.built || key !== settings.fieldsKey) {
+    settings.dirty.clear();
+    buildSettings(form, config);
+  }
+  // Never under someone's fingers: a field being edited keeps what was typed.
+  for (const f of config.fields) if (!settings.dirty.has(f.path)) writeField(form, f);
+  paintSettings(form);
 }
 
 function renderUpdates(updates) {
   const el = $('#updates');
-  const form = $('#updates-form');
   const show = Boolean(updates);
   el.classList.toggle('hidden', !show);
   $('#updates-label').classList.toggle('hidden', !show);
   el.innerHTML = show ? updatesCards(updates) : '';
-  const editable = Boolean(updates?.settings);
-  form.classList.toggle('hidden', !editable);
-  if (!editable) return;
-  updatesForm.last = updates;
-  if (!updatesForm.built) buildUpdatesForm(form);
-  // Never under someone's fingers: a poll refreshes the values only while the form
-  // is untouched.
-  if (!updatesForm.dirty) fillUpdatesForm(form, updates);
-  else paintUpdatesForm(form);
 }
 
 function renderUnits(units) {
@@ -783,6 +891,7 @@ async function refresh() {
     renderFindings(data.findings);
     renderHost(data.host);
     renderUpdates(data.updates);
+    renderSettings(data.config, data.updates?.applied || null);
     renderUnits(data.units);
     renderChat(data.surfaces.chat);
     renderBroker(data.surfaces.broker);
@@ -840,7 +949,7 @@ document.addEventListener('visibilitychange', () => {
 // Exposed for admin-test.js, which boots this file in jsdom for the same reason
 // smoke-test.js boots app.js: a runtime error at load leaves a page that looks
 // like the server is down, and this is the page you would be checking.
-window.__adminForTest = { refresh, kill, stopAll, reap, renderFindings, buildCard, updatesCards, renderUpdates, duration, rss };
+window.__adminForTest = { refresh, kill, stopAll, reap, renderFindings, buildCard, updatesCards, renderUpdates, renderSettings, duration, rss };
 
 refresh();
 startPolling();

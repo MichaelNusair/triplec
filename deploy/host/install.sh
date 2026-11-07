@@ -299,7 +299,7 @@ cp "$SOURCE/scripts/cc-session.sh" "$STAGE/scripts/"
 # The updater, and the settings module it shares with config.mjs (which imports
 # it, so uninstall.sh needs it here too). Staged whatever autoUpdate.mode says:
 # `triplec-update run --now` is the upgrade command in every mode.
-cp "$SOURCE/scripts/triplec-update.mjs" "$SOURCE/scripts/auto-update-config.mjs" "$STAGE/scripts/"
+cp "$SOURCE/scripts/triplec-update.mjs" "$SOURCE/scripts/auto-update-config.mjs" "$SOURCE/scripts/box-config.mjs" "$STAGE/scripts/"
 mkdir -p "$STAGE/bin"
 cat >"$STAGE/bin/triplec-update" <<UPD
 #!/bin/sh
@@ -307,6 +307,13 @@ cat >"$STAGE/bin/triplec-update" <<UPD
 exec "$NODE" "$INSTALL_DIR/scripts/triplec-update.mjs" "\$@" --host "$CONFIG"
 UPD
 chmod 0755 "$STAGE/bin/triplec-update"
+# The box page's settings, kept beside this install's state: status | set | reset.
+cat >"$STAGE/bin/triplec-config" <<CFG
+#!/bin/sh
+# Written by TripleC's deploy/host/install.sh. See scripts/box-config.mjs.
+exec "$NODE" "$INSTALL_DIR/scripts/box-config.mjs" "\$@" --host "$CONFIG"
+CFG
+chmod 0755 "$STAGE/bin/triplec-config"
 for doc in SECURITY.md HOST.md; do
   [ -f "$SOURCE/docs/$doc" ] && cp "$SOURCE/docs/$doc" "$STAGE/docs/"
 done

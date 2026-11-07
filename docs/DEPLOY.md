@@ -143,6 +143,34 @@ the same by itself on a timer, as often and as cautiously as you choose. Changes
 stack itself still need `./deploy.sh` from a machine with AWS credentials; the box
 holds those and tells you so. [UPDATES.md](UPDATES.md) has the details.
 
+## Changing settings from the box page
+
+Every key of the config can be changed on the box page (`/chat/admin`, the
+**Settings** section). There is no file to edit by hand. A change saved there is
+kept on the box, at `/workspace/triplec-config/overrides.json` (on a host
+install, `box-config.json` in the state directory). It is not written into the
+config file, because a deploy rewrites the box's copy of that file.
+
+A saved value lasts across deploys until someone changes the same key in the
+config file. Then the file's value wins, and the page says the edit was replaced.
+Each field shows whether its value was set on the page, what the file says, and
+has a **use the file's** link to drop the edit.
+
+Where a change takes effect depends on the key, and each field says which:
+
+| Keys | Takes effect |
+|---|---|
+| `autoUpdate.*` | On the updater's next check. Nothing restarts. |
+| `defaultModel`, `permissionMode`, `effortLevel`, `gitUserName`, `gitUserEmail`, `pwa.name`, `oidc.allowedEmails`, `oidc.allowedDomain` (and every key on a host install) | When you press **Apply**. The box reinstalls itself with the saved values and checks the app still requires a login. If the check fails, it puts the previous settings back. Applying restarts the chat service, which ends chat turns in progress; terminals and the editor keep running. |
+| Everything else on AWS (domain, instance type, volumes, `allowedCidrs`, auth mode, security, landing, …) | At the next full `./deploy.sh` from a machine with AWS credentials. The box cannot redeploy its own stack. A full deploy reads the saved values from the box over SSM before it builds anything. It stops if it cannot read them, because deploying without them would put back stack values an earlier deploy took from the box. Use `TRIPLEC_BOX_OVERRIDES=/dev/null ./deploy.sh` to deploy without them on purpose. Afterwards the page shows those values as deployed. |
+
+Every value is checked by the same rules as the config file before it is saved.
+On AWS, the values the box writes into its own units as root may not contain
+quotes, `$`, `\`, `|`, `;`, `&` or `<>`. From a shell on the box,
+`triplec-config status`, `triplec-config set --value '{"defaultModel":"opus"}'`
+and `triplec-config reset [--path <key>]` do what the page does, and
+`sudo triplec-update apply` is **Apply**.
+
 ## More than one deployment
 
 Two workspaces that share nothing — a personal one and a work one, or one per

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  inWindow, recordTip, soakedTips, needsFullDeploy, lastActivity, run, describe, checkDue, statusOf, applyBoxSettings, saveBoxSettings, BOX_SETTINGS,
+  inWindow, recordTip, soakedTips, needsFullDeploy, lastActivity, run, describe, checkDue, statusOf, applySettings,
 } from './triplec-update.mjs';
 import { validateAutoUpdate, resolveAutoUpdate, UPSTREAM_REPO } from './auto-update-config.mjs';
 
@@ -335,40 +335,41 @@ check('U26: and an hourly check is next due an hour after the last, less the sla
 const jo = statusOf(settings({ mode: 'off' }), {}, now6);
 check('U26: mode off has no next check, and says how to update by hand', jo.nextCheckAt === null && /run --now/.test(jo.command) && jo.last === null);
 
-console.log('settings saved from the box page');
+console.log('applying the box page\'s settings');
 {
-  const sb = settings({ mode: 'off', soakHours: 24 });
-  applyBoxSettings(sb, null);
-  saveBoxSettings(sb, { mode: 'install', soakHours: 0, checkMinutes: 5 }, 1000);
-  check('U27: a box-page edit takes effect', sb.autoUpdate.mode === 'install' && sb.autoUpdate.soakHours === 0 && sb.autoUpdate.checkMinutes === 5);
-  check('U27: and says which keys it changed from the config', sb.boxSettings.keys.join() === 'mode,soakHours,checkMinutes', JSON.stringify(sb.boxSettings));
-  const saved = JSON.parse(fs.readFileSync(path.join(sb.stateDir, BOX_SETTINGS), 'utf8'));
-  check('U27: only what differs from the config is kept', Object.keys(saved.autoUpdate).join() === 'mode,soakHours,checkMinutes', JSON.stringify(saved));
+  const { writeStore, readStore } = await import('./box-config.mjs');
+  const sa2 = settings({ mode: 'off' });
+  const store = path.join(tmp, 'overrides.json');
+  process.env.TRIPLEC_BOX_OVERRIDES = store;
+  sa2.platform = 'aws';
+  setInstalled(c10);
+  writeStore(store, { values: { defaultModel: 'opus' }, base: { defaultModel: '"sonnet"' }, savedAt: { defaultModel: 1 } });
+  const installs = [];
+  const ok = await applySettings(sa2, { now: 5, steps: { install: async () => { installs.push(readStore(store).values); }, apply: () => {}, notify: () => {} } });
+  check('U27: apply installs the saved settings and records them as installed',
+    ok === 0 && installs.length === 1 && stateOf(sa2).applied?.outcome === 'applied' && stateOf(sa2).applied.values.defaultModel === 'opus', JSON.stringify(stateOf(sa2).applied));
 
-  // A deploy rewrites the config the box reads; one that leaves autoUpdate as it was
-  // keeps the edit.
-  const again = settings({ mode: 'off', soakHours: 24 });
-  again.stateDir = sb.stateDir;
-  applyBoxSettings(again, saved);
-  check('U28: a deploy that does not touch autoUpdate keeps the edit', again.autoUpdate.mode === 'install');
-  const changed = settings({ mode: 'notify', soakHours: 24 });
-  applyBoxSettings(changed, saved);
-  check('U28: a change to autoUpdate in the config file wins over an older edit',
-    changed.autoUpdate.mode === 'notify' && changed.boxSettings.superseded === true, JSON.stringify(changed.boxSettings));
-  check('U28: and status says so', /replaced by a later change to the config file/.test(describe(changed, {})));
-
-  let threw = '';
-  try {
-    saveBoxSettings(sb, { mode: 'always', checkMinutes: 1 });
-  } catch (e) {
-    threw = e.message;
-  }
-  check('U29: a bad value is refused, naming each key', /autoUpdate\.mode/.test(threw) && /autoUpdate\.checkMinutes/.test(threw), threw);
-  check('U29: and changes nothing', sb.autoUpdate.mode === 'install');
-  saveBoxSettings(sb, { ...sb.configAutoUpdate });
-  check('U30: setting the config\'s own values back removes the file', !fs.existsSync(path.join(sb.stateDir, BOX_SETTINGS)) && sb.autoUpdate.mode === 'off' && sb.boxSettings === null);
-  const js2 = statusOf(sb, {}, 0);
-  check('U30: status carries what the config says next to what applies', js2.configured.mode === 'off' && js2.boxSettings === null);
+  writeStore(store, { values: { defaultModel: 'broken' }, base: { defaultModel: '"sonnet"' }, savedAt: { defaultModel: 2 } });
+  const notes = [];
+  let calls = 0;
+  const bad = await applySettings(sa2, {
+    now: 6,
+    steps: {
+      install: async () => {
+        calls += 1;
+        if (readStore(store).values.defaultModel === 'broken') throw Object.assign(new Error('/api/projects answered 200 with no login'), { stage: 'verify' });
+      },
+      apply: () => {},
+      notify: (x, title, body) => notes.push(`${title}: ${body}`),
+    },
+  });
+  check('U28: a setting that fails the check is put back to what was installed before',
+    bad === 1 && calls === 2 && readStore(store).values.defaultModel === 'opus', JSON.stringify(readStore(store)));
+  check('U28: and recorded as failed, with the reason, and announced',
+    stateOf(sa2).applied.outcome === 'failed' && /no login/.test(stateOf(sa2).applied.detail)
+      && stateOf(sa2).applied.values.defaultModel === 'opus' && notes.some((x) => /not applied/.test(x) && /put back/.test(x)), JSON.stringify(stateOf(sa2).applied));
+  check('U29: status reports the last apply', statusOf(sa2, stateOf(sa2), 7).applied?.outcome === 'failed');
+  delete process.env.TRIPLEC_BOX_OVERRIDES;
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });

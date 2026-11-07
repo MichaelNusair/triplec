@@ -18,7 +18,9 @@ const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
 
 let config;
 try {
-  config = loadConfig();
+  // --json is the payload's deployment/config.json: the config file's own values,
+  // never the box page's edits (see loadConfig). Everything else is what deploys.
+  config = loadConfig({ box: !process.argv.includes('--json') });
 } catch (err) {
   process.stdout.write(`printf '%s\\n' ${shellQuote(err.message)} >&2\nexit 1\n`);
   process.exit(0);

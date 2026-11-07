@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 // Shared with the AWS config and the updater. A relative path that holds from the
 // checkout and from installDir alike, because install.sh stages scripts/ there.
 import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../../scripts/auto-update-config.mjs';
+import { HOST_FILE_NAME, layer, readStore } from '../../scripts/box-config.mjs';
 
 export const FEATURES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire'];
 export const AUTH_MODES = ['login', 'bedrock', 'vertex', 'apiKey'];
@@ -409,6 +410,8 @@ export function envPairs(c) {
     ['CW_PUSH_DIR', `${c.stateDir}/push`],
     // The box page asks it for `status --json`. Staged whatever autoUpdate.mode says.
     ['TRIPLEC_UPDATE_BIN', `${c.installDir}/bin/triplec-update`],
+    // And for every other setting the page edits (scripts/box-config.mjs).
+    ['TRIPLEC_CONFIG_BIN', `${c.installDir}/bin/triplec-config`],
   );
   if (c.claude.authMode === 'vertex') {
     pairs.push(['CLOUD_ML_REGION', c.claude.vertex.region], ['ANTHROPIC_VERTEX_PROJECT_ID', c.claude.vertex.projectId]);
@@ -450,6 +453,24 @@ export function get(c, key) {
   return typeof v === 'object' ? JSON.stringify(v) : String(v);
 }
 
+/**
+ * The config file with the box page's edits on it (scripts/box-config.mjs): what
+ * install.sh installs and the updater follows. Each saved value applies while the
+ * file still says what it said when the value was saved. A file that does not
+ * validate is returned as it is, for the caller to report; so is a merge that
+ * would not validate, which the page refuses to save in the first place.
+ */
+export function loadLayered(file) {
+  const raw = load(file);
+  if (validate(raw).errors.length) return raw;
+  const view = resolve(raw);
+  const store = readStore(posix.join(view.stateDir, HOST_FILE_NAME));
+  if (!Object.keys(store.values).length) return raw;
+  const { config, applied } = layer(view, store, raw);
+  if (!applied.length || validate(config).errors.length) return raw;
+  return config;
+}
+
 export function load(file) {
   let text;
   try {
@@ -473,7 +494,8 @@ function main(argv) {
   }
   let raw;
   try {
-    raw = load(file);
+    // `validate` checks the file as written; everything else installs what applies.
+    raw = cmd === 'validate' ? load(file) : loadLayered(file);
   } catch (e) {
     console.error(`config: ${e.message}`);
     return 1;

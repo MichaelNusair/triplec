@@ -119,6 +119,25 @@ function makeState() {
       failed: null,
       held: false,
       command: 'sudo triplec-update run --now',
+      applied: null,
+    },
+    // What `triplec-config status` answers (scripts/box-config.mjs): every key, a
+    // few of them changed on this page.
+    config: {
+      platform: 'aws',
+      fields: [
+        { path: 'domainName', value: 'claude.example.com', file: 'claude.example.com', scope: 'stack', changed: false, superseded: false, deployed: false },
+        { path: 'instanceType', value: 't4g.2xlarge', file: 't4g.xlarge', scope: 'stack', changed: true, superseded: false, deployed: false },
+        { path: 'defaultModel', value: 'opus', file: 'sonnet', scope: 'box', changed: true, superseded: false, deployed: false },
+        { path: 'instanceAdminAccess', value: true, file: true, scope: 'stack', changed: false, superseded: false, deployed: false },
+        { path: 'allowedCidrs', value: ['0.0.0.0/0'], file: ['0.0.0.0/0'], scope: 'stack', changed: false, superseded: false, deployed: false },
+        { path: 'workspaceVolumeSize', value: 100, file: 100, scope: 'stack', changed: false, superseded: false, deployed: false },
+        { path: 'oidc.allowedEmails', value: ['<b>a</b>@example.com'], file: [], scope: 'box', changed: true, superseded: false, deployed: false },
+        { path: 'autoUpdate.mode', value: 'install', file: 'install', scope: 'timer', changed: false, superseded: false, deployed: false },
+        { path: 'autoUpdate.soakHours', value: 0, file: 0, scope: 'timer', changed: false, superseded: false, deployed: false },
+      ],
+      pending: { box: ['defaultModel', 'oidc.allowedEmails'], stack: ['instanceType'] },
+      superseded: [],
     },
     tmux: [
       { name: 'claude-demo', createdAt: 1_699_930_000_000, attached: 1, panePid: 960 },
@@ -197,8 +216,17 @@ function makeDeps(state) {
       }
       if (cmd === '/usr/local/bin/triplec-update') {
         if (!state.update) return { ok: false, out: '', err: 'spawn /usr/local/bin/triplec-update ENOENT' };
-        if (args[0] === 'set' && state.setError) return { ok: false, out: '', err: `triplec-update: ${state.setError}` };
+
         return { ok: true, out: JSON.stringify(state.update) };
+      }
+      if (cmd === '/usr/local/bin/triplec-config') {
+        if (!state.config) return { ok: false, out: '', err: 'spawn /usr/local/bin/triplec-config ENOENT' };
+        if (args[0] !== 'status' && state.setError) return { ok: false, out: '', err: `box-config: ${state.setError}` };
+        return { ok: true, out: JSON.stringify(state.config) };
+      }
+      if (cmd === 'sudo') {
+        if (state.sudoError) return { ok: false, out: '', err: state.sudoError };
+        return { ok: true, out: '' };
       }
       if (cmd === 'df') {
         return {
@@ -479,17 +507,31 @@ console.log('\nSays how this box updates:');
   const heldView = await createAdmin({ manager: makeManager([]), deps: makeDeps(failedBox) }).overview();
   check('so is a held one', heldView.findings.some((f) => f.text === 'updates are held'));
 
+  check('every setting is on the overview', overview.config?.fields?.length === 9 && overview.config.fields.some((f) => f.path === 'instanceType'));
+  check('with what is saved but not installed yet', overview.config.pendingApply.join() === 'defaultModel,oidc.allowedEmails', JSON.stringify(overview.config.pendingApply));
+
   const edits = makeState();
+  edits.update.applied = { at: 1, outcome: 'applied', values: { defaultModel: 'opus', 'oidc.allowedEmails': ['<b>a</b>@example.com'] } };
   const editor = createAdmin({ manager: makeManager([]), deps: makeDeps(edits) });
-  await editor.saveUpdates({ mode: 'notify', soakHours: 24, '__proto__x': 1, shell: '$(reboot)' });
+  const installedView = await editor.overview();
+  check('a setting the last apply installed is not pending', installedView.config.pendingApply.length === 0, JSON.stringify(installedView.config.pendingApply));
+  await editor.saveConfig({ changes: { defaultModel: 'haiku', 'oidc.allowedEmails': ['a@example.com'] } });
   const setCall = edits.commands.find((c) => c.includes(' set '));
-  check('a box-page edit goes to the updater as one JSON argument, with only the setting\'s own keys',
-    setCall === '/usr/local/bin/triplec-update set --value {"mode":"notify","soakHours":24}', setCall);
-  await editor.saveUpdates('reset');
-  check('and a reset asks it to drop the box\'s edits', edits.commands.includes('/usr/local/bin/triplec-update set --reset'));
-  edits.setError = 'autoUpdate.mode: must be one of off, notify, install';
-  const refused = await refusal(editor.saveUpdates({ mode: 'always' }));
-  check('a value the updater refuses comes back as its reason, not a crash', /must be one of/.test(refused?.message || ''), refused?.message);
+  check('an edit goes to triplec-config as one JSON argument',
+    setCall === '/usr/local/bin/triplec-config set --value {"defaultModel":"haiku","oidc.allowedEmails":["a@example.com"]}', setCall);
+  await editor.saveConfig({ reset: ['defaultModel', 'x; reboot'] });
+  check('a reset names only well-formed paths', edits.commands.includes('/usr/local/bin/triplec-config reset --path defaultModel'), edits.commands.join(' | '));
+  edits.setError = 'domainName "x" is not a hostname. Expected e.g. "claude.example.com".';
+  const refused = await refusal(editor.saveConfig({ changes: { domainName: 'x' } }));
+  check('a value the config refuses comes back as its reason, not a crash', /is not a hostname/.test(refused?.message || ''), refused?.message);
+  edits.setError = null;
+  const started = await editor.applyConfig();
+  const applyCall = edits.commands.find((c) => c.startsWith('sudo '));
+  check('apply runs the updater as root in a unit of its own, so restarting this service cannot kill it',
+    /^sudo -n systemd-run --collect --quiet --unit=triplec-apply-\d+ \/usr\/local\/bin\/triplec-update apply$/.test(applyCall) && /^triplec-apply-/.test(started.started), applyCall);
+  edits.sudoError = 'sudo: a password is required';
+  const noSudo = await refusal(editor.applyConfig());
+  check('and says what to do where sudo asks for a password', /run triplec-update apply from a terminal/.test(noSudo?.message || ''), noSudo?.message);
 
   const old = makeState();
   old.update = null;
@@ -654,7 +696,7 @@ const w = dom.window;
 const payload = JSON.parse(JSON.stringify(overview));
 const posts = [];
 let killReplies = [];
-const updateReplies = [];
+const configReplies = [];
 w.fetch = (url, options = {}) => {
   const path = String(url);
   if (path.includes('/api/admin/overview')) {
@@ -665,9 +707,13 @@ w.fetch = (url, options = {}) => {
     const reply = killReplies.shift() || { status: 200, body: { stopped: true } };
     return Promise.resolve({ ok: reply.status === 200, status: reply.status, json: () => Promise.resolve(reply.body) });
   }
-  if (path.includes('/api/admin/updates')) {
+  if (path.includes('/api/admin/config/apply')) {
+    posts.push({ path, body: null });
+    return Promise.resolve({ ok: true, status: 202, json: () => Promise.resolve({ started: 'triplec-apply-1' }) });
+  }
+  if (path.includes('/api/admin/config')) {
     posts.push({ path, body: JSON.parse(options.body || '{}') });
-    const reply = updateReplies.shift() || { status: 200, body: payload.updates };
+    const reply = configReplies.shift() || { status: 200, body: payload.config };
     return Promise.resolve({ ok: reply.status === 200, status: reply.status, json: () => Promise.resolve(reply.body) });
   }
   if (path.includes('/api/admin/reap')) {
@@ -730,37 +776,60 @@ const $ = (sel) => w.document.querySelector(sel);
   check('and what it last did', updates.textContent.includes('last run 20m ago: installed'), updates.textContent);
   check('and how often it checks, with its timer', updates.textContent.includes('checks every 5 min, timer running'), updates.textContent);
 
-  // The settings are a form, not instructions.
-  const form = $('#updates-form');
-  check('the settings are a form on the page', !form.classList.contains('hidden') && Boolean(form.elements.mode));
-  check('filled with what applies', form.elements.mode.value === 'install' && form.elements.checkMinutes.value === '5'
-    && form.elements.soakHours.value === '0' && form.elements.idleMinutes.value === '0' && form.elements.push.checked
-    && form.elements.branch.value === 'main' && form.elements.repo.value === '', JSON.stringify({ mode: form.elements.mode.value, repo: form.elements.repo.value }));
-  check('each with what its value means', form.textContent.includes('takes the tip as soon as it is seen'), form.textContent);
+  // Every setting is a field on the page, not an instruction to edit a file.
+  const form = $('#settings-form');
+  check('the settings are a form on the page', !form.classList.contains('hidden') && !$('#settings-label').classList.contains('hidden'));
+  check('one field per key, grouped', form.querySelectorAll('.setting').length === 9
+    && [...form.querySelectorAll('.settings-group summary')].some((x) => /Sign-in/.test(x.textContent)), form.querySelectorAll('.setting').length);
+  check('each the right kind of input', form.elements.instanceAdminAccess.type === 'checkbox' && form.elements.workspaceVolumeSize.type === 'number'
+    && form.elements['autoUpdate.mode'].tagName === 'SELECT' && form.elements.allowedCidrs.tagName === 'TEXTAREA');
+  check('filled with what applies', form.elements.instanceType.value === 't4g.2xlarge' && form.elements.defaultModel.value === 'opus'
+    && form.elements['autoUpdate.mode'].value === 'install' && form.elements.instanceAdminAccess.checked);
+  const it = form.querySelector('[data-key="instanceType"]');
+  check('a value set here says so, with the file\'s value and a way back to it',
+    /set here/.test(it.textContent) && /the file says t4g.xlarge/.test(it.textContent) && !it.querySelector('.setting-reset').classList.contains('hidden'), it.textContent);
+  check('and where a change takes effect', /needs a full deploy/.test(it.textContent)
+    && /applies when you press Apply/.test(form.querySelector('[data-key="defaultModel"]').textContent)
+    && /next update check/.test(form.querySelector('[data-key="autoUpdate.mode"]').textContent));
+  check('a list is one item per line, and its text is not markup', form.elements['oidc.allowedEmails'].value === '<b>a</b>@example.com' && !form.innerHTML.includes('<b>a</b>'));
+  const pend = form.querySelector('.settings-pending');
+  check('stack changes waiting for a deploy are listed, with how to deploy them',
+    !pend.classList.contains('hidden') && /instanceType/.test(pend.textContent) && /\.\/deploy\.sh/.test(pend.textContent), pend.textContent);
+  const applyBtn = form.querySelector('.settings-apply');
+  check('saved box settings offer Apply, saying what it restarts',
+    !applyBtn.classList.contains('hidden') && /Apply 2 settings/.test(applyBtn.textContent) && /restarts the chat service/.test(form.textContent), applyBtn.textContent);
   check('nothing to save until something changes', form.querySelector('.settings-save').disabled);
-  form.elements.soakHours.value = '24';
-  form.dispatchEvent(new w.Event('input', { bubbles: true }));
-  check('an edit can be saved', !form.querySelector('.settings-save').disabled && /Not saved/.test(form.textContent));
+
+  form.elements.workspaceVolumeSize.value = '200';
+  form.elements.workspaceVolumeSize.dispatchEvent(new w.Event('input', { bubbles: true }));
+  form.elements.allowedCidrs.value = '10.0.0.0/8\n 192.168.0.0/16 \n';
+  form.elements.allowedCidrs.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('an edit can be saved, and Apply waits for it', !form.querySelector('.settings-save').disabled
+    && /Save 1 change|Save 2 changes/.test(form.querySelector('.settings-save').textContent) && applyBtn.classList.contains('hidden'), form.querySelector('.settings-save').textContent);
   await w.__adminForTest.refresh();
-  check('a poll does not wipe an edit in progress', form.elements.soakHours.value === '24');
-  const saved = { ...payload.updates, settings: { ...payload.updates.settings, soakHours: 24 }, boxSettings: { keys: ['soakHours'], savedAt: Date.now() } };
-  updateReplies.push({ status: 200, body: saved });
+  check('a poll does not wipe an edit in progress', form.elements.workspaceVolumeSize.value === '200');
   form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
   await new Promise((r) => setTimeout(r, 20));
-  const sent = posts.filter((p) => p.path.includes('/api/admin/updates')).at(-1)?.body;
-  check('saving sends every setting to the server', sent?.autoUpdate?.soakHours === 24 && sent.autoUpdate.mode === 'install'
-    && sent.autoUpdate.checkMinutes === 5 && sent.autoUpdate.push === true, JSON.stringify(sent));
-  check('and the form then says which values were set here', form.querySelector('[data-key="soakHours"]').textContent.includes('set here')
-    && !form.querySelector('.settings-reset').classList.contains('hidden'), form.innerHTML.slice(0, 400));
-  form.elements.checkMinutes.value = '1';
-  form.dispatchEvent(new w.Event('input', { bubbles: true }));
-  updateReplies.push({ status: 400, body: { error: 'autoUpdate.checkMinutes: must be a whole number of minutes from 5 (how often the timer fires) to 1440' } });
+  const sent = posts.filter((p) => p.path.endsWith('/api/admin/config')).at(-1)?.body;
+  check('saving sends only what changed, typed', JSON.stringify(sent) === JSON.stringify({ changes: { workspaceVolumeSize: 200, allowedCidrs: ['10.0.0.0/8', '192.168.0.0/16'] } })
+    || JSON.stringify(sent) === JSON.stringify({ changes: { allowedCidrs: ['10.0.0.0/8', '192.168.0.0/16'], workspaceVolumeSize: 200 } }), JSON.stringify(sent));
+  form.elements.domainName.value = 'not a host';
+  form.elements.domainName.dispatchEvent(new w.Event('input', { bubbles: true }));
+  configReplies.push({ status: 400, body: { error: 'domainName "not a host" is not a hostname.' } });
   form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
   await new Promise((r) => setTimeout(r, 20));
-  check('a value the updater refuses is said, and the edit is kept', /checkMinutes/.test($('#toast').textContent)
-    && form.elements.checkMinutes.value === '1', $('#toast').textContent);
+  check('a value the config refuses is said, and the edit is kept', /not a hostname/.test($('#toast').textContent)
+    && form.elements.domainName.value === 'not a host', $('#toast').textContent);
   form.querySelector('.settings-revert').click();
-  check('undo puts back what applies', form.elements.checkMinutes.value === '5');
+  check('undo puts back what applies', form.elements.domainName.value === 'claude.example.com');
+  it.querySelector('.setting-reset').click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('"use the file\'s" resets that one key', JSON.stringify(posts.filter((p) => p.path.endsWith('/api/admin/config')).at(-1)?.body) === '{"reset":["instanceType"]}');
+  confirmAnswer = true;
+  applyBtn.click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('Apply asks first, then starts the apply', posts.some((p) => p.path.endsWith('/api/admin/config/apply')) && confirmed.some((m) => /restarts the chat service/.test(m)));
+  confirmAnswer = false;
   check('a commit subject is text, not markup', !updates.innerHTML.includes('<b>') && updates.textContent.includes('<b>Tidy</b>'));
   const soaking = w.__adminForTest.updatesCards({
     ...payload.updates, current: false, soakingUntil: Date.now() + 3600e3,

@@ -208,6 +208,7 @@ test('env: the default contract, exactly', () => {
     ['TRIPLEC_AUDIT', '1'],
     ['CW_PUSH_DIR', '/home/dev/.local/state/triplec/push'],
     ['TRIPLEC_UPDATE_BIN', '/home/dev/.local/share/triplec/bin/triplec-update'],
+    ['TRIPLEC_CONFIG_BIN', '/home/dev/.local/share/triplec/bin/triplec-config'],
     ['CC_SCRIPT', '/home/dev/.local/share/triplec/bin/cc'],
   ]);
 });

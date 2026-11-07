@@ -41,6 +41,22 @@ EFFORT_LEVEL="__EFFORT_LEVEL__"
 # safe to put in a systemd Environment line and a JSON settings file from here.
 PWA_NAME="__PWA_NAME__"
 
+# The box page's settings (/chat/admin), over the values above for the keys the box
+# applies to itself: the model, permission mode, effort, git identity, the app's
+# name and who may sign in. scripts/box-config.mjs keeps them on /workspace, where a
+# deploy does not overwrite them, and prints them as quoted assignments; it refuses
+# to save a value with a quote, $, \, |, ;, & or < > in it, and leaves one out here
+# if it finds one anyway. Each applies only while the config file still says what it
+# said when it was saved. Absent on a first boot, before any payload has arrived.
+if [ -f /opt/claude-web/scripts/box-config.mjs ] && [ -f /opt/claude-web/deployment/config.json ] &&
+  command -v node >/dev/null; then
+  BOX_SETTINGS="$(node /opt/claude-web/scripts/box-config.mjs shell --aws 2>/dev/null || true)"
+  if [ -n "$BOX_SETTINGS" ]; then
+    echo "box page settings: $(printf '%s\n' "$BOX_SETTINGS" | cut -d= -f1 | tr '\n' ' ')"
+    eval "$BOX_SETTINGS"
+  fi
+fi
+
 USER_NAME="coder"
 DATA_MNT="/workspace"
 
@@ -669,6 +685,14 @@ cat > /usr/local/bin/triplec-update <<'WRAP'
 exec /usr/bin/node /opt/claude-web/scripts/triplec-update.mjs "$@" --aws
 WRAP
 chmod 755 /usr/local/bin/triplec-update
+# The box page's settings (scripts/box-config.mjs): status, set, reset. Runs as
+# whoever calls it; the chat service calls it as the workspace user, and the store
+# under /workspace is theirs.
+cat > /usr/local/bin/triplec-config <<'WRAP'
+#!/bin/sh
+exec /usr/bin/node /opt/claude-web/scripts/box-config.mjs "$@" --aws
+WRAP
+chmod 755 /usr/local/bin/triplec-config
 systemctl daemon-reload
 systemctl enable --now triplec-update.timer
 

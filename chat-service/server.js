@@ -1256,14 +1256,28 @@ const server = http.createServer(async (req, res) => {
      * the answer to that question — never a default, and never inferred, because
      * everything reachable from here may be holding a turn in flight.
      */
-    // The auto-update settings, edited on the box page. See saveUpdates in admin.js.
-    if (pathname === '/api/admin/updates' && req.method === 'POST') {
-      const body = JSON.parse((await readBody(req, 4 * 1024)).toString() || '{}');
+    // Every setting, edited on the box page: saved, reset, and applied. See
+    // saveConfig and applyConfig in admin.js, and scripts/box-config.mjs.
+    if (pathname === '/api/admin/config' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 64 * 1024)).toString() || '{}');
       try {
-        const result = await admin.saveUpdates(body.reset === true ? 'reset' : body.autoUpdate);
-        audit('auto-update-settings', { reset: body.reset === true, mode: result?.settings?.mode });
-        console.log(`admin ${body.reset === true ? 'reset' : 'changed'} the auto-update settings: mode ${result?.settings?.mode}`);
+        const result = await admin.saveConfig(Array.isArray(body.reset) ? { reset: body.reset } : { changes: body.changes });
+        const what = Array.isArray(body.reset) ? `reset ${body.reset.join(', ') || 'everything'}` : `set ${Object.keys(body.changes || {}).join(', ')}`;
+        audit('box-settings', { what });
+        console.log(`admin ${what}`);
         json(res, 200, result);
+      } catch (err) {
+        if (!err.blocked) throw err;
+        json(res, 400, { error: err.message });
+      }
+      return;
+    }
+    if (pathname === '/api/admin/config/apply' && req.method === 'POST') {
+      try {
+        const result = await admin.applyConfig();
+        audit('box-settings-apply', { unit: result.started });
+        console.log(`admin started ${result.started}`);
+        json(res, 202, result);
       } catch (err) {
         if (!err.blocked) throw err;
         json(res, 400, { error: err.message });
