@@ -197,6 +197,7 @@ function makeDeps(state) {
       }
       if (cmd === '/usr/local/bin/triplec-update') {
         if (!state.update) return { ok: false, out: '', err: 'spawn /usr/local/bin/triplec-update ENOENT' };
+        if (args[0] === 'set' && state.setError) return { ok: false, out: '', err: `triplec-update: ${state.setError}` };
         return { ok: true, out: JSON.stringify(state.update) };
       }
       if (cmd === 'df') {
@@ -478,6 +479,18 @@ console.log('\nSays how this box updates:');
   const heldView = await createAdmin({ manager: makeManager([]), deps: makeDeps(failedBox) }).overview();
   check('so is a held one', heldView.findings.some((f) => f.text === 'updates are held'));
 
+  const edits = makeState();
+  const editor = createAdmin({ manager: makeManager([]), deps: makeDeps(edits) });
+  await editor.saveUpdates({ mode: 'notify', soakHours: 24, '__proto__x': 1, shell: '$(reboot)' });
+  const setCall = edits.commands.find((c) => c.includes(' set '));
+  check('a box-page edit goes to the updater as one JSON argument, with only the setting\'s own keys',
+    setCall === '/usr/local/bin/triplec-update set --value {"mode":"notify","soakHours":24}', setCall);
+  await editor.saveUpdates('reset');
+  check('and a reset asks it to drop the box\'s edits', edits.commands.includes('/usr/local/bin/triplec-update set --reset'));
+  edits.setError = 'autoUpdate.mode: must be one of off, notify, install';
+  const refused = await refusal(editor.saveUpdates({ mode: 'always' }));
+  check('a value the updater refuses comes back as its reason, not a crash', /must be one of/.test(refused?.message || ''), refused?.message);
+
   const old = makeState();
   old.update = null;
   const oldView = await createAdmin({ manager: makeManager([]), deps: makeDeps(old) }).overview();
@@ -641,6 +654,7 @@ const w = dom.window;
 const payload = JSON.parse(JSON.stringify(overview));
 const posts = [];
 let killReplies = [];
+const updateReplies = [];
 w.fetch = (url, options = {}) => {
   const path = String(url);
   if (path.includes('/api/admin/overview')) {
@@ -649,6 +663,11 @@ w.fetch = (url, options = {}) => {
   if (path.includes('/api/admin/kill')) {
     posts.push({ path, body: JSON.parse(options.body || '{}') });
     const reply = killReplies.shift() || { status: 200, body: { stopped: true } };
+    return Promise.resolve({ ok: reply.status === 200, status: reply.status, json: () => Promise.resolve(reply.body) });
+  }
+  if (path.includes('/api/admin/updates')) {
+    posts.push({ path, body: JSON.parse(options.body || '{}') });
+    const reply = updateReplies.shift() || { status: 200, body: payload.updates };
     return Promise.resolve({ ok: reply.status === 200, status: reply.status, json: () => Promise.resolve(reply.body) });
   }
   if (path.includes('/api/admin/reap')) {
@@ -709,10 +728,39 @@ const $ = (sel) => w.document.querySelector(sel);
   check('what it follows', updates.textContent.includes('follows main of MichaelNusair/triplec'), updates.textContent);
   check('where it stands', updates.textContent.includes('up to date at abc1234'), updates.textContent);
   check('and what it last did', updates.textContent.includes('last run 20m ago: installed'), updates.textContent);
-  check('every caution, with its value', ['5 min', '0 h', 'any time', 'takes the tip', 'does not wait', 'timer running']
-    .every((t) => updates.textContent.includes(t)), updates.textContent);
-  check('how to change it and how to update now', updates.textContent.includes('autoUpdate in')
-    && updates.textContent.includes('sudo triplec-update run --now'), updates.textContent);
+  check('and how often it checks, with its timer', updates.textContent.includes('checks every 5 min, timer running'), updates.textContent);
+
+  // The settings are a form, not instructions.
+  const form = $('#updates-form');
+  check('the settings are a form on the page', !form.classList.contains('hidden') && Boolean(form.elements.mode));
+  check('filled with what applies', form.elements.mode.value === 'install' && form.elements.checkMinutes.value === '5'
+    && form.elements.soakHours.value === '0' && form.elements.idleMinutes.value === '0' && form.elements.push.checked
+    && form.elements.branch.value === 'main' && form.elements.repo.value === '', JSON.stringify({ mode: form.elements.mode.value, repo: form.elements.repo.value }));
+  check('each with what its value means', form.textContent.includes('takes the tip as soon as it is seen'), form.textContent);
+  check('nothing to save until something changes', form.querySelector('.settings-save').disabled);
+  form.elements.soakHours.value = '24';
+  form.dispatchEvent(new w.Event('input', { bubbles: true }));
+  check('an edit can be saved', !form.querySelector('.settings-save').disabled && /Not saved/.test(form.textContent));
+  await w.__adminForTest.refresh();
+  check('a poll does not wipe an edit in progress', form.elements.soakHours.value === '24');
+  const saved = { ...payload.updates, settings: { ...payload.updates.settings, soakHours: 24 }, boxSettings: { keys: ['soakHours'], savedAt: Date.now() } };
+  updateReplies.push({ status: 200, body: saved });
+  form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 20));
+  const sent = posts.filter((p) => p.path.includes('/api/admin/updates')).at(-1)?.body;
+  check('saving sends every setting to the server', sent?.autoUpdate?.soakHours === 24 && sent.autoUpdate.mode === 'install'
+    && sent.autoUpdate.checkMinutes === 5 && sent.autoUpdate.push === true, JSON.stringify(sent));
+  check('and the form then says which values were set here', form.querySelector('[data-key="soakHours"]').textContent.includes('set here')
+    && !form.querySelector('.settings-reset').classList.contains('hidden'), form.innerHTML.slice(0, 400));
+  form.elements.checkMinutes.value = '1';
+  form.dispatchEvent(new w.Event('input', { bubbles: true }));
+  updateReplies.push({ status: 400, body: { error: 'autoUpdate.checkMinutes: must be a whole number of minutes from 5 (how often the timer fires) to 1440' } });
+  form.dispatchEvent(new w.Event('submit', { bubbles: true, cancelable: true }));
+  await new Promise((r) => setTimeout(r, 20));
+  check('a value the updater refuses is said, and the edit is kept', /checkMinutes/.test($('#toast').textContent)
+    && form.elements.checkMinutes.value === '1', $('#toast').textContent);
+  form.querySelector('.settings-revert').click();
+  check('undo puts back what applies', form.elements.checkMinutes.value === '5');
   check('a commit subject is text, not markup', !updates.innerHTML.includes('<b>') && updates.textContent.includes('<b>Tidy</b>'));
   const soaking = w.__adminForTest.updatesCards({
     ...payload.updates, current: false, soakingUntil: Date.now() + 3600e3,

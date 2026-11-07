@@ -6,6 +6,7 @@
  *   triplec-update.mjs run    --aws | --host <config.json>   [--now]
  *   triplec-update.mjs check  --aws | --host <config.json>   [--now]
  *   triplec-update.mjs status --aws | --host <config.json>   [--json]
+ *   triplec-update.mjs set    --aws | --host <config.json>   --value '<json>' | --reset
  *
  * `run` updates if it should, `check` says what `run` would do and changes
  * nothing, and `status` reports the last run without touching the network.
@@ -54,7 +55,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { resolveAutoUpdate, validateAutoUpdate } from './auto-update-config.mjs';
+import { AUTO_UPDATE_DEFAULTS, UPSTREAM_REPO, resolveAutoUpdate, validateAutoUpdate } from './auto-update-config.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const MINUTE = 60e3;
@@ -710,6 +711,9 @@ export function statusOf(s, state, now = Date.now()) {
   return {
     platform: s.platform,
     settings: au,
+    // What the config file says, and what the box page changed (applyBoxSettings).
+    configured: s.configAutoUpdate || au,
+    boxSettings: s.boxSettings || null,
     timerMinutes: TIMER_MINUTES,
     installed: build,
     tip: state.tip ? { sha: state.tip, seenAt: seen?.seenAt ?? null } : null,
@@ -738,6 +742,8 @@ export function describe(s, state, now = Date.now()) {
     `checks      every ${au.checkMinutes} min${au.mode === 'off' ? ' (while mode is on)' : ''}`,
     `installed   ${build ? `${build.commit}${build.dirty ? '+' : ''}` : 'unknown (no build.json)'}`,
   ];
+  if (s.boxSettings?.keys?.length) lines.push(`box page    changed ${s.boxSettings.keys.join(', ')} from the config file`);
+  if (s.boxSettings?.superseded) lines.push('box page    its edits were replaced by a later change to the config file');
   if (state.tip) {
     const seen = (state.tips || []).find((t) => t.sha === state.tip);
     lines.push(`branch tip  ${short(state.tip)}${seen ? `, first seen ${ago(now - seen.seenAt)} ago` : ''}`);
@@ -751,6 +757,73 @@ export function describe(s, state, now = Date.now()) {
   return lines.join('\n');
 }
 
+// --- settings saved from the box page -------------------------------------------------
+
+/**
+ * The box page (/chat/admin) edits `autoUpdate` on the box itself, in this file under
+ * the state directory. The deployment's config file is where the setting comes from,
+ * and a deploy rewrites the box's copy of it, so an edit kept there would be undone
+ * by the next deploy. Kept here instead, it survives deploys — until the config
+ * file's own `autoUpdate` changes. Then the file wins: whoever edited the config
+ * meant it, and an edit made on the box before that is about a setting nobody has
+ * any more. The file records the config value it was made against (`base`) for
+ * exactly that comparison.
+ */
+export const BOX_SETTINGS = 'settings.json';
+const sameJson = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** `s` with the box page's edits applied, and `configAutoUpdate`/`boxSettings` saying what happened. */
+export function applyBoxSettings(s, saved) {
+  const fromConfig = s.configAutoUpdate || s.autoUpdate;
+  s.configAutoUpdate = fromConfig;
+  s.autoUpdate = fromConfig;
+  s.boxSettings = null;
+  if (!saved || typeof saved !== 'object' || !saved.autoUpdate || typeof saved.autoUpdate !== 'object') return s;
+  const savedAt = Number.isFinite(saved.savedAt) ? saved.savedAt : null;
+  if (saved.base !== JSON.stringify(fromConfig)) {
+    s.boxSettings = { superseded: true, savedAt };
+    return s;
+  }
+  const merged = { ...fromConfig, ...saved.autoUpdate };
+  const errors = validateAutoUpdate(merged);
+  if (errors.length) {
+    s.boxSettings = { invalid: errors.join('; '), savedAt };
+    return s;
+  }
+  s.autoUpdate = resolveAutoUpdate(merged);
+  const keys = Object.keys(AUTO_UPDATE_DEFAULTS).filter((k) => !sameJson(s.autoUpdate[k], fromConfig[k]));
+  s.boxSettings = { keys, savedAt };
+  return s;
+}
+
+/**
+ * Save an edit from the box page: `changes` is a partial `autoUpdate`. Only what
+ * differs from the config file is kept; an edit back to the config's values removes
+ * the file. Throws a UsageError naming every bad key.
+ */
+export function saveBoxSettings(s, changes, now = Date.now()) {
+  const fromConfig = s.configAutoUpdate || s.autoUpdate;
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new UsageError('the value must be a JSON object of autoUpdate keys');
+  const merged = { ...fromConfig, ...changes };
+  if (merged.repo === '') merged.repo = UPSTREAM_REPO;
+  const errors = validateAutoUpdate(merged);
+  if (errors.length) throw new UsageError(errors.join('; '));
+  const resolved = resolveAutoUpdate(merged);
+  const diff = Object.fromEntries(Object.keys(AUTO_UPDATE_DEFAULTS)
+    .filter((k) => !sameJson(resolved[k], fromConfig[k]))
+    .map((k) => [k, resolved[k]]));
+  const file = path.join(s.stateDir, BOX_SETTINGS);
+  if (!Object.keys(diff).length) {
+    fs.rmSync(file, { force: true });
+  } else {
+    fs.mkdirSync(s.stateDir, { recursive: true });
+    writeJson(file, { autoUpdate: diff, base: JSON.stringify(fromConfig), savedAt: now });
+  }
+  return applyBoxSettings(s, readJson(file, null));
+}
+
+export { UsageError };
+
 // --- command line ---------------------------------------------------------------------
 
 async function settingsFrom(args) {
@@ -759,17 +832,21 @@ async function settingsFrom(args) {
     const file = path.join(installDir, 'deployment', 'config.json');
     const deployment = readJson(file, null);
     if (!deployment) throw new UsageError(`${file} is missing or unreadable; it ships with every payload, so deploy once with this version of deploy.sh`);
-    return awsSettings(deployment, { installDir });
+    const s = awsSettings(deployment, { installDir });
+    return applyBoxSettings(s, readJson(path.join(s.stateDir, BOX_SETTINGS), null));
   }
   const i = args.indexOf('--host');
-  if (i >= 0 && args[i + 1]) return hostSettings(args[i + 1]);
+  if (i >= 0 && args[i + 1]) {
+    const s = await hostSettings(args[i + 1]);
+    return applyBoxSettings(s, readJson(path.join(s.stateDir, BOX_SETTINGS), null));
+  }
   throw new UsageError('say which deployment this is: --aws, or --host <config.json>');
 }
 
 async function main(argv) {
   const [cmd, ...args] = argv;
-  const usage = 'usage: triplec-update.mjs run|check|status --aws | --host <config.json> [--now] [--json]';
-  if (!['run', 'check', 'status'].includes(cmd)) {
+  const usage = 'usage: triplec-update.mjs run|check|status|set --aws | --host <config.json> [--now] [--json] [--value <json> | --reset]';
+  if (!['run', 'check', 'status', 'set'].includes(cmd)) {
     console.error(usage);
     return 2;
   }
@@ -783,6 +860,29 @@ async function main(argv) {
   if (cmd === 'status') {
     const state = readJson(path.join(s.stateDir, 'state.json'), {});
     console.log(args.includes('--json') ? JSON.stringify(statusOf(s, state)) : describe(s, state));
+    return 0;
+  }
+  if (cmd === 'set') {
+    try {
+      let changes;
+      if (args.includes('--reset')) {
+        changes = { ...s.configAutoUpdate };
+      } else {
+        const v = args.indexOf('--value');
+        if (v < 0 || args[v + 1] === undefined) throw new UsageError("say what to set: --value '{\"mode\":\"install\"}', or --reset");
+        try {
+          changes = JSON.parse(args[v + 1]);
+        } catch {
+          throw new UsageError('--value must be JSON');
+        }
+      }
+      saveBoxSettings(s, changes);
+    } catch (e) {
+      if (!(e instanceof UsageError)) throw e;
+      console.error(`triplec-update: ${e.message}`);
+      return 2;
+    }
+    console.log(JSON.stringify(statusOf(s, readJson(path.join(s.stateDir, 'state.json'), {}))));
     return 0;
   }
   if (cmd === 'check') return dryRun(s, { force: args.includes('--now') });

@@ -15,7 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  inWindow, recordTip, soakedTips, needsFullDeploy, lastActivity, run, describe, checkDue, statusOf,
+  inWindow, recordTip, soakedTips, needsFullDeploy, lastActivity, run, describe, checkDue, statusOf, applyBoxSettings, saveBoxSettings, BOX_SETTINGS,
 } from './triplec-update.mjs';
 import { validateAutoUpdate, resolveAutoUpdate, UPSTREAM_REPO } from './auto-update-config.mjs';
 
@@ -334,6 +334,42 @@ check('U26: a newer commit that is soaking says when it will be taken', jk.curre
 check('U26: and an hourly check is next due an hour after the last, less the slack', jk.nextCheckAt === now6 + 60 * MIN - 2.5 * MIN, JSON.stringify(jk));
 const jo = statusOf(settings({ mode: 'off' }), {}, now6);
 check('U26: mode off has no next check, and says how to update by hand', jo.nextCheckAt === null && /run --now/.test(jo.command) && jo.last === null);
+
+console.log('settings saved from the box page');
+{
+  const sb = settings({ mode: 'off', soakHours: 24 });
+  applyBoxSettings(sb, null);
+  saveBoxSettings(sb, { mode: 'install', soakHours: 0, checkMinutes: 5 }, 1000);
+  check('U27: a box-page edit takes effect', sb.autoUpdate.mode === 'install' && sb.autoUpdate.soakHours === 0 && sb.autoUpdate.checkMinutes === 5);
+  check('U27: and says which keys it changed from the config', sb.boxSettings.keys.join() === 'mode,soakHours,checkMinutes', JSON.stringify(sb.boxSettings));
+  const saved = JSON.parse(fs.readFileSync(path.join(sb.stateDir, BOX_SETTINGS), 'utf8'));
+  check('U27: only what differs from the config is kept', Object.keys(saved.autoUpdate).join() === 'mode,soakHours,checkMinutes', JSON.stringify(saved));
+
+  // A deploy rewrites the config the box reads; one that leaves autoUpdate as it was
+  // keeps the edit.
+  const again = settings({ mode: 'off', soakHours: 24 });
+  again.stateDir = sb.stateDir;
+  applyBoxSettings(again, saved);
+  check('U28: a deploy that does not touch autoUpdate keeps the edit', again.autoUpdate.mode === 'install');
+  const changed = settings({ mode: 'notify', soakHours: 24 });
+  applyBoxSettings(changed, saved);
+  check('U28: a change to autoUpdate in the config file wins over an older edit',
+    changed.autoUpdate.mode === 'notify' && changed.boxSettings.superseded === true, JSON.stringify(changed.boxSettings));
+  check('U28: and status says so', /replaced by a later change to the config file/.test(describe(changed, {})));
+
+  let threw = '';
+  try {
+    saveBoxSettings(sb, { mode: 'always', checkMinutes: 1 });
+  } catch (e) {
+    threw = e.message;
+  }
+  check('U29: a bad value is refused, naming each key', /autoUpdate\.mode/.test(threw) && /autoUpdate\.checkMinutes/.test(threw), threw);
+  check('U29: and changes nothing', sb.autoUpdate.mode === 'install');
+  saveBoxSettings(sb, { ...sb.configAutoUpdate });
+  check('U30: setting the config\'s own values back removes the file', !fs.existsSync(path.join(sb.stateDir, BOX_SETTINGS)) && sb.autoUpdate.mode === 'off' && sb.boxSettings === null);
+  const js2 = statusOf(sb, {}, 0);
+  check('U30: status carries what the config says next to what applies', js2.configured.mode === 'off' && js2.boxSettings === null);
+}
 
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passed}/${passed + failed} checks passed`);

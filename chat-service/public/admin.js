@@ -404,11 +404,14 @@ function buildCard(build) {
 
 /**
  * The `autoUpdate` setting and what it has done, from the updater's own
- * `status --json` (scripts/triplec-update.mjs, via chat-service/admin.js).
+ * `status --json` (scripts/triplec-update.mjs, via chat-service/admin.js), and a
+ * form to change it.
  *
- * Read-only on purpose. The setting lives in the deployment's config file, which
- * outranks the box: a value changed here would be overwritten by the next deploy,
- * so this page says where to change it rather than pretending it can.
+ * A change made here is saved on the box, beside the updater's state, not in the
+ * deployment's config file: a deploy rewrites the box's copy of that file, and would
+ * undo it. It lasts until someone changes `autoUpdate` in the config file itself,
+ * which then wins (applyBoxSettings in the updater). The form says which values
+ * are the box's own and offers the config's back.
  */
 const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const when = (ms) => {
@@ -436,12 +439,6 @@ function updatesCards(u) {
   }
   const s = u.settings || {};
   const on = s.mode !== 'off';
-  const card = (label, value, note = '') => `
-    <div class="card">
-      <div class="card-label">${escapeHtml(label)}</div>
-      <div class="card-value">${escapeHtml(value)}</div>
-      <div class="card-note">${escapeHtml(note)}</div>
-    </div>`;
 
   // Where things stand, in one line: the question this section exists to answer.
   const installed = u.installed ? `${u.installed.commit}${u.installed.dirty ? '+' : ''}` : 'unknown';
@@ -470,32 +467,163 @@ function updatesCards(u) {
       <div class="card-note">${escapeHtml([
         MODE_NOTE[s.mode],
         `follows ${s.branch} of ${repoName(s.repo)}`,
-        on && u.nextCheckAt ? `next check ${clock(u.nextCheckAt)}` : '',
+        on ? `checks every ${s.checkMinutes} min, timer ${u.timer?.active ? 'running' : u.timer?.state || 'unknown'}` : '',
+        on && u.nextCheckAt ? `next ${clock(u.nextCheckAt)}` : '',
       ].filter(Boolean).join(' · '))}</div>
     </div>
     <div class="card full">
       <div class="card-label">Status</div>
       <div class="card-value">${escapeHtml(state)}</div>
       <div class="card-note">${escapeHtml([stateNote, last].filter(Boolean).join(' · '))}</div>
-    </div>
-    ${card('Checks', `${s.checkMinutes} min`, on ? `timer ${u.timer?.active ? 'running' : u.timer?.state || 'unknown'}` : 'while mode is on')}
-    ${card('Soak', `${s.soakHours} h`, s.soakHours ? 'on the branch before it is taken' : 'takes the tip')}
-    ${card('Window', s.window || 'any time', s.window ? (u.platform === 'aws' ? 'UTC' : 'local time') : 'installs whenever ready')}
-    ${card('Idle wait', `${s.idleMinutes} min`, s.idleMinutes ? 'with no conversation writing' : 'does not wait')}
-    <div class="card full">
-      <div class="card-label">Change</div>
-      <div class="card-note">${escapeHtml(u.platform === 'aws'
-        ? 'autoUpdate in the deploying checkout’s triplec.config.json, then ./deploy.sh --app-only. '
-        : 'autoUpdate in ~/.config/triplec/config.json, then deploy/host/install.sh. ')}Update now: <code>${escapeHtml(u.command)}</code> · push ${s.push ? 'on' : 'off'}</div>
     </div>`;
+}
+
+/** The form's fields: what each key is called, what kind of input, and what it means. */
+const UPDATE_FIELDS = [
+  { key: 'mode', label: 'Mode', type: 'select', options: ['off', 'notify', 'install'],
+    note: (v) => MODE_NOTE[v] || '' },
+  { key: 'checkMinutes', label: 'Check every', type: 'number', unit: 'min', min: 5, max: 1440,
+    note: () => 'how often the box looks at the branch' },
+  { key: 'soakHours', label: 'Soak', type: 'number', unit: 'h', min: 0, max: 720,
+    note: (v) => (Number(v) ? 'on the branch this long before it is taken' : 'takes the tip as soon as it is seen') },
+  { key: 'idleMinutes', label: 'Idle wait', type: 'number', unit: 'min', min: 0, max: 1440,
+    note: (v) => (Number(v) ? 'with no conversation writing, since an install restarts the chat' : 'installs without waiting for quiet') },
+  { key: 'window', label: 'Window', type: 'text', placeholder: 'any time, or HH-HH',
+    note: (v, u) => (v ? `installs only inside it, ${u?.platform === 'aws' ? 'UTC' : 'local time'}` : 'installs whenever ready') },
+  { key: 'push', label: 'Notify', type: 'checkbox',
+    note: () => 'push a notification when an update is installed, ready, held or failed' },
+  { key: 'branch', label: 'Branch', type: 'text', note: () => 'the branch to follow; it is the release' },
+  { key: 'repo', label: 'Repository', type: 'text', placeholder: 'upstream',
+    note: () => 'whoever can push here can run code on this box once it installs' },
+];
+
+const updatesForm = { built: false, dirty: false, saving: false, last: null };
+
+function buildUpdatesForm(form) {
+  form.innerHTML = `
+    ${UPDATE_FIELDS.map((f) => `
+      <label class="setting" data-key="${f.key}">
+        <span class="setting-label">${escapeHtml(f.label)}<span class="setting-origin"></span></span>
+        <span class="setting-input">${f.type === 'select'
+          ? `<select name="${f.key}">${f.options.map((o) => `<option value="${o}">${o}</option>`).join('')}</select>`
+          : f.type === 'checkbox'
+            ? `<input type="checkbox" name="${f.key}">`
+            : `<input type="${f.type}" name="${f.key}"${f.min != null ? ` min="${f.min}" max="${f.max}" step="1"` : ''}${f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : ''}>`}
+          ${f.unit ? `<span class="setting-unit">${f.unit}</span>` : ''}</span>
+        <span class="setting-note"></span>
+      </label>`).join('')}
+    <p class="settings-status" role="status"></p>
+    <div class="settings-actions">
+      <button type="submit" class="settings-save">Save</button>
+      <button type="button" class="settings-revert">Undo changes</button>
+      <button type="button" class="settings-reset hidden">Use the config's values</button>
+    </div>`;
+  form.addEventListener('input', () => {
+    updatesForm.dirty = true;
+    paintUpdatesForm(form);
+  });
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    saveUpdates(form, { autoUpdate: readUpdatesForm(form) });
+  });
+  form.querySelector('.settings-revert').addEventListener('click', () => {
+    updatesForm.dirty = false;
+    fillUpdatesForm(form, updatesForm.last);
+  });
+  form.querySelector('.settings-reset').addEventListener('click', () => {
+    if (confirm('Go back to the values in the deployment config file? What was changed here is discarded.')) {
+      saveUpdates(form, { reset: true });
+    }
+  });
+  updatesForm.built = true;
+}
+
+function readUpdatesForm(form) {
+  const out = {};
+  for (const f of UPDATE_FIELDS) {
+    const input = form.elements[f.key];
+    if (f.type === 'checkbox') out[f.key] = input.checked;
+    else if (f.type === 'number') out[f.key] = input.value === '' ? input.value : Number(input.value);
+    else out[f.key] = input.value.trim();
+  }
+  return out;
+}
+
+function fillUpdatesForm(form, u) {
+  if (!u?.settings) return;
+  for (const f of UPDATE_FIELDS) {
+    const input = form.elements[f.key];
+    let value = u.settings[f.key];
+    // The upstream repository reads as empty, which is how the config says it.
+    if (f.key === 'repo' && value === 'https://github.com/MichaelNusair/triplec.git') value = '';
+    if (f.type === 'checkbox') input.checked = Boolean(value);
+    else input.value = value ?? '';
+  }
+  paintUpdatesForm(form);
+}
+
+/** The notes beside each field, which values are the box's own, and the buttons. */
+function paintUpdatesForm(form) {
+  const u = updatesForm.last;
+  const values = readUpdatesForm(form);
+  const own = new Set(u?.boxSettings?.keys || []);
+  for (const f of UPDATE_FIELDS) {
+    const row = form.querySelector(`[data-key="${f.key}"]`);
+    row.querySelector('.setting-note').textContent = f.note(values[f.key], u);
+    row.querySelector('.setting-origin').textContent = own.has(f.key) ? ' · set here' : '';
+    row.classList.toggle('changed', own.has(f.key));
+  }
+  form.querySelector('.settings-save').disabled = !updatesForm.dirty || updatesForm.saving;
+  form.querySelector('.settings-revert').classList.toggle('hidden', !updatesForm.dirty);
+  form.querySelector('.settings-reset').classList.toggle('hidden', !own.size || updatesForm.dirty);
+  const status = form.querySelector('.settings-status');
+  if (updatesForm.dirty) status.textContent = 'Not saved yet.';
+  else if (u?.boxSettings?.superseded) status.textContent = 'Changes made here earlier were replaced by a later change to the config file.';
+  else if (own.size) status.textContent = `Changed here${u.boxSettings.savedAt ? ` ${ago(u.boxSettings.savedAt)}` : ''}; kept across deploys until autoUpdate changes in the config file. The timer reads it on its next run.`;
+  else status.textContent = 'These are the config file’s values. A change saved here applies on the next timer run, and lasts across deploys.';
+}
+
+async function saveUpdates(form, body) {
+  updatesForm.saving = true;
+  paintUpdatesForm(form);
+  try {
+    const res = await api('/api/admin/updates', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      toast(result.error || `Server returned ${res.status}`, 8000);
+      return;
+    }
+    updatesForm.dirty = false;
+    toast(body.reset ? 'Back to the config file’s values.' : 'Saved. The next timer run uses it.');
+    renderUpdates(result);
+  } catch (err) {
+    if (!redirecting) toast(err.message);
+  } finally {
+    updatesForm.saving = false;
+    paintUpdatesForm(form);
+  }
 }
 
 function renderUpdates(updates) {
   const el = $('#updates');
+  const form = $('#updates-form');
   const show = Boolean(updates);
   el.classList.toggle('hidden', !show);
   $('#updates-label').classList.toggle('hidden', !show);
   el.innerHTML = show ? updatesCards(updates) : '';
+  const editable = Boolean(updates?.settings);
+  form.classList.toggle('hidden', !editable);
+  if (!editable) return;
+  updatesForm.last = updates;
+  if (!updatesForm.built) buildUpdatesForm(form);
+  // Never under someone's fingers: a poll refreshes the values only while the form
+  // is untouched.
+  if (!updatesForm.dirty) fillUpdatesForm(form, updates);
+  else paintUpdatesForm(form);
 }
 
 function renderUnits(units) {
@@ -712,7 +840,7 @@ document.addEventListener('visibilitychange', () => {
 // Exposed for admin-test.js, which boots this file in jsdom for the same reason
 // smoke-test.js boots app.js: a runtime error at load leaves a page that looks
 // like the server is down, and this is the page you would be checking.
-window.__adminForTest = { refresh, kill, stopAll, reap, renderFindings, buildCard, updatesCards, duration, rss };
+window.__adminForTest = { refresh, kill, stopAll, reap, renderFindings, buildCard, updatesCards, renderUpdates, duration, rss };
 
 refresh();
 startPolling();

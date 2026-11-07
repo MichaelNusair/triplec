@@ -506,7 +506,7 @@ console.log('chat, deep link');
   check('a link from the mux opens that chat in its project\'s tab, in its slot',
     pane?.cwd === '/workspace/projects/demo' && pane.sessionId === 'abc'
       && pane.sessionCwd === '/workspace/projects/demo/.claude/worktrees/slot-3');
-  check('…and drops the query, so a refresh is an ordinary launch', w.location.search === '');
+  check('…and drops its query for ?chat=1, so a refresh is an ordinary launch of the chat rather than the mux a bare /chat/ now opens', w.location.search === '?chat=1', w.location.search);
   check('…and is saved as one of the device\'s tabs', JSON.parse(w.localStorage.getItem('claude-chat-panes') || '{}').panes?.[0]?.sessionId === 'abc');
   w.close();
 }

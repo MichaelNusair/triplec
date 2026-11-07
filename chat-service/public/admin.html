@@ -41,6 +41,9 @@
     <!-- Hidden until the server says there is an updater to report on. -->
     <div class="section-label hidden" id="updates-label">Updates</div>
     <div id="updates" class="cards hidden"></div>
+    <!-- The settings themselves, editable. Built once and only refilled while
+         untouched, so the 5-second poll never wipes what someone is typing. -->
+    <form id="updates-form" class="settings-form hidden" autocomplete="off"></form>
 
     <div class="section-label">Services</div>
     <div id="units" class="units"></div>

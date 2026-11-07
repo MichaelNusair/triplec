@@ -76,9 +76,20 @@ while `mode` is on. Its output is in
 The box page, `/chat/admin`, shows the same thing as `triplec-update status`
 under **Updates**: the mode and every caution, what is installed and what the
 branch tip is, when the next check is, and what the last run did. A failed or
-held update is also one of the findings at the top. The page only shows the
-settings. They live in the config file, which a deploy writes over the box, so
-change them there.
+held update is also one of the findings at the top.
+
+The settings can be changed there too, in a form, with no file to edit and no
+deploy. A change saved on the page is kept on the box (`settings.json` in the
+state directory) rather than in the config file, because a deploy rewrites the
+box's copy of that file. It lasts across deploys until someone changes
+`autoUpdate` in the config file itself. That change wins, and the page says
+so. The page marks which values were set there and has **Use the config's
+values** to drop them. From a shell, `triplec-update set --value '{"mode":"notify"}'`
+does the same, and `triplec-update set --reset` undoes it.
+
+On a host install the timer exists only while the config file's `mode` is on,
+so turning updates on from the page needs that once. The page flags a mode
+that is on with no timer to run it.
 
 ## What an update does
 

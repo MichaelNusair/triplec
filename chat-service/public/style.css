@@ -807,3 +807,25 @@ html.embed .bar .icon-btn { width: 32px; height: 32px; }
 .permission-state { margin-top: 8px; font-size: 0.9em; opacity: 0.85; }
 .permission.resolved { border-color: rgba(127, 127, 127, 0.35); background: transparent; }
 .permission.resolved-deny .permission-state { color: #c0392b; }
+
+/* The box page's settings form (admin.js, renderUpdates). A row per key: its name,
+   its input, and a line saying what the value means. */
+.settings-form { margin: 8px 12px 0; padding: 4px 13px 12px; border-radius: 12px;
+  background: var(--bg-raised); border: 1px solid var(--border); }
+.setting { display: grid; grid-template-columns: 110px 1fr; gap: 2px 12px; align-items: center;
+  padding: 9px 0; border-bottom: 1px solid var(--border); font-size: 13.5px; }
+.setting-label { font-weight: 600; }
+.setting-origin { font-weight: 400; color: var(--accent); font-size: 12px; }
+.setting-input { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.setting-input input[type="text"], .setting-input input[type="number"], .setting-input select {
+  flex: 1; min-width: 0; padding: 6px 8px; border-radius: 8px; font: inherit;
+  background: var(--bg-input); color: var(--text); border: 1px solid var(--border); }
+.setting-input input[type="number"] { max-width: 110px; }
+.setting-unit { color: var(--text-dim); font-size: 12.5px; }
+.setting-note { grid-column: 2; color: var(--text-dim); font-size: 12px; line-height: 1.35; }
+.settings-status { margin: 10px 0 8px; color: var(--text-dim); font-size: 12.5px; line-height: 1.4; }
+.settings-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-actions button { padding: 7px 14px; border-radius: 999px; font: inherit; font-size: 13px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); cursor: pointer; }
+.settings-actions .settings-save { background: var(--accent); color: #141413; border-color: var(--accent); font-weight: 600; }
+.settings-actions button:disabled { opacity: .45; cursor: default; }

@@ -407,8 +407,17 @@ try {
     const { cookie } = plain;
     const auth = { Cookie: cookie };
 
-    const shell = await fetch(`${base}/chat/`, { headers: auth });
-    check('C2: the chat is served under /chat/ at the host root', shell.status === 200 && /<html/i.test(await shell.text()));
+    // The chat app is deprecated: a bare /chat/, which an app installed before the
+    // mux was the default still launches, opens the mux. A query keeps the chat.
+    const bare = await fetch(`${base}/chat/`, { headers: auth, redirect: 'manual' });
+    check('C2: a bare /chat/ opens the mux, the chat being deprecated',
+      bare.status === 302 && bare.headers.get('location') === '/chat/mux', `${bare.status} ${bare.headers.get('location')}`);
+    const shell = await fetch(`${base}/chat/?chat=1`, { headers: auth });
+    check('C2: the chat is still served under /chat/ when asked for', shell.status === 200 && /<html/i.test(await shell.text()));
+    const linked = await fetch(`${base}/chat/?cwd=%2Fx&session=abc`, { headers: auth, redirect: 'manual' });
+    check('C2: and a link to a conversation still opens it', linked.status === 200, String(linked.status));
+    const pane = await fetch(`${base}/chat/?embed=1&cwd=%2Fx`, { headers: auth, redirect: 'manual' });
+    check('C2: and so does a mux pane', pane.status === 200, String(pane.status));
 
     const feat = await (await fetch(`${base}/chat/api/features`, { headers: auth })).json();
     check('A5: the client is told which features exist', feat.features && feat.features.mux && !feat.features.editor && !feat.features.retire && feat.host === true);
@@ -592,6 +601,9 @@ try {
     const plain = await startServer({ TRIPLEC_FEATURES: 'admin,push' });
     const root = await fetch(`${plain.base}/`, { redirect: 'manual' });
     check('C2: with the mux off, the bare root sends you to the chat list', root.status === 302 && root.headers.get('location') === '/chat/', root.headers.get('location'));
+    const { cookie: plainCookie } = await login(plain.base);
+    const list = await fetch(`${plain.base}/chat/`, { headers: { Cookie: plainCookie }, redirect: 'manual' });
+    check('C2: and /chat/ is the chat itself, with no mux to send it to', list.status === 200, String(list.status));
     // The manifest's start_url falls back the same way: chatManifest, in manifest-test.
     await stopServer(plain);
   }

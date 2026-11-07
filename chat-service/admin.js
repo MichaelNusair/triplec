@@ -80,13 +80,16 @@ const DATA_MOUNT = PROJECTS_ROOT;
  */
 const UPDATE_BIN = process.env.TRIPLEC_UPDATE_BIN || (HOST_MODE ? '' : '/usr/local/bin/triplec-update');
 const UPDATE_TIMER = 'triplec-update.timer';
+// The keys the page may set. The updater checks the values; this keeps anything else out.
+const UPDATE_KEYS = ['mode', 'repo', 'branch', 'soakHours', 'window', 'idleMinutes', 'checkMinutes', 'push'];
 // The timer fires on the wall clock's five-minute marks (OnCalendar=*:0/5), so the
 // first run at or after "due" is the next such mark, give or take its 30 s jitter.
 const TIMER_MS = 5 * 60_000;
 
-async function updateStatus(deps) {
+/** What the updater answered, with its timer, for the page. Shared by reading and saving. */
+async function updateStatus(deps, args = ['status', '--json']) {
   if (!UPDATE_BIN) return null;
-  const res = await deps.run(UPDATE_BIN, ['status', '--json']);
+  const res = await deps.run(UPDATE_BIN, args);
   if (!res.ok) {
     const why = (res.err || res.out || '').trim().split('\n').pop() || 'no answer';
     return { error: /ENOENT/.test(why) ? `${UPDATE_BIN} is not installed on this box` : why };
@@ -689,5 +692,25 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
     return { stopped, freedKb };
   }
 
-  return { overview, kill, reap };
+  /**
+   * Change the auto-update settings from the box page. The updater validates and
+   * stores them (`triplec-update set`, scripts/triplec-update.mjs) beside its state,
+   * where a deploy does not overwrite them; this only passes them on, as one argv
+   * element, never through a shell. Only the setting's own keys get that far.
+   */
+  async function saveUpdates(changes) {
+    if (!UPDATE_BIN) throw new AdminBlocked('this install has no updater to configure');
+    let args;
+    if (changes === 'reset') args = ['set', '--reset'];
+    else {
+      if (!changes || typeof changes !== 'object' || Array.isArray(changes)) throw new AdminBlocked('settings must be an object');
+      const picked = Object.fromEntries(Object.entries(changes).filter(([k]) => UPDATE_KEYS.includes(k)));
+      args = ['set', '--value', JSON.stringify(picked)];
+    }
+    const result = await updateStatus(deps, args);
+    if (result?.error) throw new AdminBlocked(result.error.replace(/^triplec-update: /, ''));
+    return result;
+  }
+
+  return { overview, kill, reap, saveUpdates };
 }

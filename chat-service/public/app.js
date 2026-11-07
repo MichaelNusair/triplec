@@ -5571,7 +5571,9 @@ document.addEventListener('visibilitychange', () => {
    */
   loadVoices();
   if (DEEP_LINK) {
-    history.replaceState(null, '', location.pathname);
+    // ?chat=1 rather than nothing: a bare /chat/ is sent to the mux (server.js), and
+    // a reload of a conversation opened from a link should stay in it.
+    history.replaceState(null, '', `${location.pathname}?chat=1`);
     openConversation({ ...DEEP_LINK, project: DEEP_LINK.project || undefined, title: DEEP_LINK.title || undefined });
   } else if (active) {
     activatePane(active);

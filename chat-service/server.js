@@ -409,6 +409,21 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    /*
+     * The chat app is deprecated; the mux is where the app opens. A bare /chat/ is
+     * what an app installed before the mux was the default still launches — a
+     * Safari web app keeps the URL it was added with, and Chrome refreshes a
+     * manifest's start_url only now and then — and it is what every "back" link
+     * points at. So it goes to the mux. Anything with a query still gets the chat: a
+     * link to a conversation (?cwd=&session=), a mux pane (?embed=1), or someone
+     * asking for the list (?chat=1, the mux's own Chats link).
+     */
+    if ((pathname === '/' || pathname === '/index.html') && req.method === 'GET' && !url.search && feature('mux')) {
+      res.writeHead(302, { Location: '/chat/mux', 'Cache-Control': 'no-store' });
+      res.end();
+      return;
+    }
+
     if (pathname === '/api/logout' && req.method === 'POST') {
       audit('signout', {});
       res.writeHead(204, { 'Set-Cookie': clearedCookie(req) });
@@ -1241,6 +1256,21 @@ const server = http.createServer(async (req, res) => {
      * the answer to that question — never a default, and never inferred, because
      * everything reachable from here may be holding a turn in flight.
      */
+    // The auto-update settings, edited on the box page. See saveUpdates in admin.js.
+    if (pathname === '/api/admin/updates' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 4 * 1024)).toString() || '{}');
+      try {
+        const result = await admin.saveUpdates(body.reset === true ? 'reset' : body.autoUpdate);
+        audit('auto-update-settings', { reset: body.reset === true, mode: result?.settings?.mode });
+        console.log(`admin ${body.reset === true ? 'reset' : 'changed'} the auto-update settings: mode ${result?.settings?.mode}`);
+        json(res, 200, result);
+      } catch (err) {
+        if (!err.blocked) throw err;
+        json(res, 400, { error: err.message });
+      }
+      return;
+    }
+
     if (pathname === '/api/admin/kill' && req.method === 'POST') {
       const body = JSON.parse((await readBody(req, 4 * 1024)).toString() || '{}');
       try {
