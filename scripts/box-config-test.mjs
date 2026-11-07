@@ -186,6 +186,20 @@ console.log('saving, with each platform\'s validation');
   check('B13: an empty store leaves no file behind', !fs.existsSync(h.file));
 }
 
+console.log('the payload carries what the box needs');
+{
+  const build = fs.readFileSync(path.join(HERE, 'build-payload.sh'), 'utf8');
+  check('B14: the payload stages box-config.mjs and infra/config.js',
+    /cp scripts\/box-config\.mjs dist\/stage\/scripts\//.test(build) && /cp infra\/config\.js dist\/stage\/infra\//.test(build));
+  // Every directory staged is one the tarball lists: it names them one by one, and a
+  // staged directory left off that list is silently not shipped.
+  const staged = new Set([...build.matchAll(/dist\/stage\/([a-z-]+)/g)].map((m) => m[1]));
+  const tarLine = /tar -czf "\$OUT" -C dist\/stage \\\n\s*([^\n]+)/.exec(build)?.[1] || '';
+  const shipped = new Set(tarLine.trim().split(/\s+/));
+  const missing = [...staged].filter((d) => !shipped.has(d));
+  check('B14: and the tarball lists every directory it stages', missing.length === 0 && shipped.size > 3, `missing: ${missing.join(', ')}; tar: ${tarLine}`);
+}
+
 fs.rmSync(tmp, { recursive: true, force: true });
 console.log(`\n${passed}/${passed + failed} checks passed`);
 process.exitCode = failed ? 1 : 0;

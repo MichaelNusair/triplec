@@ -142,4 +142,4 @@ echo "  icons: $CFG_PWA_ICON_DIR"
 # as phantom files in the editor, and left a non-empty directory behind that
 # broke the vsix cleanup below.
 COPYFILE_DISABLE=1 tar -czf "$OUT" -C dist/stage \
-  chat-service pwa vsix scripts claude-broker userdata deployment
+  chat-service pwa vsix scripts claude-broker userdata deployment infra
