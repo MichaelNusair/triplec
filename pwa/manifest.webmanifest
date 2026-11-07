@@ -3,7 +3,7 @@
   "name": "TripleC",
   "short_name": "TripleC",
   "description": "Claude Code on your projects, from any device, on a machine you own",
-  "start_url": "/chat/",
+  "start_url": "/chat/mux",
   "scope": "/chat/",
   "display": "standalone",
   "orientation": "portrait-primary",

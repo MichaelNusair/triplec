@@ -395,7 +395,7 @@ try {
   const { base } = server;
   {
     const root302 = await fetch(`${base}/`, { redirect: 'manual' });
-    check('C2: the bare root sends you to the chat', root302.status === 302 && root302.headers.get('location') === '/chat/');
+    check('C2: the bare root sends you to the mux', root302.status === 302 && root302.headers.get('location') === '/chat/mux');
     const unauth = await fetch(`${base}/chat/`, { redirect: 'manual', headers: { Accept: 'text/html' } });
     check('C2: and the chat is still behind the login', unauth.status === 302 && /\/login/.test(unauth.headers.get('location') || ''));
 
@@ -585,6 +585,16 @@ try {
     check('E3: and the clone is still shallow afterwards', isShallow === 'true', isShallow);
   }
   await stopServer(server);
+
+  // --- C2: without the mux, the default view is the chat list -------------------
+  console.log('C2: an install without the mux');
+  {
+    const plain = await startServer({ TRIPLEC_FEATURES: 'admin,push' });
+    const root = await fetch(`${plain.base}/`, { redirect: 'manual' });
+    check('C2: with the mux off, the bare root sends you to the chat list', root.status === 302 && root.headers.get('location') === '/chat/', root.headers.get('location'));
+    // The manifest's start_url falls back the same way: chatManifest, in manifest-test.
+    await stopServer(plain);
+  }
 
   // --- F2: the session cap ------------------------------------------------------
   console.log('F2: the session cap');

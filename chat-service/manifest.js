@@ -162,13 +162,20 @@ export function iconLabel(project) {
  * the way past. The `id` is deliberately untouched: it is app identity, and renaming
  * an app must not orphan the icon already installed from it.
  *
- * Unnamed deployments get the object back exactly as it came, so the file is served
- * byte for byte as shipped.
+ * The file opens the mux (/chat/mux), the default view. An install without the mux
+ * feature has no such route — it would be a 404 behind the home-screen icon — so
+ * there `start_url` goes back to the chat list. The `id` is pinned, so this moves
+ * where the app opens without making it a different app.
+ *
+ * Unnamed deployments with the mux get the object back exactly as it came, so the
+ * file is served byte for byte as shipped.
  */
-export function chatManifest(base) {
+export function chatManifest(base, { mux = true } = {}) {
   const name = deploymentName();
-  if (!name) return base;
-  return { ...base, name, short_name: name };
+  let out = base;
+  if (!mux) out = { ...out, start_url: '/chat/' };
+  if (name) out = { ...out, name, short_name: name };
+  return out;
 }
 
 /**

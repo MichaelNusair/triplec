@@ -1078,10 +1078,14 @@ server {
     # shell in place would be a chat app nobody could install. Path-only, for the
     # same reason the project route is — nginx behind the load balancer would
     # otherwise name the port it listens on.
+    #
+    # It lands on the mux (/chat/mux), not the chat list: the user asked for the
+    # desktop view to be what opens by default. It is inside the same scope, so the
+    # install offer above still holds, and the chat list is one link away from it.
     location = / {
         absolute_redirect off;
         port_in_redirect off;
-        return 302 /chat/;
+        return 302 /chat/mux;
     }
 
     # The chat app, and its own static assets. The trailing slash on proxy_pass

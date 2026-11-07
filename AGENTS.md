@@ -1369,7 +1369,10 @@ So the chat app now lives at `/chat/`:
   — and a changed `id` is a *different application*, so every phone with the chat
   icon already on it would keep a dead one and install a second beside it instead of
   updating the one it has.
-- `infra/userdata/bootstrap.sh`: `location = /` is now a path-only 302 to `/chat/`.
+- `infra/userdata/bootstrap.sh`: `location = /` is now a path-only 302 into
+  `/chat/` — to `/chat/mux` since 2026-11-07, when the user made the mux the default
+  view; the manifest's `start_url` is `/chat/mux` for the same reason, and goes back
+  to `/chat/` on a host install without the mux feature (`chatManifest`).
   That redirect is not a courtesy. An install can only be offered from a page inside
   the scope of the manifest it links, so a bare domain still serving the shell in
   place would be a chat app nobody could add to a home screen.

@@ -232,13 +232,14 @@ async function serveStatic(req, res, pathname) {
      *
      * Rewritten here rather than at deploy time, and rather than through a route of
      * its own, so it stays one file: pwa/manifest.webmanifest is what ships, and the
-     * name is the only thing this process knows that the file cannot. Guarded on the
-     * name so an unnamed deployment serves those bytes untouched rather than a
+     * name is the only thing this process knows that the file cannot — that, and
+     * whether this install has the mux the file's start_url opens. Guarded on both so
+     * an unnamed deployment with the mux serves those bytes untouched rather than a
      * re-serialised copy of them.
      */
-    if (file.endsWith('.webmanifest') && deploymentName()) {
+    if (file.endsWith('.webmanifest') && (deploymentName() || !feature('mux'))) {
       try {
-        data = Buffer.from(`${JSON.stringify(chatManifest(JSON.parse(data.toString())), null, 2)}\n`);
+        data = Buffer.from(`${JSON.stringify(chatManifest(JSON.parse(data.toString()), { mux: feature('mux') }), null, 2)}\n`);
       } catch {
         // Not JSON, so not something to rename. Serve it as it is: a manifest that
         // installs under the wrong name beats no manifest at all.
@@ -345,12 +346,15 @@ async function handleLogin(req, res) {
  * On the workspace box nginx strips the chat's /chat/ prefix before a request gets
  * here and owns the bare domain. A host install may have nothing in front that
  * does either — Tailscale Serve proxies straight to this port — so in host mode the
- * service does both itself: /chat/… is the chat, and the bare root sends you there,
- * because the app is only installable from inside its manifest's /chat/ scope.
+ * service does both itself: /chat/… is the chat, and the bare root sends you into it,
+ * because the app is only installable from inside its manifest's /chat/ scope. Into
+ * the mux, when this install has one, since that is the default view; the chat list
+ * otherwise.
  */
 function routedPath(pathname) {
   if (!HOST_MODE) return { pathname, redirect: null };
-  if (pathname === '/' || pathname === '/chat') return { pathname, redirect: '/chat/' };
+  if (pathname === '/') return { pathname, redirect: feature('mux') ? '/chat/mux' : '/chat/' };
+  if (pathname === '/chat') return { pathname, redirect: '/chat/' };
   if (pathname.startsWith('/chat/')) return { pathname: pathname.slice('/chat'.length), redirect: null };
   return { pathname, redirect: null };
 }

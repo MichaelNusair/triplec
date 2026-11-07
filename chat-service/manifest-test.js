@@ -306,6 +306,18 @@ ok(
 
 const chat = chatManifest(base);
 ok(chat.name === 'work' && chat.short_name === 'work', 'the chat app is not named after its deployment');
+
+/*
+ * The app opens the mux, the default view — but only where there is one. A host
+ * install without the mux feature 404s /chat/mux, so its icon must open the chat list.
+ */
+ok(base.start_url === '/chat/mux', 'the installed app no longer opens the mux, which is the default view');
+const noMux = chatManifest(base, { mux: false });
+ok(
+  noMux.start_url === '/chat/' && noMux.id === base.id && noMux.scope === base.scope,
+  'an install without the mux opens a route it does not serve, or lost its identity on the way',
+);
+
 ok(
   chat.id === base.id && chat.scope === base.scope && chat.start_url === base.start_url,
   'renaming the chat app moved its identity or scope, which orphans the installed icon',
@@ -854,7 +866,8 @@ ok(
  */
 const shortcutRoutes = (base.shortcuts ?? [])
   .map((s) => s.url.split('?')[0])
-  .filter((url) => url !== base.start_url);
+  // The chat app's own root is the /chat/ prefix the chat service is proxied at.
+  .filter((url) => url !== base.start_url && url !== base.scope);
 for (const url of shortcutRoutes) {
   const exact = blockFor(`= ${url}`);
   ok(
