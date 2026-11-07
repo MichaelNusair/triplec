@@ -127,6 +127,24 @@ html, body {
 }
 .empty { padding: 48px 24px; text-align: center; color: var(--text-dim); }
 
+/* A deprecation notice: the chat list's, and a mux chat pane's (mux.css). Amber
+   rather than red, because nothing is broken: it is advice about where to go. */
+.deprecation {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px;
+  margin: 10px 12px 0; padding: 11px 13px; border-radius: 12px;
+  border-left: 3px solid var(--accent); background: var(--bg-raised);
+  font-size: 13.5px; line-height: 1.4;
+}
+.deprecation-text { flex: 1 1 220px; min-width: 0; }
+.deprecation-go {
+  padding: 6px 12px; border-radius: 999px; background: var(--accent); color: #141413;
+  font-weight: 600; text-decoration: none; white-space: nowrap;
+}
+.deprecation-close {
+  background: none; border: none; color: var(--text-dim); font-size: 15px; padding: 4px 6px; cursor: pointer;
+}
+.embed .deprecation { display: none; }
+
 .inline-form { display: flex; gap: 8px; padding: 8px 16px 24px; }
 .inline-form input {
   flex: 1; padding: 12px 14px;

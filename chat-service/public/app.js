@@ -5291,6 +5291,17 @@ const PERMISSION_LABELS = {
   dontAsk: "don't ask",
 };
 
+/*
+ * The chat app is deprecated in favour of the mux, whose panes run Claude Code in a
+ * terminal. The list and the conversation screen each say so in a banner
+ * (index.html), hidden on an install without the mux (data-feature) and inside a
+ * mux pane (style.css). A banner rather than a toast: a toast would cover the ones
+ * that report what a tap did. The ✕ hides it until the next visit.
+ */
+for (const id of ['#list-deprecated', '#chat-deprecated']) {
+  $(`${id} .deprecation-close`)?.addEventListener('click', () => $(id).classList.add('hidden'));
+}
+
 (async function initFeatures() {
   try {
     const res = await api('/api/features');

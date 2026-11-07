@@ -122,6 +122,22 @@ if (!listBody.includes('class="row"')) {
 if (!listBody.includes('a past chat')) {
   failures.push('session title missing from the rendered list');
 }
+// The chat list is deprecated in favour of the mux, and says so on every visit.
+{
+  const notice = w.document.querySelector('#screen-list #list-deprecated');
+  if (!notice || !/deprecated/.test(notice.textContent) || notice.querySelector('a')?.getAttribute('href') !== '/chat/mux') {
+    failures.push('the chat list does not say it is deprecated and point at the mux');
+  } else if (notice.dataset.feature !== 'mux') {
+    failures.push('the deprecation notice would send an install without the mux to a 404');
+  } else {
+    notice.querySelector('.deprecation-close').click();
+    if (!notice.classList.contains('hidden')) failures.push('the deprecation notice cannot be hidden');
+  }
+  const inChat = w.document.querySelector('#screen-chat #chat-deprecated');
+  if (!inChat || !/deprecated/.test(inChat.textContent) || inChat.dataset.feature !== 'mux') {
+    failures.push('a conversation does not say that chats are deprecated');
+  }
+}
 
 // A resumed conversation arrives as one `history` frame. Assert the client can
 // render it — this path is what a phone hits when opening an existing chat.

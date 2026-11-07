@@ -16,7 +16,11 @@
  *     `cc <project>/slot-N` from any other terminal is the same session.
  *
  * Either way the work belongs to the box. Shut the laptop mid-turn and the turn
- * finishes.
+ * finishes. The chat kind is deprecated — a chat pane says so, with a button across
+ * to the terminal — and so is the chat list it comes from (index.html).
+ *
+ * A project's own checkout takes a terminal, for reading and questions; no chat
+ * starts there, and building belongs in a slot.
  *
  * Each runs in a worktree slot — `<project>/.claude/worktrees/slot-N`, see slots.js
  * — so eight agents on one project are eight checkouts rather than eight writers in
@@ -319,8 +323,20 @@
     return sessions[0] || null;
   }
 
-  /** Whether a project has slots, so its own checkout is view only. */
+  /**
+   * Whether a project has slots, so its own checkout is for reading rather than
+   * building: no chat starts there, and its terminal is for questions and looking
+   * around. Feature work belongs in a slot, because every other session on the box
+   * shares that checkout's one working tree.
+   */
   const slotsOn = (name) => state.slots.get(name)?.enabled;
+  const MAIN_TERMINAL_NOTE = 'Main checkout: for reading and questions. Build features in a slot — '
+    + 'every other session on this box shares this working tree.';
+  /*
+   * Chats are deprecated: a pane runs Claude Code in a terminal now. A chat pane
+   * still works, and says so with a way across. See switchKind.
+   */
+  const CHAT_DEPRECATED = 'Chat panes are deprecated. Use a terminal: the real Claude Code CLI, in the same slot.';
 
   function placesOf(name) {
     const project = projectByName(name);
@@ -417,7 +433,8 @@
     if (onScreen >= 0) row.classList.add('on-screen');
 
     // The project's own checkout is for looking at, as in the editor: work happens in
-    // the slots. What is already running there can be opened; nothing new starts.
+    // the slots. What is already running there can be opened, and a terminal can be
+    // started there for read-only work; no new chat starts.
     const viewOnly = place.n === 0 && Boolean(slotsOn(project.name));
     const latest = latestSession(project.name, place.cwd);
     const pane = visiblePanes().find((p) => p.cwd === place.cwd);
@@ -437,8 +454,8 @@
     main.className = 'mux-slot-main';
     // What a click opens: whatever is alive here — a terminal first, because its
     // session is running right now — then the last chat, then something new.
-    const reopens = place.terminal || (latest && (state.newKind === 'chat' || viewOnly));
-    const opens = place.terminal ? 'its terminal' : reopens ? `"${title}"` : `a new ${kindLabel(state.newKind)}`;
+    const reopens = place.terminal || (latest && state.newKind === 'chat');
+    const opens = place.terminal ? 'its terminal' : reopens ? `"${title}"` : `a new ${kindLabel(viewOnly ? 'terminal' : state.newKind)}`;
     main.title = `Open ${opens} in the focused pane`;
     main.innerHTML = `<span class="mux-dot ${dot}"></span>
       <span class="mux-slot-text">
@@ -446,7 +463,7 @@
         <span class="mux-slot-title"></span>
         <span class="mux-slot-facts"></span>
       </span>`;
-    $('.mux-slot-name', main).textContent = slotLabel(place.n) + (viewOnly ? ' · view only' : '')
+    $('.mux-slot-name', main).textContent = slotLabel(place.n) + (viewOnly ? ' · read-only work' : '')
       + (onScreen >= 0 ? ` · pane ${onScreen + 1}` : '');
     $('.mux-slot-title', main).textContent = title;
     $('.mux-slot-facts', main).textContent = facts.join(' · ');
@@ -458,25 +475,28 @@
       }
       if (place.terminal) openIn(state.focus, { kind: 'terminal', project: project.name, slot: place.n, cwd: place.cwd });
       else if (reopens) openIn(state.focus, { kind: 'chat', project: project.name, slot: place.n, cwd: place.cwd, sessionId: latest.sessionId, title: latest.title });
-      else if (viewOnly) toast(`${project.name}'s main checkout is view only — start in a slot.`);
-      else startIn(state.focus, project.name, place);
+      else startIn(state.focus, project.name, place, viewOnly ? 'terminal' : state.newKind);
     });
 
     const fresh = document.createElement('button');
     fresh.type = 'button';
     fresh.className = 'mux-add small';
-    fresh.title = `New ${kindLabel(state.newKind)} in ${slotLabel(place.n)}`;
+    // In the main checkout the + is always a terminal: a chat does not start there.
+    const freshKind = viewOnly ? 'terminal' : state.newKind;
+    fresh.title = viewOnly
+      ? `Terminal in ${project.name}'s main checkout, for read-only work`
+      : `New ${kindLabel(freshKind)} in ${slotLabel(place.n)}`;
     fresh.setAttribute('aria-label', fresh.title);
     fresh.textContent = '+';
     fresh.addEventListener('click', () => {
       closeSide();
-      startIn(state.focus, project.name, place);
+      startIn(state.focus, project.name, place, freshKind);
     });
 
-    if (viewOnly) {
-      row.classList.add('view-only');
-      row.append(main);
-    } else row.append(main, fresh);
+    if (viewOnly) row.classList.add('view-only');
+    // A running terminal is joined by the row itself; a second + would only do that again.
+    if (viewOnly && place.terminal) row.append(main);
+    else row.append(main, fresh);
     return row;
   }
 
@@ -511,13 +531,15 @@
    * else that would put a second agent into a checkout already holding one asks.
    */
   async function startIn(index, name, place, kind = state.newKind) {
+    const mainNote = !place.n && slotsOn(name) ? MAIN_TERMINAL_NOTE : '';
     if (kind === 'terminal' && place.terminal) {
-      openIn(index, { kind, project: name, slot: place.n, cwd: place.cwd });
+      openIn(index, { kind, project: name, slot: place.n, cwd: place.cwd, note: mainNote });
       return;
     }
-    // Nothing new starts in a project's own checkout once it has slots; see slotRow.
-    if (!place.n && slotsOn(name)) {
-      toast(`${name}'s main checkout is view only — start in a slot.`);
+    // No chat starts in a project's own checkout once it has slots; a terminal can,
+    // for reading and questions. See slotRow.
+    if (!place.n && slotsOn(name) && kind !== 'terminal') {
+      toast(`${name}'s main checkout takes a terminal, for read-only work. Start a chat in a slot.`);
       return;
     }
     const others = [];
@@ -562,7 +584,7 @@
       loadSlots(name);
     }
     hideToast();
-    openIn(index, { kind, project: name, slot: place.n, cwd, sessionId: null, title: '', note });
+    openIn(index, { kind, project: name, slot: place.n, cwd, sessionId: null, title: '', note: note || (kind === 'terminal' ? mainNote : '') });
   }
 
   function openIn(index, { kind = 'chat', project, slot, cwd, sessionId = null, title = '', note = '' }) {
@@ -715,6 +737,8 @@
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
       </header>
       <p class="mux-pane-note hidden"></p>
+      <p class="mux-pane-deprecated hidden"><span></span>
+        <button type="button" class="mux-pane-btn" data-act="to-terminal">Switch to terminal</button></p>
       <div class="mux-pane-body"></div>`;
     el.addEventListener('pointerdown', () => {
       if (state.focus !== state.panes.indexOf(pane)) focusPane(state.panes.indexOf(pane));
@@ -725,6 +749,9 @@
     });
     el.querySelector('[data-act="kind"]').addEventListener('click', () => {
       if (pane.project) switchKind(pane);
+    });
+    el.querySelector('[data-act="to-terminal"]').addEventListener('click', () => {
+      if (pane.project && pane.kind === 'chat') switchKind(pane);
     });
     el.querySelector('[data-act="new"]').addEventListener('click', () => {
       if (!pane.project) return;
@@ -858,6 +885,9 @@
     const note = $('.mux-pane-note', el);
     note.textContent = pane.note;
     note.classList.toggle('hidden', !pane.note);
+    const deprecated = $('.mux-pane-deprecated', el);
+    $('span', deprecated).textContent = CHAT_DEPRECATED;
+    deprecated.classList.toggle('hidden', !(pane.cwd && pane.kind === 'chat'));
     renderTabs();
   }
 
@@ -1006,6 +1036,7 @@
   for (const button of document.querySelectorAll('[data-kind]')) {
     button.addEventListener('click', () => {
       state.newKind = KINDS.includes(button.dataset.kind) ? button.dataset.kind : 'terminal';
+      if (state.newKind === 'chat') toast(CHAT_DEPRECATED, 6000);
       save();
       renderGrid();
       renderSidebar();

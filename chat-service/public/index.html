@@ -35,6 +35,16 @@
       <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6z"/></svg>
     </button>
   </header>
+  <!-- The chat list is on its way out: the mux is the surface now, and its panes
+       run Claude Code in a terminal. Shown on every visit, because each visit is
+       the moment the advice applies; the ✕ hides it until the next one. Gone on an
+       install without the mux, which would have nowhere to send anyone. -->
+  <div id="list-deprecated" class="deprecation" data-feature="mux" role="note">
+    <div class="deprecation-text"><strong>The chat list is deprecated.</strong>
+      Use the mux: every project's slots side by side, with Claude Code in a terminal.</div>
+    <a class="deprecation-go" href="/chat/mux">Open the mux</a>
+    <button type="button" class="deprecation-close" aria-label="Hide this notice">✕</button>
+  </div>
   <div id="list-body" class="list-body">
     <div class="empty">Loading…</div>
   </div>
@@ -117,6 +127,16 @@
        switching without losing state and seeing what the other one is doing.
        A tab is a project, not a chat — see the panes section of app.js. -->
   <div id="tabs" class="tabs hidden"></div>
+
+  <!-- Opening a chat rather than a terminal is deprecated, so a conversation says so
+       too: a launch that restores tabs or follows a link never passes the list's
+       notice. Hidden inside a mux pane, which has its own line (mux.js). -->
+  <div id="chat-deprecated" class="deprecation" data-feature="mux" role="note">
+    <div class="deprecation-text"><strong>Chats are deprecated.</strong>
+      Open this slot's terminal in the mux instead: the real Claude Code CLI.</div>
+    <a class="deprecation-go" href="/chat/mux">Open the mux</a>
+    <button type="button" class="deprecation-close" aria-label="Hide this notice">✕</button>
+  </div>
 
   <!-- Which conversation this project's window is showing, and the control for
        changing it. Its own line rather than the header, because it is a button:

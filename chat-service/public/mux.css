@@ -241,3 +241,15 @@ body.mux {
   .mux-placeholder-open { display: block; }
   .mux-pane-label { display: none; }
 }
+
+/* A chat pane's deprecation line: chats still work, and this is the way across to
+   the terminal. Amber like the chat list's notice (style.css .deprecation). */
+.mux-pane-deprecated {
+  display: flex; align-items: center; gap: 8px; margin: 0; padding: 5px 10px;
+  font-size: 12px; line-height: 1.35; color: var(--text);
+  background: var(--bg-raised); border-bottom: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+}
+.mux-pane-deprecated > span { flex: 1; min-width: 0; }
+.mux-pane-deprecated.hidden { display: none; }
+.mux-deprecated-tag { font-size: 10px; opacity: .7; text-transform: uppercase; letter-spacing: .04em; }

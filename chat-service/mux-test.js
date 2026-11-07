@@ -332,15 +332,32 @@ console.log('mux page');
   check('focusing the pane clears the ring and the count', !pane0.attention && !/^\(\d+\) /.test(doc.title)
     && mux.state.focus === 0);
 
-  // Work happens in the slots: the main checkout is for looking at.
+  // Work happens in the slots. The main checkout is for looking at, and for
+  // read-only work with an agent: a terminal starts there, a chat does not.
   const rootRow = doc.querySelector(`.mux-slot[data-cwd="${projectPath}"]`);
-  check('the main checkout row is view only, with no + to start in it',
-    rootRow?.classList.contains('view-only') && !rootRow.querySelector('.mux-add')
-      && /view only/.test(rootRow.querySelector('.mux-slot-name').textContent));
+  check('the main checkout row is marked for read-only work, with a + that opens a terminal',
+    rootRow?.classList.contains('view-only') && /terminal/i.test(rootRow.querySelector('.mux-add')?.title || '')
+      && /read-only work/.test(rootRow.querySelector('.mux-slot-name').textContent), rootRow?.innerHTML);
   const prepares = calls.filter((c) => c.url === '/api/slots/prepare').length;
-  await mux.startIn(0, 'demo', { n: 0, cwd: projectPath, created: true, sessions: [] }, 'terminal');
-  check('nothing new starts in the main checkout',
-    calls.filter((c) => c.url === '/api/slots/prepare').length === prepares && mux.state.panes[0].cwd === slotCwd(3));
+  await mux.startIn(1, 'demo', { n: 0, cwd: projectPath, created: true, sessions: [] }, 'chat');
+  check('no chat starts in the main checkout',
+    calls.filter((c) => c.url === '/api/slots/prepare').length === prepares && mux.state.panes[1].cwd === slotCwd(2));
+  await mux.startIn(1, 'demo', { n: 0, cwd: projectPath, created: true, sessions: [] }, 'terminal');
+  const mainPane = mux.state.panes[1];
+  check('a terminal does, with nothing to prepare',
+    calls.filter((c) => c.url === '/api/slots/prepare').length === prepares
+      && mainPane.kind === 'terminal' && mainPane.cwd === projectPath && mainPane.slot === 0, JSON.stringify({ kind: mainPane.kind, cwd: mainPane.cwd }));
+  check('and its pane says the main checkout is for reading, not building',
+    /for reading and questions/.test(mainPane.el.querySelector('.mux-pane-note').textContent)
+      && !mainPane.el.querySelector('.mux-pane-note').classList.contains('hidden'));
+  check('its frame is the project\'s own terminal session', /[?&]slot=0(&|$)/.test(mainPane.frame?.src || ''), mainPane.frame?.src);
+  check('a terminal pane carries no deprecation line', mainPane.el.querySelector('.mux-pane-deprecated').classList.contains('hidden'));
+  const chatWarn = pane0.el.querySelector('.mux-pane-deprecated');
+  check('a chat pane says chats are deprecated, with the way to a terminal',
+    !chatWarn.classList.contains('hidden') && /deprecated/.test(chatWarn.textContent)
+      && Boolean(chatWarn.querySelector('[data-act="to-terminal"]')), chatWarn.outerHTML);
+  check('and so does the Chat choice for new panes', /deprecated/.test(doc.querySelector('[data-kind="chat"]').textContent));
+  mux.openIn(1, { project: 'demo', slot: 2, cwd: slotCwd(2), sessionId: 'old-2', title: 'slot two chat' });
   check('the terminal is what a + opens, unless chosen otherwise', mux.state.newKind === 'terminal');
 
   // A slot reset after its last conversation is not called by that conversation.
