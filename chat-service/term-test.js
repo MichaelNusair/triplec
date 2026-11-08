@@ -65,7 +65,8 @@ case "$1" in
   has-session) for t in $FAKE_TMUX_HAS; do [ "$3" = "$t" ] && exit 0; done; exit 1 ;;
   display-message) [ -e "${root}/no-server" ] && exit 1
     case "$*" in *mouse_any_flag*) [ -e "${root}/pane-mouse" ] && echo "1 1" || echo "0 0" ;; *) echo 4242 ;; esac ;;
-  list-sessions) [ -e "${root}/no-server" ] && exit 1; printf 'claude-demo/slot-2\\nshell\\n' ;;
+  list-sessions) [ -e "${root}/no-server" ] && exit 1; printf 'claude-demo/slot-2\\nshell\\nshell-demo/slot-6\\n' ;;
+  attach-session) echo "FAKE-ATTACH:$3 IN:$(pwd)" ;;
   *) exit 0 ;;
 esac
 `);
@@ -318,6 +319,29 @@ console.log('the socket, through the server');
   check('/api/slots says which slot has a terminal session',
     slots.slots.find((s) => s.n === 2)?.terminal === true && slots.slots.find((s) => s.n === 3)?.terminal === false
       && slots.rootTerminal === false, JSON.stringify(slots.slots?.map((s) => [s.n, s.terminal])));
+
+  check('…and which has a bare shell, apart from its Claude',
+    slots.slots.find((s) => s.n === 6)?.shell === true && slots.slots.find((s) => s.n === 6)?.terminal === false
+      && slots.slots.find((s) => s.n === 2)?.shell === false && slots.rootShell === false,
+    JSON.stringify(slots.slots?.map((s) => [s.n, s.terminal, s.shell])));
+
+  // A bare shell: its own session, started here in the tmux server, never `cc`.
+  await writeFile(tmuxLog, '');
+  const shell = await open('project=demo&slot=5&kind=shell&cols=90&rows=20', { ms: 3000 });
+  const shellLog = await readFile(tmuxLog, 'utf8');
+  const slot5 = join(demo, '.claude', 'worktrees', 'slot-5');
+  const shellAttached = shell.json.find((m) => m.type === 'attached');
+  check('a shell pane is attached to a session of its own, not Claude\'s',
+    shellAttached?.session === 'shell-demo/slot-5' && shellAttached.kind === 'shell', JSON.stringify(shell.json));
+  check('…started detached as a login bash in the slot, with `cc`\'s options',
+    shellLog.includes(`new-session -d -s shell-demo/slot-5 -c ${slot5} bash -l`)
+      && shellLog.includes('set-option -t =shell-demo/slot-5: window-size latest'), shellLog);
+  check('…and attached by its exact name, with no `cc` in it',
+    shell.text.includes(`FAKE-ATTACH:=shell-demo/slot-5 IN:${slot5}`) && !shell.text.includes('FAKE-CC'), JSON.stringify(shell.text.slice(0, 300)));
+  check('…in a slot made on first use', await stat(join(slot5, '.git')).then(() => true, () => false));
+  const badKind = await open('project=demo&slot=5&kind=root');
+  check('a kind that is neither claude nor shell is refused',
+    badKind.json.some((m) => m.type === 'error' && /kind/.test(m.message)) && !badKind.text, JSON.stringify(badKind.json));
 
   // A command line of your own, in place of `claude`: the session's program is
   // replaced and the session kept, and the line reaches tmux as argv, never a shell.
@@ -694,6 +718,30 @@ console.log('terminal panes in the mux');
     && new URL(pane0.frame.src).pathname === '/chat/');
   check('…and stops nothing on the way', calls.slice(before).every((c) => c.method === 'GET' || c.url === '/api/slots/prepare'));
   check('the layout saves each pane\'s kind', JSON.parse(w.localStorage.getItem('triplec-mux')).panes[1].kind === 'terminal');
+
+  // A bare shell on a slot: from the row's $, beside a running Claude, asking nothing.
+  w.confirm = () => { throw new Error('asked'); };
+  const beforeShell = calls.length;
+  mux.focusPane(0);
+  doc.querySelector(`.mux-slot[data-cwd="${slotCwd(2)}"] .mux-shell`).click();
+  await sleep(20);
+  const shellSrc = new URL(pane0.frame.src);
+  check("a slot row's $ opens a shell in the focused pane",
+    pane0.kind === 'shell' && shellSrc.pathname === '/chat/term' && shellSrc.searchParams.get('kind') === 'shell'
+      && shellSrc.searchParams.get('slot') === '2', pane0.frame.src);
+  check('…without preparing the slot or asking about the Claude in it',
+    !calls.slice(beforeShell).some((c) => c.url === '/api/slots/prepare'));
+  check("…and its header offers Claude, not a chat, and nothing that is Claude's",
+    pane0.el.querySelector('[data-act="kind"]').textContent === 'Claude'
+      && pane0.el.querySelector('[data-act="run"]').hidden && pane0.el.querySelector('[data-act="listen"]').hidden
+      && pane0.el.querySelector('[data-act="shell"]').hidden);
+  pane0.el.querySelector('[data-act="kind"]').click();
+  await sleep(20);
+  check("the header switch puts the slot's Claude terminal back",
+    pane0.kind === 'terminal' && !new URL(pane0.frame.src).searchParams.has('kind'), pane0.frame.src);
+  pane0.el.querySelector('[data-act="shell"]').click();
+  await sleep(20);
+  check("a terminal pane's $ Shell puts the slot's shell in it", pane0.kind === 'shell' && pane0.slot === 2);
   w.close();
 }
 

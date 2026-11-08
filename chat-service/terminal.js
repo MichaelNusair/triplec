@@ -14,7 +14,13 @@
  * socket. It never builds a shell command — the project name is validated by
  * `projectPathFor` and the slot is a number, and both reach `cc` as argv.
  *
- * Socket protocol, at /ws/term?project=<name>&slot=<0-10>&cols=&rows=:
+ * A pane can also be a bare shell (`kind=shell`): `bash -l` in the same directory, in
+ * a tmux session of its own, `shell-<project>[/slot-N]`, beside Claude's rather than
+ * in it. It is started here rather than by `cc` — `cc` only ever starts Claude — but
+ * in the same tmux server, so it is claude-tmux.service's too and outlives a deploy.
+ * Exiting it ends only it: a slot is reset when its Claude exits, never its shell.
+ *
+ * Socket protocol, at /ws/term?project=<name>&slot=<0-10>&kind=<claude|shell>&cols=&rows=:
  *   browser → here: JSON text — {type:'input', data}, {type:'resize', cols, rows},
  *                   {type:'scroll', lines} (negative is up)
  *   here → browser: binary frames, the terminal's bytes; JSON text for state —
@@ -53,13 +59,20 @@ const TMUX = process.env.TMUX_BIN || 'tmux';
  * the session the editor's Claude button opens, and `claude-<project>/slot-N` is
  * what `cc <project>/slot-N` opens from any other terminal.
  */
-export function terminalTarget(project, slotValue) {
+export const TERMINAL_KINDS = ['claude', 'shell'];
+
+export function terminalTarget(project, slotValue, kindValue = 'claude') {
+  const kind = kindValue == null || kindValue === '' ? 'claude' : kindValue;
+  if (!TERMINAL_KINDS.includes(kind)) throw new Error('kind must be claude or shell');
   const path = projectPathFor(project);
   const { count } = slotConfigFor(path);
   const slot = Number(slotValue) === 0 || slotValue === '0' ? 0 : parseSlot(slotValue, count);
   if (slot === null) throw new Error(`slot must be 0, for the project itself, or 1 to ${count}`);
   const name = slot ? `${project}/slot-${slot}` : project;
-  return { project, slot, projectPath: path, dir: slot ? slotPath(path, slot) : path, name, session: `claude-${name}` };
+  return {
+    project, slot, kind, projectPath: path, dir: slot ? slotPath(path, slot) : path, name,
+    session: `${kind === 'shell' ? 'shell' : 'claude'}-${name}`,
+  };
 }
 
 async function tmux(args) {
@@ -81,7 +94,12 @@ export async function withTerminals(answer) {
   return {
     ...answer,
     rootTerminal: sessions.has(`claude-${answer.name}`),
-    slots: (answer.slots || []).map((s) => ({ ...s, terminal: sessions.has(`claude-${answer.name}/slot-${s.n}`) })),
+    rootShell: sessions.has(`shell-${answer.name}`),
+    slots: (answer.slots || []).map((s) => ({
+      ...s,
+      terminal: sessions.has(`claude-${answer.name}/slot-${s.n}`),
+      shell: sessions.has(`shell-${answer.name}/slot-${s.n}`),
+    })),
   };
 }
 
@@ -166,7 +184,7 @@ export async function serveTerminal(ws, query) {
 
   let target;
   try {
-    target = terminalTarget(query.get('project'), query.get('slot'));
+    target = terminalTarget(query.get('project'), query.get('slot'), query.get('kind'));
   } catch (err) {
     fail(err.message);
     return;
@@ -204,12 +222,28 @@ export async function serveTerminal(ws, query) {
   // With a registry a project's directory is not `$PROJECTS_ROOT/<name>`, so `cc` is
   // handed the directory itself and told the name to give the session — the same
   // `claude-<name>` this side looks for, rather than one built from the path.
-  const ccArg = hasRegistry() ? target.dir : target.name;
-  const relay = spawn(PYTHON, ['-I', RELAY, String(cols), String(rows), CC, ccArg], {
+  let command;
+  if (target.kind === 'shell') {
+    // A shell is started here, as `cc` starts Claude: detached first, with `cc`'s
+    // options, then attached by its exact name — never a prefix match onto another.
+    if (!existed) {
+      const made = await tmux(['new-session', '-d', '-s', target.session, '-c', target.dir, 'bash', '-l']);
+      if (!made.ok) {
+        fail(`tmux refused: ${made.err || 'no reason given'}`);
+        return;
+      }
+      await tmux(['set-option', '-t', `=${target.session}:`, 'remain-on-exit', 'off']);
+      await tmux(['set-option', '-t', `=${target.session}:`, 'window-size', 'latest']);
+    }
+    command = [TMUX, 'attach-session', '-t', `=${target.session}`];
+  } else {
+    command = [CC, hasRegistry() ? target.dir : target.name];
+  }
+  const relay = spawn(PYTHON, ['-I', RELAY, String(cols), String(rows), ...command], {
     cwd: target.dir,
     env: {
       ...process.env,
-      CC_SESSION_NAME: target.name,
+      ...(target.kind === 'claude' ? { CC_SESSION_NAME: target.name } : {}),
       TERM: 'xterm-256color',
       COLORTERM: 'truecolor',
       LANG: process.env.LANG || 'C.UTF-8',
@@ -217,7 +251,7 @@ export async function serveTerminal(ws, query) {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  sendJson({ type: 'attached', session: target.session, existed, dir: target.dir });
+  sendJson({ type: 'attached', session: target.session, kind: target.kind, existed, dir: target.dir });
 
   relay.stdout.on('data', (chunk) => {
     if (ws.readyState !== ws.OPEN) return;
@@ -243,7 +277,8 @@ export async function serveTerminal(ws, query) {
     // The relay also exits when the page detaches, and then the session is still
     // there. Gone means Claude exited — `/exit` — which in a slot is a reset: see
     // resetSlot. Done before saying so, so the page's next look at the slot sees it.
-    if (target.slot && !(await tmuxSessions()).has(target.session)) {
+    // A shell's exit is only its own; the slot is Claude's to reset.
+    if (target.kind === 'claude' && target.slot && !(await tmuxSessions()).has(target.session)) {
       try {
         const token = await getGithubToken();
         const result = await resetSlot(target.projectPath, target.slot, {

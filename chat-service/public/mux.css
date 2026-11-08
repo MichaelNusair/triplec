@@ -64,6 +64,7 @@ body.mux {
 .mux-add:hover { border-color: var(--border); color: var(--text); }
 .mux-add.small { width: 22px; height: 22px; font-size: 14px; opacity: 0; }
 .mux-slot:hover .mux-add.small, .mux-add.small:focus-visible { opacity: 1; }
+.mux-add.mux-shell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
 
 .mux-slot { display: flex; align-items: center; padding-right: 8px; }
 .mux-slot.on-screen { background: rgba(255, 255, 255, .04); }

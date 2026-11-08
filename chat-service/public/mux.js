@@ -14,6 +14,9 @@
  *   - a terminal: the real Claude Code CLI (`/chat/term?embed=1`), in the tmux
  *     session `cc` keeps for that slot — claude-tmux.service's, not this tab's.
  *     `cc <project>/slot-N` from any other terminal is the same session.
+ *   - a shell: the same terminal page with `kind=shell` — a bare `bash -l` in the
+ *     slot, in a tmux session of its own beside Claude's (`shell-<project>/slot-N`).
+ *     For running things yourself while Claude works; exiting it resets nothing.
  *
  * Either way the work belongs to the box. Shut the laptop mid-turn and the turn
  * finishes. The chat kind is deprecated — a chat pane says so, with a button across
@@ -45,7 +48,10 @@
 
   const STORE_KEY = 'triplec-mux';
   const LAYOUTS = { 1: [1, 1], 2: [2, 1], 3: [3, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2] };
-  const KINDS = ['chat', 'terminal'];
+  const KINDS = ['chat', 'terminal', 'shell'];
+  // Both are the terminal page; a shell is the same page asking for `bash` instead.
+  const TERM_KINDS = ['terminal', 'shell'];
+  const isTerm = (kind) => TERM_KINDS.includes(kind);
   const LIVE_POLL_MS = 5000;
   const SLOTS_POLL_MS = 15000;
   const PROJECTS_POLL_MS = 60000;
@@ -71,7 +77,7 @@
 
   function emptyPane() {
     return {
-      kind: 'chat',    // 'chat' | 'terminal'
+      kind: 'chat',    // 'chat' | 'terminal' | 'shell'
       project: null,   // project name, as /api/slots and /api/projects know it
       slot: null,      // 1-10, or 0 for the project's own checkout
       cwd: null,
@@ -297,7 +303,8 @@
   }
 
   const slotLabel = (n) => (n ? `slot ${n}` : 'main checkout');
-  const kindLabel = (kind) => (kind === 'terminal' ? 'terminal' : 'chat');
+  const kindLabel = (kind) => (kind === 'terminal' ? 'terminal' : kind === 'shell' ? 'shell' : 'chat');
+  const kindMark = (kind) => (kind === 'terminal' ? ' ❯' : kind === 'shell' ? ' $' : '');
 
   // --- the sidebar ----------------------------------------------------------
   function projectByName(name) {
@@ -344,7 +351,7 @@
     const slots = state.slots.get(name);
     const places = [{
       n: 0, cwd: project.path, created: true, dirty: 0, unpushed: 0, held: false, busy: false, elsewhere: 0,
-      sessions: [], terminal: Boolean(slots?.rootTerminal),
+      sessions: [], terminal: Boolean(slots?.rootTerminal), shell: Boolean(slots?.rootShell),
     }];
     if (slots?.enabled) places.push(...slots.slots);
     return places;
@@ -444,6 +451,7 @@
       || (place.created ? 'Nothing yet' : 'Not created yet');
     const facts = [];
     if (place.terminal) facts.push('terminal');
+    if (place.shell) facts.push('shell');
     if (place.n && place.branch && place.branch !== `slot-${place.n}`) facts.push(place.branch);
     if (place.dirty) facts.push(`${place.dirty} changed`);
     if (place.unpushed) facts.push(`${place.unpushed} unpushed`);
@@ -493,10 +501,23 @@
       startIn(state.focus, project.name, place, freshKind);
     });
 
+    // A bare shell here, beside whatever Claude is doing: started if there is none,
+    // joined if there is. Never a second agent, so it asks nothing.
+    const shell = document.createElement('button');
+    shell.type = 'button';
+    shell.className = 'mux-add small mux-shell';
+    shell.title = `${place.shell ? 'Open the' : 'A'} shell in ${project.name} ${slotLabel(place.n)}`;
+    shell.setAttribute('aria-label', shell.title);
+    shell.textContent = '$';
+    shell.addEventListener('click', () => {
+      closeSide();
+      startIn(state.focus, project.name, place, 'shell');
+    });
+
     if (viewOnly) row.classList.add('view-only');
     // A running terminal is joined by the row itself; a second + would only do that again.
-    if (viewOnly && place.terminal) row.append(main);
-    else row.append(main, fresh);
+    if (viewOnly && place.terminal) row.append(main, shell);
+    else row.append(main, fresh, shell);
     return row;
   }
 
@@ -532,6 +553,12 @@
    */
   async function startIn(index, name, place, kind = state.newKind) {
     const mainNote = !place.n && slotsOn(name) ? MAIN_TERMINAL_NOTE : '';
+    // A shell is not an agent: it takes any place, asks nothing, and refreshes
+    // nothing — the server makes a slot that does not exist yet.
+    if (kind === 'shell') {
+      openIn(index, { kind, project: name, slot: place.n, cwd: place.cwd });
+      return;
+    }
     if (kind === 'terminal' && place.terminal) {
       openIn(index, { kind, project: name, slot: place.n, cwd: place.cwd, note: mainNote });
       return;
@@ -613,8 +640,9 @@
   }
 
   function frameSrc(pane) {
-    if (pane.kind === 'terminal') {
+    if (isTerm(pane.kind)) {
       const q = new URLSearchParams({ embed: '1', project: pane.project, slot: String(pane.slot || 0) });
+      if (pane.kind === 'shell') q.set('kind', 'shell');
       return `/chat/term?${q}`;
     }
     const q = new URLSearchParams({ embed: '1', cwd: pane.cwd, project: pane.project });
@@ -631,7 +659,7 @@
   function switchKind(pane) {
     const index = state.panes.indexOf(pane);
     const place = placesOf(pane.project).find((p) => p.cwd === pane.cwd) || { n: pane.slot || 0, cwd: pane.cwd };
-    if (pane.kind === 'chat') {
+    if (pane.kind === 'chat' || pane.kind === 'shell') {
       startIn(index, pane.project, place, 'terminal');
       return;
     }
@@ -730,6 +758,7 @@
         <span class="mux-pane-title"></span>
         <span class="mux-pane-sub"></span>
         <button type="button" class="mux-pane-btn mux-pane-kind" data-act="kind"></button>
+        <button type="button" class="mux-pane-btn" data-act="shell" title="Show a bare shell in this slot here instead — Claude keeps running">$ Shell</button>
         <button type="button" class="mux-pane-btn" data-act="listen" title="What Claude last said here — read it aloud, or talk it over">🔊</button>
         <button type="button" class="mux-pane-btn" data-act="new" title="New chat in this slot">+</button>
         <button type="button" class="mux-pane-btn" data-act="run" title="Run your own command line in this slot's terminal — an environment variable, claude --resume <id>">❯…</button>
@@ -758,6 +787,11 @@
       const place = placesOf(pane.project).find((p) => p.cwd === pane.cwd) || { n: pane.slot || 0, cwd: pane.cwd };
       // This chat is the one being replaced, so it is not a second agent in the slot.
       startIn(state.panes.indexOf(pane), pane.project, { ...place, busy: false, sessions: [], elsewhere: 0 }, 'chat');
+    });
+    el.querySelector('[data-act="shell"]').addEventListener('click', () => {
+      if (!pane.project) return;
+      const place = placesOf(pane.project).find((p) => p.cwd === pane.cwd) || { n: pane.slot || 0, cwd: pane.cwd };
+      startIn(state.panes.indexOf(pane), pane.project, place, 'shell');
     });
     el.querySelector('[data-act="phone"]').addEventListener('click', () => copyPhoneLink(pane));
     el.querySelector('[data-act="run"]').addEventListener('click', () => {
@@ -805,7 +839,7 @@
           pane.frame.title = `Pane ${index + 1}: ${kindLabel(pane.kind)}`;
           // A chat dictates and reads aloud; a terminal pastes. A frame gets none of
           // it unless asked.
-          pane.frame.allow = pane.kind === 'terminal'
+          pane.frame.allow = isTerm(pane.kind)
             ? 'clipboard-read; clipboard-write'
             : 'microphone; autoplay; clipboard-write';
           pane.frame.src = pane.src || frameSrc(pane);
@@ -838,7 +872,7 @@
       const dot = pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle';
       tab.innerHTML = `<span class="mux-dot ${dot}"></span><span class="mux-tab-text"></span>`;
       const where = pane.project
-        ? `${pane.project} · ${pane.slot ? `slot ${pane.slot}` : 'main'}${pane.kind === 'terminal' ? ' ❯' : ''}`
+        ? `${pane.project} · ${pane.slot ? `slot ${pane.slot}` : 'main'}${kindMark(pane.kind)}`
         : 'empty';
       $('.mux-tab-text', tab).textContent = `${index + 1} · ${where}`;
       tab.title = pane.title || where;
@@ -870,18 +904,25 @@
     const dot = $('.mux-dot', el);
     dot.className = `mux-dot ${pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle'}`;
     $('.mux-pane-label', el).textContent = pane.project
-      ? `${index + 1} · ${pane.project} · ${slotLabel(pane.slot)}${pane.kind === 'terminal' ? ' · ❯' : ''}`
+      ? `${index + 1} · ${pane.project} · ${slotLabel(pane.slot)}${pane.kind === 'chat' ? '' : ` ·${kindMark(pane.kind)}`}`
       : `${index + 1}`;
-    $('.mux-pane-title', el).textContent = pane.title || (pane.cwd ? (pane.kind === 'terminal' ? 'Claude in a terminal' : 'New chat') : '');
+    const untitled = { terminal: 'Claude in a terminal', shell: 'Shell', chat: 'New chat' }[pane.kind];
+    $('.mux-pane-title', el).textContent = pane.title || (pane.cwd ? untitled : '');
     $('.mux-pane-sub', el).textContent = pane.sub || '';
     for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !pane.cwd;
     // A terminal is one session per slot; "new" is a chat's.
-    $('[data-act="new"]', el).hidden = !pane.cwd || pane.kind === 'terminal';
+    $('[data-act="new"]', el).hidden = !pane.cwd || pane.kind !== 'chat';
+    // A shell has no Claude to listen to or replace; its way back is the kind button.
+    $('[data-act="shell"]', el).hidden = !pane.cwd || pane.kind !== 'terminal';
+    $('[data-act="listen"]', el).hidden = !pane.cwd || pane.kind === 'shell';
+    $('[data-act="run"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     const kind = $('[data-act="kind"]', el);
-    kind.textContent = pane.kind === 'terminal' ? 'Chat' : 'Terminal';
-    kind.title = pane.kind === 'terminal'
-      ? 'Show this slot\'s chat here instead — the terminal keeps running'
-      : 'Show this slot\'s terminal here instead — the chat keeps running';
+    kind.textContent = { terminal: 'Chat', shell: 'Claude', chat: 'Terminal' }[pane.kind];
+    kind.title = {
+      terminal: 'Show this slot\'s chat here instead — the terminal keeps running',
+      shell: 'Show this slot\'s Claude terminal here instead — the shell keeps running',
+      chat: 'Show this slot\'s terminal here instead — the chat keeps running',
+    }[pane.kind];
     const note = $('.mux-pane-note', el);
     note.textContent = pane.note;
     note.classList.toggle('hidden', !pane.note);
@@ -913,8 +954,9 @@
    */
   async function copyPhoneLink(pane) {
     let url;
-    if (pane.kind === 'terminal') {
+    if (isTerm(pane.kind)) {
       const q = new URLSearchParams({ project: pane.project, slot: String(pane.slot || 0) });
+      if (pane.kind === 'shell') q.set('kind', 'shell');
       url = `${location.origin}/chat/term?${q}`;
     } else {
       if (!pane.sessionId) {
@@ -933,9 +975,12 @@
     }
     try {
       await navigator.clipboard.writeText(url);
+      const where = `${pane.project}${pane.slot ? `/slot-${pane.slot}` : ''}`;
       toast(pane.kind === 'terminal'
-        ? `Link copied. From any terminal, \`cc ${pane.project}${pane.slot ? `/slot-${pane.slot}` : ''}\` is the same session.`
-        : 'Link copied. On the phone it is also in the chat list, under the slot.');
+        ? `Link copied. From any terminal, \`cc ${where}\` is the same session.`
+        : pane.kind === 'shell'
+          ? `Link copied. From any terminal, \`tmux attach -t =shell-${where}\` is the same shell.`
+          : 'Link copied. On the phone it is also in the chat list, under the slot.');
     } catch {
       window.prompt('Open this on the other device:', url);
     }
@@ -961,7 +1006,7 @@
         pane.trouble = msg.status === 'error' || msg.status === 'reconnecting';
         paintPane(pane);
         // Claude exiting in a slot resets it (see resetSlot), so the title goes too.
-        if (msg.status === 'ended' && pane.slot) {
+        if (msg.status === 'ended' && pane.slot && pane.kind === 'terminal') {
           pane.title = '';
           save();
         }

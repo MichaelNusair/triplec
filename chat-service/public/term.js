@@ -17,13 +17,20 @@
   const EMBED = params.get('embed') === '1' && window.parent !== window;
   const project = params.get('project') || '';
   const slot = Number(params.get('slot')) || 0;
+  // A bare shell in the same place, in a tmux session of its own — see terminal.js.
+  const kind = params.get('kind') === 'shell' ? 'shell' : 'claude';
+  const SHELL = kind === 'shell';
   const place = slot ? `${project} · slot ${slot}` : project;
   // A finger rather than a mouse: the keys, the compose line and tap-to-choose are
   // for this, and nothing here changes for a desktop.
   const COARSE = window.matchMedia('(pointer: coarse)').matches;
   if (EMBED) document.documentElement.classList.add('embed');
-  document.title = `${place} · Terminal`;
-  $('#term-title').textContent = place || 'Terminal';
+  document.title = `${place} · ${SHELL ? 'Shell' : 'Terminal'}`;
+  $('#term-title').textContent = place ? `${place}${SHELL ? ' · shell' : ''}` : 'Terminal';
+  if (SHELL) {
+    $('#term-restart').textContent = 'Start a shell here again';
+    $('#term-line').placeholder = 'Type a command…';
+  }
 
   const state = {
     ws: null,
@@ -94,7 +101,7 @@
     $('#term-ended').classList.add('hidden');
     setStatus('connecting', 'connecting…');
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const q = new URLSearchParams({ project, slot: String(slot), cols: String(term.cols), rows: String(term.rows) });
+    const q = new URLSearchParams({ project, slot: String(slot), kind, cols: String(term.cols), rows: String(term.rows) });
     const ws = new WebSocket(`${proto}//${location.host}/ws/term?${q}`);
     ws.binaryType = 'arraybuffer';
     state.ws = ws;
