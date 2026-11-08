@@ -574,6 +574,34 @@ console.log('terminal page, on a phone');
   check('the keys have an Enter', inputs().at(-1) === '\r');
   check('…and pressing one leaves the keyboard alone', fake.focused === 0);
 
+  const press = (sel) => w.document.querySelector(sel).dispatchEvent(new w.Event('pointerdown', { bubbles: true, cancelable: true }));
+  press('[data-key="sendnow"]');
+  await sleep(100);
+  check('^X^S is the two keys, apart', inputs().slice(-2).join('|') === '\x18|\x13', JSON.stringify(inputs().slice(-2)));
+  press('[data-key="ctrlbb"]');
+  check('^B^B gets one Ctrl-B past the tmux prefix', inputs().at(-1) === '\x02\x02');
+  press('[data-text="/"]');
+  check('a symbol key types itself', inputs().at(-1) === '/');
+  press('[data-mod="ctrl"]');
+  check('Ctrl shows that it is held', w.document.querySelector('[data-mod="ctrl"]').classList.contains('on'));
+  press('[data-key="left"]');
+  check('Ctrl then ← is a word left', inputs().at(-1) === '\x1b[1;5D', JSON.stringify(inputs().at(-1)));
+  check('…and Ctrl lets go after one key', !w.document.querySelector('[data-mod="ctrl"]').classList.contains('on'));
+  press('[data-mod="ctrl"]');
+  const line = w.document.querySelector('#term-line');
+  line.value = 'abz';
+  line.setSelectionRange(3, 3);
+  const typed = new w.Event('input', { bubbles: true });
+  Object.assign(typed, { data: 'z', inputType: 'insertText' });
+  line.dispatchEvent(typed);
+  check('Ctrl then z on the compose line is ^Z, taken back out of the line', inputs().at(-1) === '\x1a' && line.value === 'ab',
+    JSON.stringify([inputs().at(-1), line.value]));
+  line.value = '';
+  press('[data-mod="alt"]');
+  press('[data-mod="alt"]');
+  press('[data-text="?"]');
+  check('a modifier tapped twice lets go', inputs().at(-1) === '?');
+
   w.document.querySelector('#term-line').value = 'run the tests';
   w.document.querySelector('#term-compose').dispatchEvent(new w.Event('submit', { cancelable: true }));
   await sleep(150);

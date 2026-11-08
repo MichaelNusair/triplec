@@ -48,7 +48,11 @@ body.term-page {
   flex: 0 0 auto; min-width: 44px; padding: 8px 10px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit; font-size: 14px;
 }
+.term-keys button.on { border-color: var(--accent); background: var(--accent-dim); }
 .term-keys { scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+/* Two rows: the safe-area padding belongs under the last one only. */
+.term-keys + .term-keys { border-top: 0; padding-top: 0; }
+#term-keys { padding-bottom: 6px; }
 .term-keys::-webkit-scrollbar { display: none; }
 
 .term-compose {
@@ -78,6 +82,7 @@ html.embed .term-keys, html.embed .term-compose { display: none; }
 @media (pointer: coarse) {
   html.embed .term-keys, html.embed .term-compose { display: flex; }
   html.embed .term-keys { padding-bottom: 6px; }
+  html.embed .term-keys + .term-keys { padding-top: 0; }
 }
 
 .term-tap {

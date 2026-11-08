@@ -171,7 +171,9 @@
   }
 
   // --- keyboard, size, scrolling ---------------------------------------------
-  term.onData((data) => send({ type: 'input', data }));
+  // Ctrl or Alt held on the phone's key bar changes the next thing typed; see below.
+  let modifyTyped = (data) => data;
+  term.onData((data) => send({ type: 'input', data: modifyTyped(data) }));
   // Mouse reports and the like: bytes, not text, so they go as a binary frame.
   term.onBinary((data) => {
     if (state.ws?.readyState !== WebSocket.OPEN) return;
@@ -594,18 +596,78 @@
     setTimeout(() => mark.remove(), 350);
   }
 
+  // Each key's bytes. An array is a chord, sent a beat apart, so the CLI reads two
+  // keypresses rather than a burst. ^B^B is two because tmux's prefix is Ctrl-B:
+  // the first is tmux's, and only the second reaches Claude.
   const KEYS = {
     esc: '\x1b', tab: '\t', stab: '\x1b[Z', up: '\x1b[A', down: '\x1b[B', left: '\x1b[D', right: '\x1b[C', ctrlc: '\x03',
-    enter: '\r', bksp: '\x7f', d1: '1', d2: '2', d3: '3',
+    enter: '\r', bksp: '\x7f', d1: '1', d2: '2', d3: '3', d4: '4',
+    sendnow: ['\x18', '\x13'], ctrlx: '\x18', ctrls: '\x13', newline: '\x1b\r', escesc: ['\x1b', '\x1b'],
+    ctrlo: '\x0f', ctrlr: '\x12', ctrlbb: '\x02\x02', ctrlt: '\x14', ctrlg: '\x07', ctrld: '\x04',
+    ctrlu: '\x15', ctrlw: '\x17', ctrlk: '\x0b', ctrla: '\x01', ctrle: '\x05', ctrll: '\x0c',
+    home: '\x1b[H', end: '\x1b[F', pgup: '\x1b[5~', pgdn: '\x1b[6~', del: '\x1b[3~',
   };
-  for (const button of document.querySelectorAll('#term-keys [data-key]')) {
+
+  // Ctrl and Alt hold for one key: the next one from this bar, the phone's keyboard
+  // or the compose line. Tapped again before then, they let go.
+  const mods = { ctrl: false, alt: false };
+  const modButton = (name) => $(`.term-keys [data-mod="${name}"]`);
+  function setMod(name, on) {
+    mods[name] = on;
+    const button = modButton(name);
+    button?.classList.toggle('on', on);
+    button?.setAttribute('aria-pressed', String(on));
+  }
+  // The bytes a key makes with the held modifiers, which are then let go.
+  function modified(data) {
+    if (!mods.ctrl && !mods.alt) return data;
+    const { ctrl, alt } = mods;
+    setMod('ctrl', false);
+    setMod('alt', false);
+    if (typeof data !== 'string') return data;
+    // An arrow, Home or End takes them as a parameter: Ctrl-← is a word left.
+    const csi = /^\x1b\[([A-DHF])$/.exec(data);
+    if (csi) return `\x1b[1;${1 + (alt ? 2 : 0) + (ctrl ? 4 : 0)}${csi[1]}`;
+    let out = data;
+    if (ctrl && data.length === 1) {
+      const c = data.toUpperCase().charCodeAt(0);
+      if (data === ' ') out = '\x00';
+      else if (c >= 0x40 && c <= 0x5f) out = String.fromCharCode(c & 0x1f);
+      else if (data === '?') out = '\x7f';
+    }
+    return alt ? `\x1b${out}` : out;
+  }
+  function sendKey(data) {
+    const keys = Array.isArray(data) ? data : [data];
+    send({ type: 'input', data: keys[0] });
+    keys.slice(1).forEach((k, i) => setTimeout(() => send({ type: 'input', data: k }), (i + 1) * 40));
+  }
+
+  for (const button of document.querySelectorAll('.term-keys [data-key], .term-keys [data-text], .term-keys [data-mod]')) {
     // pointerdown + preventDefault, so tapping a key leaves the focus where it was:
     // the phone's keyboard stays open if it was, and is not opened if it was not.
     button.addEventListener('pointerdown', (e) => {
       e.preventDefault();
-      send({ type: 'input', data: KEYS[button.dataset.key] });
+      const { mod } = button.dataset;
+      if (mod) return setMod(mod, !mods[mod]);
+      const data = button.dataset.key ? KEYS[button.dataset.key] : button.dataset.text;
+      sendKey(Array.isArray(data) ? data : modified(data));
     });
   }
+  // A letter typed while Ctrl or Alt is held is that chord, and what follows it is
+  // plain again. Only the first character: a phone's keyboard can hand over a word.
+  modifyTyped = (data) => (mods.ctrl || mods.alt) && data ? modified(data[0]) + data.slice(1) : data;
+  // The compose line is a text field, so a letter typed there while one is held is
+  // taken back out of it and sent as the chord instead.
+  $('#term-line').addEventListener('input', (e) => {
+    if (!mods.ctrl && !mods.alt) return;
+    const line = e.target;
+    const typed = e.data || '';
+    if (!typed || !/^insert/.test(e.inputType || 'insertText')) return;
+    const at = line.selectionStart ?? line.value.length;
+    line.value = line.value.slice(0, at - typed.length) + line.value.slice(at);
+    send({ type: 'input', data: modified(typed[0]) });
+  });
   // Not keys: these open something, so they act on the click.
   $('#term-keys [data-act="copy"]').addEventListener('click', openCopySheet);
   $('#term-keys [data-act="image"]').addEventListener('click', () => $('#term-image').click());
