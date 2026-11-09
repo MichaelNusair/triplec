@@ -28,6 +28,13 @@ body.term-page {
   font-variant-ligatures: none;
   font-feature-settings: "liga" 0, "calt" 0;
 }
+/* Hebrew and Arabic in stored order read backwards. xterm.js has no bidi of its own,
+   and it draws each row's spans as inline-blocks — which the browser's bidi treats as
+   opaque neutrals, so it never reorders them. A row holding right-to-left text is
+   tagged .bidi (term.js) and its spans go back to inline, so the browser lays the row
+   out as the paragraph it is, on a left-to-right base: the right-to-left run turns
+   round inside the cells it already had, and the frame around it stays put. */
+.term-host .xterm .xterm-rows > div.bidi span { display: inline; }
 
 .term-ended {
   position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);

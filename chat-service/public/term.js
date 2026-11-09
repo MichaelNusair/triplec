@@ -72,6 +72,19 @@
     /* not laid out yet; the observer below fits it when it is */
   }
 
+  // Right-to-left text: tag each drawn row that holds any, and term.css lets the
+  // browser's bidi turn it the right way round. Only those rows — the rest keep
+  // xterm's own layout exactly. Hebrew, Arabic and their neighbours, and the
+  // presentation forms (not U+FEFF, which is a byte-order mark).
+  const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFC]/;
+  term.onRender?.(({ start, end }) => {
+    const rows = $('#term').querySelector('.xterm-rows')?.children;
+    if (!rows) return;
+    for (let y = start; y <= end && y < rows.length; y++) {
+      rows[y].classList.toggle('bidi', RTL.test(rows[y].textContent));
+    }
+  });
+
   // --- telling the mux --------------------------------------------------------
   function report(type, extra = {}) {
     if (!EMBED) return;

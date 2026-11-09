@@ -447,6 +447,7 @@ console.log('terminal page');
       write(d) { fake.written.push(d); },
       onData(f) { fake.handlers.data = f; }, onBinary(f) { fake.handlers.binary = f; },
       onBell(f) { fake.handlers.bell = f; }, onResize(f) { fake.handlers.resize = f; },
+      onRender(f) { fake.handlers.render = f; },
       registerLinkProvider() {}, attachCustomKeyEventHandler(f) { fake.handlers.key = f; },
       hasSelection: () => false,
       parser: { registerOscHandler(code, f) { fake.handlers[`osc${code}`] = f; } },
@@ -481,6 +482,27 @@ console.log('terminal page');
     url.pathname === '/ws/term' && url.searchParams.get('project') === 'demo' && url.searchParams.get('slot') === '3'
       && url.searchParams.get('cols') === '100', ws?.url);
   check('inside the mux it has no bar of its own', w.document.documentElement.classList.contains('embed'));
+
+  // xterm.js has no bidi, and its inline-block spans keep the browser's from reordering
+  // a row: Hebrew would read backwards. A drawn row with right-to-left text is tagged.
+  const drawn = w.document.createElement('div');
+  drawn.className = 'xterm-rows';
+  for (const text of ['│ > hello world', '│ > שלום עולם', 'مرحبا', '﻿plain']) {
+    const row = w.document.createElement('div');
+    row.innerHTML = `<span>${text}</span>`;
+    drawn.append(row);
+  }
+  w.document.querySelector('#term').append(drawn);
+  fake.handlers.render?.({ start: 0, end: 3 });
+  const tagged = () => [...drawn.children].map((r) => r.classList.contains('bidi'));
+  check('a drawn row holding Hebrew or Arabic is tagged for bidi, and no other',
+    JSON.stringify(tagged()) === '[false,true,true,false]', JSON.stringify(tagged()));
+  drawn.children[1].innerHTML = '<span>│ > back to English</span>';
+  fake.handlers.render?.({ start: 1, end: 1 });
+  check('a row redrawn without it loses the tag', !tagged()[1]);
+  const css = readFileSync(join(here, 'public', 'term.css'), 'utf8');
+  check('a tagged row\'s spans go back to inline, so the browser reorders them',
+    /\.xterm-rows > div\.bidi span \{ display: inline; \}/.test(css));
 
   ws.fire('message', { data: JSON.stringify({ type: 'attached', session: 'claude-demo/slot-3', existed: true }) });
   check('the mux is told it is attached', posted.some((m) => m.source === 'triplec-term' && m.type === 'term-state' && m.status === 'attached'));
