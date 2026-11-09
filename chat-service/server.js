@@ -561,13 +561,13 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
-    // An image pasted into a terminal pane, kept where the Claude in it can read it.
+    // A file pasted into a terminal pane, kept where the Claude in it can read it.
     // The answer is the path, which the page pastes in its place — see savePaste.
     if (pathname === '/api/term/paste' && req.method === 'POST') {
       let path;
       try {
         path = await savePaste(url.searchParams.get('project'), url.searchParams.get('slot'),
-          req.headers['content-type'], await readBody(req, PASTE_LIMIT));
+          req.headers['content-type'], await readBody(req, PASTE_LIMIT), url.searchParams.get('name'));
       } catch (err) {
         json(res, err.status || 400, { error: err.message });
         return;

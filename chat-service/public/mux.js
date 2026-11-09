@@ -761,6 +761,7 @@
         <button type="button" class="mux-pane-btn" data-act="shell" title="Show a bare shell in this slot here instead — Claude keeps running">$ Shell</button>
         <button type="button" class="mux-pane-btn" data-act="listen" title="What Claude last said here — read it aloud, or talk it over">🔊</button>
         <button type="button" class="mux-pane-btn" data-act="new" title="New chat in this slot">+</button>
+        <button type="button" class="mux-pane-btn" data-act="attach" title="Attach a file — an image, a PDF — to what you type here">📎</button>
         <button type="button" class="mux-pane-btn" data-act="run" title="Run your own command line in this slot's terminal — an environment variable, claude --resume <id>">❯…</button>
         <button type="button" class="mux-pane-btn" data-act="phone" title="Copy a link that opens this on the phone">⇱</button>
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
@@ -798,6 +799,24 @@
       if (pane.project) runCommand(pane);
     });
     el.querySelector('[data-act="listen"]').addEventListener('click', () => listen(pane));
+    // 📎: picked here, where the click is, and handed to the terminal in the pane,
+    // which uploads each file and pastes its path — see pasteFiles in term.js.
+    el.querySelector('[data-act="attach"]').addEventListener('click', () => {
+      if (!pane.frame || pane.kind === 'chat') return;
+      const input = document.createElement('input');
+      input.type = 'file';
+      input.multiple = true;
+      input.addEventListener('change', () => {
+        const files = [...(input.files || [])];
+        if (!files.length) return;
+        try {
+          pane.frame.contentWindow.postMessage({ type: 'attach', files }, location.origin);
+        } catch {
+          /* the frame went away while the picker was open */
+        }
+      });
+      input.click();
+    });
     pane.el = el;
     void index;
     return el;
@@ -916,6 +935,7 @@
     $('[data-act="shell"]', el).hidden = !pane.cwd || pane.kind !== 'terminal';
     $('[data-act="listen"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     $('[data-act="run"]', el).hidden = !pane.cwd || pane.kind === 'shell';
+    $('[data-act="attach"]', el).hidden = !pane.cwd || pane.kind === 'chat';
     const kind = $('[data-act="kind"]', el);
     kind.textContent = { terminal: 'Chat', shell: 'Claude', chat: 'Terminal' }[pane.kind];
     kind.title = {

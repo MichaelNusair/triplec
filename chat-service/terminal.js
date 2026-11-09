@@ -27,7 +27,7 @@
  *                   {type:'attached', session, existed}, {type:'exit', code},
  *                   {type:'error', message}
  *
- * And POST /api/term/paste?project=&slot=, an image as the body: see savePaste.
+ * And POST /api/term/paste?project=&slot=[&name=], a file as the body: see savePaste.
  */
 import { spawn, execFile } from 'child_process';
 import { mkdir, readdir, readFile, stat, unlink, writeFile } from 'fs/promises';
@@ -340,12 +340,17 @@ export async function vendorFile(name) {
 }
 
 /*
- * An image pasted or dropped into a terminal pane.
+ * A file pasted, dropped or attached into a terminal pane — an image, a PDF, anything.
  *
  * Claude Code's own image paste reads the clipboard of the machine it runs on, which
  * is this box, not the browser — so in a pane it finds nothing. What the CLI does take
- * is a path to an image, the way a terminal hands it a dropped file. So the page
- * uploads the image here, and pastes the path it gets back.
+ * is a path, the way a terminal hands it a dropped file: an image's path it attaches
+ * as an image, and any other path Claude reads with its tools. So the page uploads the
+ * file here, and pastes the path it gets back.
+ *
+ * An image is named by its type. Anything else keeps its own name, cut down to
+ * characters a shell and Claude Code's path detection take without quoting, so a PDF
+ * still reads as `report.pdf` in the prompt.
  *
  * Kept under the temp directory, apart per session, and only for a day: the path is
  * read when the message is sent, and nothing needs it after.
@@ -355,16 +360,24 @@ export const PASTE_LIMIT = 20 * 1024 * 1024;
 const PASTE_ROOT = process.env.TERM_PASTE_DIR || join(tmpdir(), 'triplec-term-paste');
 const PASTE_KEEP_MS = 24 * 60 * 60 * 1000;
 
-export async function savePaste(project, slotValue, type, body) {
+/** A file's own name, safe to paste bare into a prompt: `My Report (v2).pdf` → `My_Report_v2_.pdf`. */
+export function pasteName(name) {
+  const base = String(name || '').split(/[\\/]/).pop();
+  const clean = base.replace(/[^A-Za-z0-9._-]+/g, '_').replace(/^[._]+/, '').slice(-100);
+  return clean || 'file';
+}
+
+export async function savePaste(project, slotValue, type, body, name) {
   const target = terminalTarget(project, slotValue);
   const ext = PASTE_TYPES[String(type || '').split(';')[0].trim().toLowerCase()];
-  if (!ext) throw Object.assign(new Error('only a PNG, JPEG, GIF or WebP image can be pasted'), { status: 415 });
-  if (!body?.length) throw Object.assign(new Error('the image is empty'), { status: 400 });
+  if (!ext && !name) throw Object.assign(new Error('a file other than an image needs its name'), { status: 415 });
+  if (!body?.length) throw Object.assign(new Error('the file is empty'), { status: 400 });
   // The session name has a slash in it for a slot; the directory does not.
   const dir = join(PASTE_ROOT, target.name.replace(/[^A-Za-z0-9._-]/g, '_'));
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await prunePastes(dir);
-  const path = join(dir, `paste-${Date.now()}-${randomBytes(4).toString('hex')}.${ext}`);
+  const stamp = `paste-${Date.now()}-${randomBytes(4).toString('hex')}`;
+  const path = join(dir, ext ? `${stamp}.${ext}` : `${stamp}-${pasteName(name)}`);
   await writeFile(path, body, { mode: 0o600 });
   return path;
 }

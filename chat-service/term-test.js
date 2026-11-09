@@ -409,7 +409,17 @@ console.log('the socket, through the server');
     && pastedPath.startsWith(join(root, 'pastes', 'demo_slot-3') + '/') && pastedPath.endsWith('.png')
     && (await readFile(pastedPath)).equals(png), `${pasted.status} ${pastedPath}`);
   check('…readable by its owner only', ((await stat(pastedPath)).mode & 0o777) === 0o600);
-  check('only an image is taken', (await paste('project=demo&slot=3', 'text/html', '<b>x</b>')).status === 415);
+  const pdf = Buffer.from('%PDF-1.4\n%%EOF\n');
+  const pdfPasted = await paste('project=demo&slot=3&name=' + encodeURIComponent('My Report (v2).pdf'), 'application/pdf', pdf);
+  const { path: pdfPath } = await pdfPasted.json();
+  check('any other file is saved under its own name, cut to a bare path', pdfPasted.status === 200
+    && pdfPath.startsWith(join(root, 'pastes', 'demo_slot-3') + '/') && pdfPath.endsWith('-My_Report_v2_.pdf')
+    && !/\s/.test(pdfPath) && (await readFile(pdfPath)).equals(pdf), `${pdfPasted.status} ${pdfPath}`);
+  const sneaky = await (await paste('project=demo&slot=3&name=' + encodeURIComponent('../../etc/passwd'), 'text/plain', 'x')).json();
+  check('…and a name cannot climb out of the session\'s directory',
+    sneaky.path?.startsWith(join(root, 'pastes', 'demo_slot-3') + '/') && sneaky.path.endsWith('-passwd'), sneaky.path);
+  check('a file other than an image needs its name', (await paste('project=demo&slot=3', 'text/html', '<b>x</b>')).status === 415);
+  check('an empty file is refused', (await paste('project=demo&slot=3&name=a.pdf', 'application/pdf', '')).status === 400);
   check('not for a name that is a path', (await paste('project=..%2Fetc&slot=1', 'image/png', png)).status === 400);
   check('not without a session', (await paste('project=demo&slot=3', 'image/png', png, false)).status === 401);
 
@@ -535,7 +545,7 @@ console.log('terminal page, on a phone');
   w.Terminal = function Terminal() {
     Object.assign(this, {
       cols: 80, rows: 30,
-      loadAddon() {}, open() {}, focus() { fake.focused++; }, reset() {}, write() {},
+      loadAddon() {}, open() {}, focus() { fake.focused++; }, reset() {}, write() {}, paste(text) { fake.pasted = text; },
       onData() {}, onBinary() {}, onBell() {}, onResize() {},
       buffer: { active: { viewportY: 0, length: 30, getLine: (i) => (i < screen.length ? { translateToString: () => screen[i] } : undefined) } },
       element: { querySelector: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300, left: 0, width: 800 }) }) },
@@ -645,6 +655,20 @@ console.log('terminal page, on a phone');
   await sleep(600);
   check('a finger that moves is scrolling, not a long-press', sheet.classList.contains('hidden'));
   touch('touchend', 20, 120);
+
+  // 📎, or a drop: a PDF goes up under its own name, and its path is pasted.
+  let upload = null;
+  w.fetch = (u, options) => {
+    upload = { url: new URL(u, 'https://box.test'), options };
+    return Promise.resolve({ ok: true, status: 200, json: async () => ({ path: '/tmp/p/paste-1-ab-My_Report.pdf' }) });
+  };
+  check('the key row has 📎, and its picker takes any file, not only images',
+    !!w.document.querySelector('#term-keys [data-act="attach"]') && !w.document.querySelector('#term-file').accept);
+  await t.pasteFiles([new w.File(['%PDF-1.4'], 'My Report.pdf', { type: 'application/pdf' })]);
+  check('a PDF is uploaded with its name and type', upload?.url.pathname === '/api/term/paste'
+    && upload.url.searchParams.get('name') === 'My Report.pdf' && upload.options.headers['Content-Type'] === 'application/pdf',
+    upload && upload.url.href);
+  check('…and its path is pasted for Claude to read', fake.pasted === '/tmp/p/paste-1-ab-My_Report.pdf ');
   w.close();
 }
 
@@ -744,6 +768,7 @@ console.log('terminal panes in the mux');
   check('a chat beside a running terminal is asked about first', asked === 1, `asked ${asked}`);
   check('the header switch puts the same slot\'s chat in the pane', pane0.kind === 'chat' && pane0.slot === 2
     && new URL(pane0.frame.src).pathname === '/chat/');
+  check('a chat pane has no 📎 — that is a terminal\'s', pane0.el.querySelector('[data-act="attach"]').hidden);
   check('…and stops nothing on the way', calls.slice(before).every((c) => c.method === 'GET' || c.url === '/api/slots/prepare'));
   check('the layout saves each pane\'s kind', JSON.parse(w.localStorage.getItem('triplec-mux')).panes[1].kind === 'terminal');
 
@@ -763,6 +788,7 @@ console.log('terminal panes in the mux');
     pane0.el.querySelector('[data-act="kind"]').textContent === 'Claude'
       && pane0.el.querySelector('[data-act="run"]').hidden && pane0.el.querySelector('[data-act="listen"]').hidden
       && pane0.el.querySelector('[data-act="shell"]').hidden);
+  check('…but a shell still takes a file', !pane0.el.querySelector('[data-act="attach"]').hidden);
   pane0.el.querySelector('[data-act="kind"]').click();
   await sleep(20);
   check("the header switch puts the slot's Claude terminal back",

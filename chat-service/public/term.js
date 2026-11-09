@@ -398,48 +398,54 @@
   }, true);
 
   /*
-   * Images. Pasted, dropped, or picked on a phone, an image is uploaded and its path
-   * pasted in its place, which Claude Code attaches — see savePaste in terminal.js.
+   * Files — an image, a PDF, anything. Pasted, dropped, or picked with 📎 (on a phone
+   * from the key row, in the mux from the pane's header), a file is uploaded and its
+   * path pasted in its place: Claude Code attaches an image's, and reads any other —
+   * see savePaste in terminal.js.
    */
-  const imagesIn = (list) => [...(list || [])].filter((f) => f && /^image\//.test(f.type));
-  async function pasteImages(files) {
+  const filesIn = (list) => [...(list || [])].filter((f) => f && f.size > 0);
+  async function pasteFiles(files) {
     for (const file of files) {
-      toast('Uploading image…', 0);
+      const image = /^image\//.test(file.type);
+      toast(image ? 'Uploading image…' : `Uploading ${file.name || 'file'}…`, 0);
       try {
         const q = new URLSearchParams({ project, slot: String(slot) });
+        if (file.name) q.set('name', file.name);
         const res = await fetch(`/api/term/paste?${q}`, {
-          method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': file.type }, body: file,
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
         });
         const body = await res.json().catch(() => ({}));
         if (!res.ok || !body.path) throw new Error(body.error || `upload failed (${res.status})`);
         term.paste(`${body.path} `);
-        toast('Image attached');
+        toast(image ? 'Image attached' : 'File attached');
       } catch (err) {
         toast(err.message || 'upload failed');
       }
     }
     if (!COARSE) term.focus();
   }
+  const pickFile = () => $('#term-file').click();
   $('#term').addEventListener('paste', (e) => {
-    const files = imagesIn(e.clipboardData?.files);
+    const files = filesIn(e.clipboardData?.files);
     if (!files.length) return;
     e.preventDefault();
     e.stopPropagation();
-    pasteImages(files);
+    pasteFiles(files);
   }, true);
   $('#term').addEventListener('dragover', (e) => {
     if ([...(e.dataTransfer?.types || [])].includes('Files')) e.preventDefault();
   });
   $('#term').addEventListener('drop', (e) => {
-    const files = imagesIn(e.dataTransfer?.files);
+    const files = filesIn(e.dataTransfer?.files);
     if (!files.length) return;
     e.preventDefault();
-    pasteImages(files);
+    pasteFiles(files);
   });
-  $('#term-image').addEventListener('change', (e) => {
-    const files = imagesIn(e.target.files);
+  $('#term-file').addEventListener('change', (e) => {
+    const files = filesIn(e.target.files);
     e.target.value = '';
-    if (files.length) pasteImages(files);
+    if (files.length) pasteFiles(files);
   });
 
   let toastTimer = null;
@@ -670,7 +676,7 @@
   });
   // Not keys: these open something, so they act on the click.
   $('#term-keys [data-act="copy"]').addEventListener('click', openCopySheet);
-  $('#term-keys [data-act="image"]').addEventListener('click', () => $('#term-image').click());
+  $('#term-keys [data-act="attach"]').addEventListener('click', pickFile);
 
   // The compose line: typed as text, with the phone's autocorrect and dictation,
   // then Enter. Sent apart, because the CLI takes a burst ending in a return as a
@@ -710,6 +716,9 @@
     window.addEventListener('message', (e) => {
       if (e.origin !== location.origin || e.source !== window.parent) return;
       if (e.data?.type === 'focus') term.focus();
+      // The pane's 📎: the mux picks the files — a picker opened from a message has no
+      // click behind it, so a browser would refuse it here — and hands them over.
+      if (e.data?.type === 'attach' && Array.isArray(e.data.files)) pasteFiles(filesIn(e.data.files));
     });
   }
 
@@ -732,5 +741,5 @@
   }
 
   // For term-test.js and mux-test.js, which drive this in jsdom.
-  window.__termForTest = { state, term, connect, send, choiceAt, linksIn, selectionText, screenText, pasteImages };
+  window.__termForTest = { state, term, connect, send, choiceAt, linksIn, selectionText, screenText, pasteFiles };
 })();
