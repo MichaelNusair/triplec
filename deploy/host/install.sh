@@ -603,6 +603,11 @@ GHSESSION
   # Point the extension at the broker's wrapper, so one panel conversation can be
   # shared between devices — what claude-broker/install.sh does on AWS. Set rather
   # than defaulted: it is infrastructure, not a preference.
+  #
+  # The editor is always dark, on every device. With no theme set, code-server in a
+  # browser follows that device's light/dark preference, so a phone or laptop in
+  # light mode got a white editor beside the dark chat. Assigned on every run, like
+  # the wrapper, so a theme picked in the editor reverts at the next upgrade.
   if [ "$DRY" = 0 ] || [ -f "$CS_DATA/data/User/settings.json" ]; then
     if "$NODE" - "$CS_DATA/data/User/settings.json" "$INSTALL_DIR/claude-broker/wrapper" "$DRY" <<'MERGE'
 const fs = require('fs');
@@ -610,15 +615,20 @@ const path = require('path');
 const [file, wrapper, dry] = process.argv.slice(2);
 let cur = {};
 try { cur = JSON.parse(fs.readFileSync(file, 'utf8')); } catch {}
-if (cur['claudeCode.claudeProcessWrapper'] === wrapper) process.exit(1);
-cur['claudeCode.claudeProcessWrapper'] = wrapper;
+const want = {
+  'claudeCode.claudeProcessWrapper': wrapper,
+  'workbench.colorTheme': 'Default Dark Modern',
+  'window.autoDetectColorScheme': false,
+};
+if (Object.entries(want).every(([k, v]) => cur[k] === v)) process.exit(1);
+Object.assign(cur, want);
 if (dry !== '1') {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, `${JSON.stringify(cur, null, 2)}\n`);
 }
 MERGE
     then
-      changed "set claudeCode.claudeProcessWrapper in $CS_DATA/data/User/settings.json"
+      changed "set the broker wrapper and the dark theme in $CS_DATA/data/User/settings.json"
     fi
   fi
 fi
