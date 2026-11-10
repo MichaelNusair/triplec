@@ -1463,3 +1463,37 @@ async function summarise(files, { liveFor, live, sessionId }) {
     }),
   );
 }
+
+/**
+ * `claudeStatus`, asked about one process rather than one directory.
+ *
+ * For the box page's terminal rows, which know a pid — the `claude` a tmux pane is
+ * running — and nothing else. The CLI's own registry (see registeredSessions) turns
+ * that pid into the conversation it holds and the directory it was started in, and
+ * from there the answer is the one the Mux already gives about the same terminal,
+ * from the same function, so the two surfaces cannot disagree about it.
+ *
+ * Null for every kind of "cannot say": no registry entry yet (a `claude` still
+ * starting up), a pid whose file names it as someone else (reused), or a directory
+ * outside the projects root, which claudeStatus refuses. A null is shown as no badge,
+ * never as "idle".
+ */
+export async function processStatus(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  let entry;
+  try {
+    entry = JSON.parse(await readFile(join(CLAUDE_HOME, 'sessions', `${pid}.json`), 'utf8'));
+  } catch {
+    return null;
+  }
+  if (Number(entry?.pid) !== pid) return null;
+  const sessionId = typeof entry.sessionId === 'string' && /^[0-9a-fA-F-]{8,64}$/.test(entry.sessionId)
+    ? entry.sessionId
+    : null;
+  if (!sessionId || typeof entry.cwd !== 'string') return null;
+  try {
+    return await claudeStatus(entry.cwd, { sessionId });
+  } catch {
+    return null;
+  }
+}

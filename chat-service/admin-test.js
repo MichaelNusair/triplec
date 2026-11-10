@@ -169,6 +169,11 @@ function makeState() {
         awaitingMs: 8 * 60 * 1000,
       },
     ],
+    // What claude-status.js answers about each terminal's `claude`, by pid. The one
+    // in `claude-demo` is mid-turn; asking about any other pid gets the null that
+    // means "cannot say".
+    claudeStates: { 961: { state: 'working' } },
+    statusAsked: [],
     signals: [],
     killedSessions: [],
     commands: [],
@@ -251,6 +256,10 @@ function makeDeps(state) {
     // the page has to survive it: a socket that is not there, a broker mid-restart,
     // a timeout.
     liveSessions: async () => state.live,
+    claudeStatus: async (pid) => {
+      state.statusAsked.push(pid);
+      return state.claudeStates[pid] || null;
+    },
     // The stamp deploy.sh writes into a real payload, fixed here so the card can be
     // asserted. Two hours old in wall-clock terms, because the card says how long
     // ago the box was deployed and that is the half of it worth reading. See
@@ -405,6 +414,15 @@ const overview = await admin.overview();
   check('counts attached clients', demo.attachedClients === 1);
   check('someone\'s own shell is shown but not claimed', tmux.find((s) => s.name === 'work').isClaudeSession === false);
   check('reports the tmux server\'s cgroup', demo.serverInOwnUnit === false);
+  // The question the chat and editor rows always answered and these never did.
+  check('asks about the claude in the pane, not the shell around it',
+    state.statusAsked.includes(961) && !state.statusAsked.includes(960), JSON.stringify(state.statusAsked));
+  check('and says it is working', demo.working === true && demo.state === 'working' && demo.awaiting === null,
+    JSON.stringify({ working: demo.working, state: demo.state, awaiting: demo.awaiting }));
+  const shell = tmux.find((s) => s.name === 'work');
+  check('a pane with no claude is not asked, and claims nothing',
+    shell.working === null && shell.state === null && !state.statusAsked.includes(970),
+    JSON.stringify({ working: shell.working, state: shell.state }));
 
   check('reads memory pressure', overview.host.memory.percent === 90, String(overview.host.memory.percent));
   check('reads disk', overview.host.disk.percent === 40, String(overview.host.disk?.percent));
@@ -892,6 +910,16 @@ const $ = (sel) => w.document.querySelector(sel);
   // No button is better than a button whose only outcome is a refusal.
   check('only the cc session offers to end', $('#surface-tmux').querySelectorAll('.kill-btn').length === 1);
   check('the wrong cgroup is called out on the row too', $('#surface-tmux').innerHTML.includes('wrong cgroup'));
+  const termRows = [...$('#surface-tmux').querySelectorAll('.row')];
+  const titled = (t) => termRows.find((r) => r.querySelector('.row-title')?.textContent === t);
+  const demoRow = titled('demo');
+  const shellRow = titled('work');
+  check('a working terminal is badged working, in the chat\'s colour',
+    demoRow?.querySelector('.pill.hot')?.textContent === 'working', demoRow?.innerHTML);
+  // It used to wear the working colour itself, so every open terminal looked busy.
+  check('and being attached is no longer the same orange',
+    demoRow?.querySelectorAll('.pill.hot').length === 1, demoRow?.innerHTML);
+  check('an idle one says nothing about working', !shellRow?.textContent.includes('working'), shellRow?.innerHTML);
 
   check('the footer says a deploy ends every chat here', $('#admin-footer').textContent.includes('deploy'));
   check('and that transcripts survive being stopped', $('#admin-footer').textContent.includes('transcript'));
@@ -978,6 +1006,8 @@ console.log('\nThe page asks before forcing anything:');
     && posts[0].body.target === 'claude-demo', JSON.stringify(posts.map((p) => p.body.target)));
   check('and says scrollback is the thing being lost',
     confirmed[0]?.includes('scrollback cannot come back'), confirmed[0]);
+  check('and that the one it would end is working right now',
+    confirmed[0]?.includes('1 working right now'), confirmed[0]);
 
   posts.length = 0;
   confirmed.length = 0;
@@ -1012,6 +1042,51 @@ console.log('\nThe page asks before forcing anything:');
   await w.__adminForTest.reap();
   check('reaping asks nothing, because a probe holds nothing', posts.length === 1 && posts[0].path.includes('/reap'));
   check('and says what it freed', $('#toast').textContent.includes('3 probes'), $('#toast').textContent);
+}
+
+console.log('\nSays which terminals are working, waiting on you, or cannot be asked:');
+{
+  const asking = makeState();
+  asking.tmux = [
+    { name: 'claude-demo', createdAt: 1_699_930_000_000, attached: 0, panePid: 960 },
+    { name: 'claude-demo/slot-2', createdAt: 1_699_930_000_000, attached: 0, panePid: 980 },
+    { name: 'claude-demo/slot-3', createdAt: 1_699_930_000_000, attached: 0, panePid: 990 },
+    { name: 'claude-demo/slot-4', createdAt: 1_699_930_000_000, attached: 0, panePid: 995 },
+  ];
+  // `cc` execs claude as the pane's own process, which is how it really looks here:
+  // the pane pid is the claude, not a shell above it.
+  asking.processes.push(
+    { pid: 980, ppid: TMUX_PID, rssKb: 200_000, ageSeconds: 100, args: 'claude' },
+    { pid: 990, ppid: TMUX_PID, rssKb: 200_000, ageSeconds: 100, args: 'claude' },
+    { pid: 995, ppid: TMUX_PID, rssKb: 200_000, ageSeconds: 100, args: 'claude' },
+  );
+  asking.claudeStates = { 961: { state: 'question' }, 980: { state: 'agents' }, 990: { state: 'idle' } };
+  const deps = makeDeps(asking);
+  const ask = deps.claudeStatus;
+  // A status that throws is a status that cannot say; it must not take the page down.
+  deps.claudeStatus = async (pid) => (pid === 995 ? Promise.reject(new Error('boom')) : ask(pid));
+  const view = await createAdmin({ manager: makeManager([]), deps }).overview();
+  const by = (name) => view.surfaces.tmux.find((t) => t.name === name);
+  check('an unanswered question is waiting on you', by('claude-demo').awaiting === 'question'
+    && by('claude-demo').working === false, JSON.stringify(by('claude-demo')));
+  check('a turn out on background agents is still working', by('claude-demo/slot-2').working === true);
+  check('an idle one is idle, not unknown', by('claude-demo/slot-3').working === false
+    && by('claude-demo/slot-3').state === 'idle');
+  check('one that could not be asked claims nothing', by('claude-demo/slot-4').working === null
+    && by('claude-demo/slot-4').state === null, JSON.stringify(by('claude-demo/slot-4')));
+  check('the pane pid itself is the claude asked about', asking.statusAsked.includes(980));
+
+  w.fetch = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(JSON.parse(JSON.stringify(view))) });
+  await w.__adminForTest.refresh();
+  const rows = [...$('#surface-tmux').querySelectorAll('.row')];
+  const asked = rows[0];
+  check('the question is badged as needing you, and not also as working',
+    asked?.querySelector('.pill.ask')?.textContent === 'needs you · a question'
+    && !asked?.querySelector('.pill.hot'), asked?.innerHTML);
+  check('the agents turn is badged working', rows[1]?.querySelector('.pill.hot')?.textContent === 'working',
+    rows[1]?.innerHTML);
+  check('neither the idle nor the unknown one is', !rows[2]?.querySelector('.pill.hot, .pill.ask')
+    && !rows[3]?.querySelector('.pill.hot, .pill.ask'), `${rows[2]?.innerHTML} | ${rows[3]?.innerHTML}`);
 }
 
 console.log('\nDoes not hand a project name to the DOM as HTML:');

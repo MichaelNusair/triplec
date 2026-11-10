@@ -45,7 +45,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import os from 'os';
 import { dirname } from 'path';
-import { brokerSessions as liveBrokerSessions } from './claude-status.js';
+import { brokerSessions as liveBrokerSessions, processStatus } from './claude-status.js';
 import { buildInfo } from './build.js';
 import { HOST_MODE, PROJECTS_ROOT, WORKSPACE_USER, feature } from './host.js';
 import { projectLabel } from './projects.js';
@@ -172,6 +172,9 @@ const defaultDeps = {
   // Null for every kind of "cannot say", and this page must stay useful when it
   // is: the broker being down is one of the things you come here to find out.
   liveSessions: () => liveBrokerSessions(),
+  // What a terminal's `claude` is doing, the way the Mux asks about the same pane.
+  // Null when it cannot be said.
+  claudeStatus: (pid) => processStatus(pid),
   // Which payload is running. It belongs on this page more than anywhere else:
   // "the box is behaving oddly" and "the box is running something older than I
   // think" are the same question asked twice, and until this was here the second
@@ -388,6 +391,7 @@ async function tmuxSessions(deps, table, tmuxServerPid) {
     // Everything the pane forked, so the reported memory is the shell *and* the
     // Claude inside it rather than the shell alone.
     const tree = [byPid.get(pid), ...table.filter((p) => p.ppid === pid)].filter(Boolean);
+    const claude = tree.find((p) => parseClaudeArgs(p.args).isClaude) || null;
     sessions.push({
       kind: 'tmux',
       name,
@@ -397,9 +401,30 @@ async function tmuxSessions(deps, table, tmuxServerPid) {
       createdAt: Number(created) * 1000 || null,
       pid: Number.isFinite(pid) ? pid : null,
       rssKb: tree.reduce((sum, p) => sum + p.rssKb, 0),
-      hasClaude: tree.some((p) => parseClaudeArgs(p.args).isClaude),
+      hasClaude: Boolean(claude),
+      claudePid: claude?.pid ?? null,
     });
   }
+
+  /*
+   * Whether the Claude in each pane is mid-turn: the one thing the chat and editor
+   * rows always said and these never did, so a page of terminals read the same
+   * whether all of them were working or none was.
+   *
+   * The CLI in a pane reports to nobody — no broker holds its stdout — so this is
+   * the transcript-backed answer the Mux gives about the same terminal (see
+   * processStatus). `agents` is a turn waiting on its own background sub-agents and
+   * carries on by itself, so it counts as working; `question` is an
+   * `AskUserQuestion` nobody has answered, which is the row's real news. Null for all
+   * of it where nothing could be asked, which is not the same as idle.
+   */
+  await Promise.all(sessions.map(async (session) => {
+    const status = session.claudePid ? await deps.claudeStatus(session.claudePid).catch(() => null) : null;
+    const state = status?.state && status.state !== 'unknown' ? status.state : null;
+    session.state = state;
+    session.working = state ? state === 'working' || state === 'agents' : null;
+    session.awaiting = state === 'question' ? 'question' : null;
+  }));
   // The durability of every one of these depends on the server's cgroup, so it is
   // reported alongside them rather than left to be discovered by a deploy.
   const cgroup = tmuxServerPid ? await readCgroup(deps, tmuxServerPid) : null;

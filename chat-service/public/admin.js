@@ -234,7 +234,9 @@ const SURFACES = {
     targets: (list) => list.filter((s) => s.isClaudeSession).map((s) => ({
       target: s.name,
       group: groupKey(s),
-      live: s.attachedClients ? 'open on a device' : 'holding its scrollback',
+      live: s.awaiting
+        ? 'waiting for an answer from you'
+        : s.working ? 'working right now' : s.attachedClients ? 'open on a device' : 'holding its scrollback',
     })),
   },
 };
@@ -844,7 +846,14 @@ function renderTmux(sessions) {
   }
   for (const s of sessions) {
     const badges = [];
-    if (s.attachedClients) badges.push(badge(`${s.attachedClients} attached`, 'hot'));
+    // The same words and colours as the chat and editor rows, and for the same
+    // reason `awaiting` replaces `working` there — see brokerRow. No badge is idle;
+    // `working: null` (nothing could be asked) also shows none rather than a guess.
+    if (s.awaiting) badges.push(badge('needs you · a question', 'ask'));
+    else if (s.working) badges.push(badge('working', 'hot'));
+    // Plain, like the editor's: orange is kept for a turn in flight, and an
+    // attached client used to wear it, which made every open terminal look busy.
+    if (s.attachedClients) badges.push(badge(`${s.attachedClients} attached`));
     if (s.hasClaude) badges.push(badge('claude'));
     if (s.serverInOwnUnit === false) badges.push(badge('wrong cgroup', 'warn'));
     el.appendChild(
