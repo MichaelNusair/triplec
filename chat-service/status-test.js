@@ -41,7 +41,8 @@ process.env.PROJECTS_ROOT = PROJECTS;
 process.env.CLAUDE_HOME = CLAUDE_HOME;
 process.env.CLAUDE_BROKER_SOCKET = SOCKET;
 
-const { claudeStatus, firstPrompt, firstPromptFor, sessionOwner } = await import('./claude-status.js');
+const { claudeStatus, firstPrompt, firstPromptFor, recentMessages, recentMessagesFor, sessionOwner } =
+  await import('./claude-status.js');
 
 let pass = 0;
 let fail = 0;
@@ -1198,6 +1199,90 @@ ok(
   missing.text === null && missing.chars === 0,
   'a conversation with no transcript at all answers nothing rather than failing',
 );
+
+section('The recent messages, for stepping back through on the read-aloud sheet:');
+/*
+ * The history behind `last`: what the overlay walks when someone taps Previous. The
+ * newest entry has to be the same message `last` names, with the same id, or the
+ * sheet cannot tell where in the history the live message sits.
+ */
+const RECENT = 'b8c9d0e1-7777-4000-8000-000000000000';
+const RECENT_FILE = path.join(PROJECT_DIR, `${RECENT}.jsonl`);
+const said = (text, uuid, extra = {}) =>
+  JSON.stringify({
+    type: 'assistant',
+    uuid,
+    timestamp: new Date().toISOString(),
+    message: { role: 'assistant', stop_reason: 'end_turn', content: [{ type: 'text', text }] },
+    ...extra,
+  });
+const toolCall = JSON.stringify({
+  type: 'assistant',
+  uuid: 'tool-1',
+  message: { role: 'assistant', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: {} }] },
+});
+fs.writeFileSync(
+  RECENT_FILE,
+  [
+    userText('first question'),
+    said('One. Looking into it.', 'u1'),
+    toolCall,
+    toolResult(200),
+    said('A subagent talking to itself.', 'side', { isSidechain: true }),
+    said('Two. Found it.', 'u2'),
+    userText('second question'),
+    said('No response requested.', 'artifact'),
+    said('Three. Done.', 'u3'),
+    JSON.stringify({ type: 'ai-title', aiTitle: 'Recent', sessionId: RECENT }),
+  ].join('\n') + '\n',
+);
+const recent = await recentMessages(RECENT_FILE);
+ok(
+  recent.map((m) => m.id).join(',') === 'u1,u2,u3',
+  'the recent messages are what Claude said, oldest first, without tool calls, sidechains or artifacts',
+);
+ok(recent[2]?.text === 'Three. Done.' && Boolean(recent[2]?.at), 'each carries its text and when it was said');
+ok(
+  (await recentMessages(RECENT_FILE, { limit: 2 })).map((m) => m.id).join(',') === 'u2,u3',
+  'a limit keeps the newest, not the oldest',
+);
+ok((await recentMessages(path.join(PROJECT_DIR, 'nope.jsonl'))).length === 0, 'a missing transcript has no messages');
+const recentStatus = await claudeStatus(CWD, { sessionId: RECENT });
+ok(
+  recentStatus.last?.id === 'u3' && recentStatus.last?.id === recent.at(-1)?.id,
+  'the status answer names its last message by the same id the history ends on',
+);
+/*
+ * Widened when the first window holds too few: a large tool result sitting between
+ * two messages pushes the older one out of a small window, and the second, wider one
+ * finds it. The windows here are small so the fixture can be.
+ */
+fs.writeFileSync(
+  RECENT_FILE,
+  [said('Old. Before the big read.', 'old'), toolResult(8000), said('New.', 'new')].join('\n') + '\n',
+);
+ok(
+  (await recentMessages(RECENT_FILE, { windows: [1024, 64 * 1024] })).map((m) => m.id).join(',') === 'old,new',
+  'a window too narrow to hold enough messages is widened',
+);
+ok(
+  (await recentMessages(RECENT_FILE, { windows: [1024] })).map((m) => m.id).join(',') === 'new',
+  'and never past the last window, which is the bound on what it reads',
+);
+const addressedRecent = await recentMessagesFor(CWD, RECENT);
+ok(
+  addressedRecent.sessionId === RECENT && addressedRecent.messages.length === 2,
+  'the addressed form answers with the conversation and its messages',
+);
+let recentRefused = 0;
+for (const [cwd, id] of [['/etc', RECENT], [CWD, '../../../../etc/passwd']]) {
+  try {
+    await recentMessagesFor(cwd, id);
+  } catch {
+    recentRefused += 1;
+  }
+}
+ok(recentRefused === 2, 'a cwd outside the projects root and a session id shaped like a path are refused');
 
 section('Who is running a conversation, when it is not us:');
 /*

@@ -206,6 +206,8 @@ const guarded = [
   // Hands back the opening prompt of a conversation verbatim, which is a read of
   // someone's private transcript however short the answer is.
   ['GET', '/api/first-prompt?cwd=/tmp&sessionId=x'],
+  // Recent messages of a conversation, verbatim: the same private read, more of it.
+  ['GET', '/api/claude-messages?cwd=/tmp&sessionId=x'],
   ['GET', '/api/models'],
   ['GET', '/api/voice-status'],
   ['POST', '/api/transcribe'],

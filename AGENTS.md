@@ -949,7 +949,8 @@ the layout rescue, the terminal chord, install offers, the reload history, the w
 lock, the Disconnect-frame filter — and draws no chip, since the rings already say
 it. What it keeps is the status sheet: the last message rendered, Read aloud with the
 server voices and speed, Talk it over, the answered-question note, and following
-the sheet while it is open, which reads out each new message as it lands. It
+the sheet while it is open, which reads out each new message as it lands (unless
+Previous has paused it on an earlier one; see "The sheet is a live player"). It
 puts `cmoHost.open({ cwd, sessionId })` on the host. Each pane's 🔊 button calls it
 with that pane's slot, plus its conversation if it is a chat. A terminal pane pins
 nothing, so the answer is the slot's most recent transcript, which is the CLI in it.
@@ -1794,6 +1795,25 @@ Things that have burned people, in this codebase specifically:
   refuses while the mic button carries `cmo-rec` — because the recognizer would
   otherwise dictate Claude's own reply into the composer and the whisper recorder
   would upload it to be transcribed.
+- **The sheet is a live player: live by default, paused only when asked.** Over
+  the message are Previous, LIVE and Next. Live (`sheetView === null`) is what the
+  sheet always did: each new message replaces the one on screen and the one being
+  read, and the newest message is the one wanted. Previous and Next are the explicit
+  exception, and they *pause* it. The sheet and the voice stay on the message picked
+  and read it to the end. A message that arrives meanwhile is appended to
+  `sheetHistory` for Next to reach, and the sheet redraws for the state line, but it
+  neither replaces what is shown nor speaks. Next past the newest, or LIVE, goes back.
+  Going back reads the newest message only if it is not the one already on the sheet,
+  so a read in progress carries on. Closing the sheet, opening it afresh, or a
+  different conversation or pane all start live again. That is the default the user
+  asked to keep, so do not make a pause outlive the sheet it was made on. The history
+  is `/api/claude-messages` (`recentMessages` in `chat-service/claude-status.js`):
+  the last 60 assistant messages, selected exactly the way `lastExchange` picks
+  `last` and keyed by the same entry `uuid`, which `last.id` now carries so the two
+  can be lined up. It is fetched on the tap that leaves live and never polled. That
+  tap does its gesture work before the await: it stops the current read and calls
+  `unlockAudio`. On iOS the browser voice may still refuse the first step back,
+  because that read starts after a fetch. Later steps are synchronous.
 - **How fast it reads is changed on this side, never on the server's.** The status
   sheet has a minus / readout / plus stepper (`#cmo-speed`, remembered per device in
   `cmo-speed`) and the chat app's Settings has the same ladder as a picker

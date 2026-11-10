@@ -166,6 +166,13 @@ let firstPromptReply = null;
 const firstPromptCalls = [];
 
 /*
+ * The recent-messages route, which the read-aloud sheet asks only when Previous is
+ * tapped. `null` answers 401, like the others; a function is asked for the session.
+ */
+let messagesReply = null;
+const messagesCalls = [];
+
+/*
  * The server voice, which is off until the section that tests it.
  *
  * `null` is a deployment that cannot synthesise — no Polly permission, an older
@@ -256,6 +263,18 @@ w.fetch = (url, options = {}) => {
       ok: true,
       status: 200,
       json: () => Promise.resolve(firstPromptReply(asked.get('sessionId'))),
+    });
+  }
+  if (target.includes('/api/claude-messages')) {
+    const asked = new w.URL(target, 'https://claude.example.com').searchParams;
+    messagesCalls.push({ cwd: asked.get('cwd'), sessionId: asked.get('sessionId') });
+    if (!messagesReply) {
+      return Promise.resolve({ ok: false, status: 401, json: () => Promise.resolve({}) });
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(messagesReply(asked.get('sessionId'))),
     });
   }
   if (target.includes('/api/claude-status')) {
@@ -1744,6 +1763,139 @@ ok(
   'a change was read out under a different sheet, which is describing something else',
   utterances.length === 0,
 );
+
+// ------------------------------------------- live, or paused on an earlier message
+/*
+ * The sheet as a live player. Live is the default and is everything checked above:
+ * each new message replaces the one on screen and the one being read. Previous and
+ * Next are the explicit exception — they pause the sheet on the message picked, read
+ * it to its end, and leave every newer message unread until Next reaches it or LIVE
+ * is pressed. A fresh open of the sheet is live again.
+ */
+{
+  const history = [];
+  const say = (id, text) => {
+    const message = { id, text, at: new Date().toISOString() };
+    history.push(message);
+    statusReply = { ...statusReply, sessionId: 'abc123', state: 'idle', clients: 0, cutOff: null, last: message };
+    return message;
+  };
+  messagesReply = () => ({ messages: history.map((m) => ({ ...m })) });
+  const click = (id) => doc.getElementById(id)?.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  const shownText = () => doc.getElementById('cmo-status-said')?.textContent ?? '';
+  const isLive = () => doc.getElementById('cmo-nav-live')?.classList.contains('cmo-on');
+  const where = () => doc.getElementById('cmo-nav-where')?.textContent ?? '';
+  const heard = () => utterances.join(' ');
+  // A read that starts after a fetch has to be waited for twice: to begin, then to end.
+  const heardOut = async () => {
+    await rise();
+    await drain();
+  };
+
+  say('m1', 'Message one. Looking at the auth module first.');
+  const longEarlier = 'This is a sentence of the second message. '.repeat(20).trim();
+  say('m2', longEarlier);
+  say('m3', 'Message three. The fix is in.');
+  await drain();
+  await tapStatus();
+  ok('the sheet has no LIVE control', doc.getElementById('cmo-nav-live'));
+  ok('the sheet does not open live, which is the default', isLive());
+  ok('Next is offered while live, where there is nothing newer', doc.getElementById('cmo-nav-newer')?.disabled);
+  ok('opening the sheet fetched the history nobody asked for', messagesCalls.length === 0);
+
+  utterances.length = 0;
+  click('cmo-nav-older');
+  ok('Previous did not start reading the earlier message', await rise());
+  ok('Previous did not ask for the history of this conversation', messagesCalls.at(-1)?.sessionId === 'abc123');
+  ok('Previous did not put the earlier message on the sheet', shownText() === longEarlier);
+  ok('the sheet still says LIVE while paused on an earlier message', !isLive());
+  ok('the paused sheet does not say where it is', /Paused · Previous message/.test(where()));
+  ok('the earlier message was not introduced as the previous one', /^Previous message\./.test(utterances[0] || ''));
+
+  // A new message while paused: kept, not shown, not read — and the read in progress
+  // carries on to its end.
+  const cancelsBefore = cancels;
+  say('m4', 'Message four. Arrived while paused.');
+  w.dispatchEvent(new w.Event('focus'));
+  await settle();
+  ok('a message that arrived while paused replaced the one paused on', shownText() === longEarlier);
+  ok('a message that arrived while paused was read out', !/Arrived while paused/.test(heard()));
+  ok('a message that arrived while paused cut off the read of the paused one', cancels === cancelsBefore);
+  await drain();
+  ok('the paused message was not read to its end', (heard().match(/sentence of the second message/g) || []).length === 20);
+  ok('the sheet left the pause by itself after the message ended', !isLive() && shownText() === longEarlier);
+  ok('the paused sheet says nothing about new messages waiting', /LIVE/.test(doc.getElementById('cmo-status-follow')?.textContent || ''));
+
+  utterances.length = 0;
+  click('cmo-nav-older');
+  await drain();
+  ok('Previous from the second message did not reach the first', shownText() === history[0].text);
+  ok('a step further back does not say how far back it is', /^3 messages back\./.test(utterances[0] || ''));
+  ok('Previous is still offered at the oldest message', doc.getElementById('cmo-nav-older')?.disabled);
+
+  // Next walks forward, into the message that arrived while paused.
+  click('cmo-nav-newer');
+  await drain();
+  click('cmo-nav-newer');
+  await drain();
+  utterances.length = 0;
+  click('cmo-nav-newer');
+  await drain();
+  ok('Next did not walk forward into the message that arrived while paused', shownText() === history[3].text);
+  ok('reaching the newest message by Next is not said as such', /^Latest message\./.test(utterances[0] || ''));
+  utterances.length = 0;
+  click('cmo-nav-newer');
+  await settle();
+  ok('Next from the newest message did not go back to live', isLive());
+  ok('going live on the message already heard read it again', utterances.length === 0);
+
+  // Live again is the old behaviour exactly: the next message is read.
+  say('m5', 'Message five. Live again.');
+  w.dispatchEvent(new w.Event('focus'));
+  await heardOut();
+  ok('back on live, a new message was not shown', shownText() === history[4].text);
+  ok('back on live, a new message was not read', /Live again/.test(heard()));
+
+  // LIVE from a pause reads the newest message, said as live.
+  click('cmo-nav-older');
+  await heardOut();
+  ok('the second pause did not fetch the history again', messagesCalls.length === 2);
+  say('m6', 'Message six. The newest.');
+  w.dispatchEvent(new w.Event('focus'));
+  await settle();
+  utterances.length = 0;
+  click('cmo-nav-live');
+  await heardOut();
+  ok('LIVE did not show the newest message', isLive() && shownText() === history[5].text);
+  ok('LIVE did not read the newest message, said as live', /^Live\. Claude finished\..*The newest/.test(heard()));
+
+  // Closing ends a pause: the next open is live.
+  click('cmo-nav-older');
+  await heardOut();
+  ok('could not pause before closing', !isLive());
+  click('cmo-status-close');
+  await tapStatus();
+  ok('reopening the sheet stayed paused instead of starting live', isLive() && shownText() === history[5].text);
+
+  // The history route failing leaves the sheet live and says why.
+  messagesReply = null;
+  click('cmo-nav-older');
+  await settle();
+  ok('a failed history fetch left the sheet paused on nothing', isLive() && shownText() === history[5].text);
+  ok('a failed history fetch said nothing', /could not be fetched/.test(where()));
+
+  // A conversation with one message has nothing earlier.
+  history.length = 0;
+  say('only', 'The only message.');
+  messagesReply = () => ({ messages: history.map((m) => ({ ...m })) });
+  click('cmo-status-close');
+  await tapStatus();
+  click('cmo-nav-older');
+  await settle();
+  ok('a conversation with one message paused anyway', isLive());
+  ok('a conversation with one message did not say there is nothing earlier', /nothing earlier/.test(where()));
+  await drain();
+}
 speechMs = 0;
 
 // ------------------------------------------------------------- the server voice

@@ -875,7 +875,10 @@ export async function lastExchange(file, windows = TAIL_WINDOWS) {
       }
 
       if (!last && entry.type === 'assistant' && text && !artifact) {
-        last = { role: 'assistant', text, at: entry.timestamp || null };
+        // `id` is the entry's own uuid, which is how a client tells this message
+        // apart from the same one in `recentMessages` — the overlay's history and
+        // its live answer have to agree on which message is which.
+        last = { role: 'assistant', text, at: entry.timestamp || null, id: entry.uuid || null };
       }
       // Both answers found; the rest of the window is history.
       if (last && title) break;
@@ -965,6 +968,70 @@ export async function firstPrompt(file, windows = HEAD_WINDOWS) {
     if (head.complete) break; // the whole file has been read; there is no prompt in it
   }
   return null;
+}
+
+/*
+ * How far back the overlay's read-aloud sheet can step: the last this-many things
+ * Claude said, within the same bounded windows as everything else in this file.
+ *
+ * A turn writes several messages — "Found it", "Now the tests", the answer — so this
+ * is a few turns of history rather than a few messages of it. It is a way to hear
+ * again what was said a minute ago, not a transcript reader: the chat app is that.
+ */
+const RECENT_LIMIT = 60;
+const RECENT_WINDOWS = [1024 * 1024, 4 * 1024 * 1024];
+
+/**
+ * The last few things Claude said in a conversation, oldest first.
+ *
+ * The same selection `lastExchange` makes for its one message, repeated: assistant
+ * entries with text, the artifacts in NO_ANSWER skipped, sidechains skipped. So the
+ * newest entry here is the `last` that /api/claude-status reports, with the same
+ * `id`, and a client can line the two up.
+ *
+ * Widened only while it has found fewer than it was asked for and there is more file
+ * behind the window; the second window is the cap, so a 12MB transcript is never
+ * read whole for this either.
+ */
+export async function recentMessages(file, { limit = RECENT_LIMIT, windows = RECENT_WINDOWS } = {}) {
+  let found = [];
+  for (const bytes of windows) {
+    let tail;
+    try {
+      tail = await readTail(file, bytes);
+    } catch {
+      return []; // transcript vanished, or was never written
+    }
+    found = [];
+    const lines = tail.text.split('\n');
+    for (let i = lines.length - 1; i >= 0 && found.length < limit; i -= 1) {
+      if (!lines[i].includes('"assistant"')) continue; // cheap: most lines are not
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue; // the leading fragment, or a partially written line
+      }
+      if (entry.type !== 'assistant' || entry.isSidechain) continue;
+      const text = textOf(entry.message).trim();
+      if (!text || NO_ANSWER.has(text)) continue;
+      found.push({ id: entry.uuid || null, text, at: entry.timestamp || null });
+    }
+    if (found.length >= limit || tail.complete) break;
+  }
+  return found.reverse();
+}
+
+/** `recentMessages`, addressed the way a request addresses it. See firstPromptFor. */
+export async function recentMessagesFor(cwd, sessionId) {
+  if (!isUnderProjects(cwd)) {
+    throw new Error('cwd must be inside the projects root');
+  }
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(String(sessionId || ''))) {
+    throw new Error('sessionId is not a session id');
+  }
+  const file = await transcriptOf(await projectPlaces(cwd), sessionId);
+  return { cwd, sessionId, messages: await recentMessages(file) };
 }
 
 /**

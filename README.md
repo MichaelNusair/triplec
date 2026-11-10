@@ -374,6 +374,15 @@ talking on its own after you have put it down is worse than one that stays quiet
 It names the conversation it is talking about, since the panel and the chat app can
 be in different ones.
 
+Over the message sit **‹ Previous**, **● LIVE** and **Next ›**, which work like the
+scrubber on a live stream. LIVE is lit by default, and that is the behaviour above:
+each new message replaces the one on screen and the one being read. Previous steps
+back to an earlier message in the conversation and reads it. From then on the sheet
+is *paused*: it stays on that message and reads it to the end, and messages that
+arrive meanwhile are kept but neither shown nor read. Next steps forward through
+them, and LIVE (or Next past the newest) goes back to following. Closing the sheet
+ends a pause, so every fresh open starts live.
+
 The message is **rendered, not shown as source**: bold, headings, bullets, tables,
 links and fenced code come out as themselves, because on a phone that sheet is the whole of
 what you read of an answer and an answer is written to be read. The one-line

@@ -39,7 +39,7 @@ import {
 } from './speak.js';
 import { mintSession, realtimeStatus } from './realtime.js';
 import { buildInfo, applyBuildStamp } from './build.js';
-import { claudeStatus, firstPromptFor, sessionOwner } from './claude-status.js';
+import { claudeStatus, firstPromptFor, recentMessagesFor, sessionOwner } from './claude-status.js';
 import {
   manifestForProject,
   chatManifest,
@@ -1012,6 +1012,37 @@ const server = http.createServer(async (req, res) => {
      * conversation and keeps it — see claude-status.js for why it is read out of the
      * transcript rather than cached here.
      */
+    /*
+     * The last few things Claude said in one conversation, oldest first — what the
+     * overlay's read-aloud sheet steps back through when someone asks to hear an
+     * earlier message. Asked for only on that tap, never polled: the status answer
+     * above carries the newest message, and this is the history behind it. Reads a
+     * bounded tail of the transcript; see recentMessages in claude-status.js.
+     */
+    if (pathname === '/api/claude-messages' && req.method === 'GET') {
+      const cwd = url.searchParams.get('cwd');
+      const wanted = url.searchParams.get('sessionId');
+      if (!cwd || !wanted) {
+        json(res, 400, { error: 'cwd and sessionId are required' });
+        return;
+      }
+      let answer;
+      try {
+        // Both become part of a filename; recentMessagesFor checks their shape.
+        answer = await recentMessagesFor(cwd, wanted);
+      } catch (err) {
+        json(res, 400, { error: err.message });
+        return;
+      }
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        // The text of a private conversation, and stale the moment a turn moves on.
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify(answer));
+      return;
+    }
+
     if (pathname === '/api/first-prompt' && req.method === 'GET') {
       const cwd = url.searchParams.get('cwd');
       const wanted = url.searchParams.get('sessionId');
