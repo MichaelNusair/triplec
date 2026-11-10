@@ -1682,7 +1682,7 @@ heartbeat.unref?.();
  * and a signal handler here would only put a scan — possibly one waiting out an
  * unreachable push service — between systemd and a restart during every deploy.
  */
-if (feature('push')) startTurnWatcher({ liveSessions: () => manager.liveSummary() });
+if (feature('push')) startTurnWatcher({ liveSessions: () => manager.liveSummary(), mux: feature('mux') });
 
 server.listen(PORT, LISTEN_ADDRESS, () => {
   console.log(`chat service on ${LISTEN_ADDRESS}:${PORT} (projects: ${PROJECTS_ROOT})`);

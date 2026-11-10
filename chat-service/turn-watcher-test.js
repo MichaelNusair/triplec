@@ -113,9 +113,10 @@ async function write(cwd, session, ...lines) {
 }
 
 /** A watcher wired to fakes: one subscribed device, and a notify that just records. */
-function watcherWith({ live = [], devices = 1, notify } = {}) {
+function watcherWith({ live = [], devices = 1, notify, mux = false } = {}) {
   const sent = [];
   const watcher = createTurnWatcher({
+    mux,
     liveSessions: () => live,
     subscriptions: async () => Array.from({ length: devices }, (_, i) => ({ endpoint: `https://push.example/${i}` })),
     notify: notify || (async (payload, opts) => { sent.push({ payload, opts }); }),
@@ -592,6 +593,48 @@ section('A turn finished in a worktree is named after the project it belongs to:
 
   fs.rmSync(path.join(DEMO, '.claude'), { recursive: true, force: true });
   fs.rmSync(dirFor(tree), { recursive: true, force: true });
+}
+
+section('A notification also says where the conversation is in the mux:');
+{
+  /*
+   * Which of the two a tap opens is each device's choice (pwa/sw.js), so the payload
+   * carries both. The mux names a place by project and slot: 0 for the project's own
+   * checkout, N for slot-N, and none for a worktree that is not a slot.
+   */
+  const slot = path.join(DEMO, '.claude', 'worktrees', 'slot-2');
+  const tree = path.join(DEMO, '.claude', 'worktrees', 'a-branch');
+  for (const dir of [slot, tree]) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(dirFor(dir), { recursive: true });
+  }
+
+  const { watcher, sent } = watcherWith({ mux: true });
+  await watcher.scan();
+  await write(DEMO, S1, assistant('From the main checkout.'));
+  await write(slot, S2, assistant('From slot 2.'));
+  await write(tree, S3, assistant('From a worktree.'));
+  await watcher.scan();
+  const by = (id) => sent.find((s) => s.payload.sessionId === id)?.payload;
+  ok(by(S1)?.muxUrl === `/chat/mux?project=demo&slot=0&session=${S1}`,
+    `the main checkout's mux address is ${JSON.stringify(by(S1)?.muxUrl)}`);
+  ok(by(S2)?.muxUrl === `/chat/mux?project=demo&slot=2&session=${S2}`,
+    `slot 2's mux address is ${JSON.stringify(by(S2)?.muxUrl)}`);
+  ok(by(S3)?.muxUrl === `/chat/mux?project=demo&session=${S3}`,
+    `a worktree that is not a slot named one: ${JSON.stringify(by(S3)?.muxUrl)}`);
+  ok(by(S2)?.url === `/p/demo/?folder=${encodeURIComponent(DEMO)}&session=${S2}`,
+    `the editor address went missing beside it: ${JSON.stringify(by(S2)?.url)}`);
+
+  // An install without the mux offers none, so no device can be sent to a 404.
+  const plain = watcherWith();
+  await plain.watcher.scan();
+  await write(slot, S2, assistant('From slot 2, again.'));
+  await plain.watcher.scan();
+  ok(plain.sent.length === 1 && plain.sent[0].payload.muxUrl === null,
+    `an install without the mux put ${JSON.stringify(plain.sent[0]?.payload.muxUrl)} in the payload`);
+
+  fs.rmSync(path.join(DEMO, '.claude'), { recursive: true, force: true });
+  for (const dir of [slot, tree]) fs.rmSync(dirFor(dir), { recursive: true, force: true });
 }
 
 section('One push service failing does not lose the rest:');

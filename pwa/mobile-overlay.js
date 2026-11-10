@@ -3578,7 +3578,9 @@
       : Notification.permission === 'denied'
         ? '<p class="cmo-hint">Notifications are blocked for this site, and only the browser can undo that: Chrome → ⋮ → Site settings → Notifications.</p>'
         : '<div class="cmo-row"><button class="cmo-action cmo-alt" id="cmo-notify">\u{1F514} Notify me when a turn ends</button></div>' +
-          '<p class="cmo-status" id="cmo-notify-status"></p>';
+          '<p class="cmo-status" id="cmo-notify-status"></p>' +
+          // Where a tap lands, once there is something to tap. Filled by paintNotify.
+          '<div class="cmo-row" id="cmo-opens" hidden></div>';
 
     openSheet(`
       <p class="cmo-title">${
@@ -4329,6 +4331,74 @@
    */
   let notifyNote = '';
 
+  /*
+   * Where tapping a notification takes this device: the project in the editor, or
+   * its slot in the mux.
+   *
+   * Stored where the service worker can read it at the moment of the tap — a cache
+   * entry, since a worker cannot see localStorage. Same name and key as `opens` in
+   * pwa/sw.js and the mux's footer button: one setting, three places to change it.
+   */
+  const PREFS_CACHE = 'triplec-prefs';
+  const OPENS_KEY = '/chat/prefs/notification-opens';
+
+  async function readOpens() {
+    try {
+      const value = (await (await (await caches.open(PREFS_CACHE)).match(OPENS_KEY))?.text())?.trim();
+      return value === 'mux' ? 'mux' : 'editor';
+    } catch {
+      return 'editor';
+    }
+  }
+
+  async function writeOpens(value) {
+    const cache = await caches.open(PREFS_CACHE);
+    await cache.put(OPENS_KEY, new Response(value === 'mux' ? 'mux' : 'editor', { headers: { 'Content-Type': 'text/plain' } }));
+  }
+
+  /** Whether this install has a mux to offer. Asked once; over the mux it is the answer. */
+  let hasMux = null;
+  function muxExists() {
+    if (MUX) return Promise.resolve(true);
+    if (!hasMux) {
+      hasMux = fetch('/api/features', { credentials: 'include' })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((answer) => Boolean(answer?.features?.mux))
+        .catch(() => false);
+    }
+    return hasMux;
+  }
+
+  async function paintOpens(on) {
+    const row = panel.querySelector('#cmo-opens');
+    if (!row) return;
+    if (!on || !('caches' in window) || !(await muxExists())) {
+      row.hidden = true;
+      return;
+    }
+    const opens = await readOpens();
+    const target = panel.querySelector('#cmo-opens');
+    if (!target) return;
+    target.innerHTML =
+      '<span class="cmo-hint" style="margin:0;align-self:center">Tapping one opens:</span>' +
+      `<button class="cmo-action${opens === 'editor' ? '' : ' cmo-alt'}" data-opens="editor" aria-pressed="${opens === 'editor'}">The editor</button>` +
+      `<button class="cmo-action${opens === 'mux' ? '' : ' cmo-alt'}" data-opens="mux" aria-pressed="${opens === 'mux'}">The Mux</button>`;
+    target.hidden = false;
+    target.querySelectorAll('[data-opens]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        try {
+          await writeOpens(button.dataset.opens);
+          notifyNote = button.dataset.opens === 'mux'
+            ? 'A tapped notification on this device now opens its slot in the Mux.'
+            : 'A tapped notification on this device now opens the project here, in the editor.';
+        } catch (err) {
+          notifyNote = `Could not save that on this device: ${err.message}`;
+        }
+        await paintNotify();
+      });
+    });
+  }
+
   /**
    * What the button says, from what is true now.
    *
@@ -4353,6 +4423,7 @@
       (on
         ? 'On for this device. One notification per conversation when a turn ends out here — this panel, or anything under tmux — and nothing for a turn that ended more than ten minutes ago.'
         : 'Buzzes this phone when Claude finishes a turn in the editor or under tmux, with the project and the first line of the answer. Asked for permission once.');
+    await paintOpens(on);
   }
 
   /**

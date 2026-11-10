@@ -429,6 +429,96 @@ console.log('mux, on a phone');
   w.close();
 }
 
+console.log('mux, arriving from a notification');
+{
+  /*
+   * A device that chose the mux lands on `/chat/mux?project=&slot=` (pwa/sw.js), or an
+   * open mux is sent that address in a message. It joins what is running and starts
+   * nothing: a tap is not a request for a second Claude in a checkout.
+   */
+  const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'mux.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/mux?project=demo&slot=3&session=S3' });
+  const w = dom.window;
+  const path = '/workspace/projects/demo';
+  const cwd = (n) => `${path}/.claude/worktrees/slot-${n}`;
+  const calls = [];
+  w.fetch = (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method || 'GET' });
+    const reply = (body) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+    if (String(url).startsWith('/api/projects')) return reply({ projects: [{ name: 'demo', path, sessions: [] }] });
+    if (String(url).startsWith('/api/slots')) {
+      return reply({ name: 'demo', path, enabled: true, rootTerminal: false, slots: Array.from({ length: 8 }, (_, i) => ({
+        n: i + 1, cwd: cwd(i + 1), created: true, branch: `slot-${i + 1}`, dirty: 0, unpushed: 0, sessions: [],
+        busy: false, held: false, elsewhere: 0, terminal: i + 1 === 3,
+      })) });
+    }
+    return reply({ sessions: [] });
+  };
+  w.Notification = undefined;
+  const worker = new w.EventTarget();
+  Object.defineProperty(w.navigator, 'serviceWorker', { value: worker, configurable: true });
+  // The one store the worker reads at the moment of a tap.
+  const store = new Map();
+  w.caches = {
+    open: async (name) => ({
+      match: async (key) => (store.has(`${name}|${key}`) ? { text: async () => store.get(`${name}|${key}`) } : undefined),
+      put: async (key, res) => { store.set(`${name}|${key}`, await res.text()); },
+    }),
+  };
+  w.Response = Response;
+  w.localStorage.setItem('triplec-mux', JSON.stringify({ layout: 2 }));
+  const errors = [];
+  w.addEventListener('error', (e) => errors.push(e.message));
+  w.eval(js);
+  await new Promise((r) => setTimeout(r, 100));
+  const mux = w.__muxForTest;
+  const doc = w.document;
+
+  check('the mux boots from a notification', errors.length === 0, errors.join('; '));
+  const pane = mux.state.panes[0];
+  check("it opens the slot's running terminal in a free pane",
+    pane.kind === 'terminal' && pane.cwd === cwd(3) && pane.slot === 3, JSON.stringify({ kind: pane.kind, cwd: pane.cwd }));
+  check('without preparing the slot or starting anything', !calls.some((c) => c.method !== 'GET'), JSON.stringify(calls));
+  check('and drops the address, so a reload is not a second arrival', w.location.search === '', w.location.search);
+
+  const tapped = (url) => worker.dispatchEvent(new w.MessageEvent('message', { data: { type: 'cw-notification-click', url } }));
+  mux.focusPane(1);
+  tapped('/chat/mux?project=demo&slot=3&session=S3');
+  await new Promise((r) => setTimeout(r, 30));
+  check('a second tap on the same slot focuses its pane instead of opening another',
+    mux.state.focus === 0 && mux.state.panes[1].cwd === null);
+
+  tapped('/chat/mux?project=demo&slot=5&session=S5');
+  await new Promise((r) => setTimeout(r, 30));
+  check('a slot with no terminal to join opens nothing',
+    mux.state.panes.every((p) => p.cwd !== cwd(5)) && !calls.some((c) => c.method !== 'GET'));
+  check('and says where the conversation is instead', /no terminal to join/.test(doc.querySelector('#toast').textContent),
+    doc.querySelector('#toast').textContent);
+
+  tapped('//elsewhere.example/chat/mux?project=demo&slot=5');
+  tapped('/p/demo/?folder=x&session=S1');
+  await new Promise((r) => setTimeout(r, 30));
+  check('an address that is not this mux is ignored', mux.state.panes.every((p) => p.cwd !== cwd(5)));
+  check('the address parser keeps the main checkout as slot 0 and drops a non-slot',
+    mux.arrivalFrom('?project=demo&slot=0').slot === 0 && mux.arrivalFrom('?project=demo').slot === null
+      && mux.arrivalFrom('?slot=2') === null);
+
+  // The choice itself, in the footer.
+  const button = doc.querySelector('#mux-opens');
+  check('the footer says where notifications open, the editor by default',
+    !button.hidden && /the editor/.test(button.textContent), button.textContent);
+  button.click();
+  await new Promise((r) => setTimeout(r, 30));
+  check('one click sends them to the mux, stored where the worker reads it',
+    store.get('triplec-prefs|/chat/prefs/notification-opens') === 'mux' && /the Mux/.test(button.textContent),
+    `${JSON.stringify([...store])} ${button.textContent}`);
+  button.click();
+  await new Promise((r) => setTimeout(r, 30));
+  check('and another puts them back', store.get('triplec-prefs|/chat/prefs/notification-opens') === 'editor');
+  w.close();
+}
+
 console.log('chat, embedded');
 {
   const html = readFileSync(join(here, 'public', 'index.html'), 'utf8');

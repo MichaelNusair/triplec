@@ -75,6 +75,9 @@
     newKind: 'terminal',       // what a + opens
   };
 
+  // The first load of the projects, which anything arriving from a notification waits on.
+  let ready = Promise.resolve();
+
   function emptyPane() {
     return {
       kind: 'chat',    // 'chat' | 'terminal' | 'shell'
@@ -1081,6 +1084,118 @@
     $('#mux-alerts').textContent = `Desktop alerts: ${state.alerts ? 'on' : 'off'}`;
   }
 
+  // --- where a push notification lands --------------------------------------
+  /*
+   * This device's choice between the editor and the mux, for a tapped notification.
+   *
+   * Kept where the service worker reads it at the moment of the tap — a cache entry,
+   * not localStorage, which a worker cannot see. Same name and key as `opens` in
+   * pwa/sw.js and the overlay's switch; the three are one setting.
+   */
+  const PREFS_CACHE = 'triplec-prefs';
+  const OPENS_KEY = '/chat/prefs/notification-opens';
+
+  async function readOpens() {
+    try {
+      const value = (await (await (await caches.open(PREFS_CACHE)).match(OPENS_KEY))?.text())?.trim();
+      return value === 'mux' ? 'mux' : 'editor';
+    } catch {
+      return 'editor';
+    }
+  }
+
+  async function writeOpens(value) {
+    const cache = await caches.open(PREFS_CACHE);
+    await cache.put(OPENS_KEY, new Response(value === 'mux' ? 'mux' : 'editor', { headers: { 'Content-Type': 'text/plain' } }));
+  }
+
+  async function paintOpens() {
+    const button = $('#mux-opens');
+    if (!button) return;
+    if (!('caches' in window)) {
+      button.hidden = true;
+      return;
+    }
+    button.dataset.opens = await readOpens();
+    button.textContent = `Notifications open: ${button.dataset.opens === 'mux' ? 'the Mux' : 'the editor'}`;
+  }
+
+  $('#mux-opens')?.addEventListener('click', async () => {
+    const next = $('#mux-opens').dataset.opens === 'mux' ? 'editor' : 'mux';
+    try {
+      await writeOpens(next);
+    } catch (err) {
+      toast(`Couldn't save that on this device: ${err.message}`);
+      return;
+    }
+    await paintOpens();
+    toast(next === 'mux'
+      ? 'Tapping a notification on this device now opens its slot here, in the Mux.'
+      : 'Tapping a notification on this device now opens the project in the editor.');
+  });
+
+  /*
+   * Arriving from one: `/chat/mux?project=&slot=` from a window the worker opened, or
+   * the same address in a message to a mux that was already open.
+   *
+   * Joins, never starts. A pane already on that place is focused; a slot whose
+   * terminal is running is opened in a free pane (or the focused one); anything else
+   * — the conversation is in the editor's panel, or the slot has since been reset —
+   * is shown in the sidebar and said in a toast, because a tap starting a second
+   * Claude in a checkout is the collision slots exist to prevent.
+   */
+  async function arrive({ project, slot }) {
+    await ready;
+    if (!project || !projectByName(project)) return;
+    state.expanded.add(project);
+    await loadSlots(project);
+    const place = slot === null ? null : placesOf(project).find((p) => p.n === slot) || null;
+    const where = place ? `${project} · ${slotLabel(place.n)}` : project;
+    if (place) {
+      const onScreen = visiblePanes().findIndex((p) => p.cwd === place.cwd);
+      if (onScreen >= 0) {
+        closeSide();
+        focusPane(onScreen, { input: !phone() });
+        return;
+      }
+      if (place.terminal) {
+        closeSide();
+        const empty = visiblePanes().findIndex((p) => !p.cwd);
+        openIn(empty >= 0 ? empty : state.focus, { kind: 'terminal', project, slot: place.n, cwd: place.cwd });
+        return;
+      }
+    }
+    save();
+    renderSidebar();
+    if (phone()) openSide();
+    const row = place && [...document.querySelectorAll('.mux-slot')].find((el) => el.dataset.cwd === place.cwd);
+    row?.scrollIntoView?.({ block: 'nearest' });
+    toast(`${where}: no terminal to join here — that conversation is in the editor or another terminal.`, 6000);
+  }
+
+  /** The place a notification's address names, or null when it names none. */
+  function arrivalFrom(search) {
+    const q = new URLSearchParams(search);
+    const project = q.get('project');
+    if (!project) return null;
+    const n = q.has('slot') ? Number(q.get('slot')) : NaN;
+    return { project, slot: Number.isInteger(n) && n >= 0 ? n : null };
+  }
+
+  navigator.serviceWorker?.addEventListener?.('message', (event) => {
+    const data = event?.data;
+    if (!data || data.type !== 'cw-notification-click' || typeof data.url !== 'string') return;
+    let url;
+    try {
+      url = new URL(data.url, location.origin);
+    } catch {
+      return;
+    }
+    if (url.origin !== location.origin || !url.pathname.startsWith('/chat/mux')) return;
+    const target = arrivalFrom(url.search);
+    if (target) arrive(target);
+  });
+
   for (const button of document.querySelectorAll('[data-layout]')) {
     button.addEventListener('click', () => {
       const before = paneCount();
@@ -1165,6 +1280,10 @@
   // --- boot -----------------------------------------------------------------
   load();
   paintAlerts();
+  paintOpens();
+  // Read once and dropped from the address, so a reload is not a second arrival.
+  const arrival = arrivalFrom(location.search);
+  if (arrival) history.replaceState(null, '', location.pathname);
   renderGrid();
   // iOS keeps the layout viewport when its keyboard opens, so a chat's composer or a
   // terminal's keys would sit under it. On a phone the page is the visible part.
@@ -1179,7 +1298,10 @@
   }
   // A phone opened on an empty pane has nothing to show but the way to something.
   if (phone() && !state.panes[state.focus]?.cwd) openSide();
-  loadProjects().then(pollLive);
+  // What an arrival waits on: it can only find a slot once the projects are in.
+  ready = loadProjects();
+  ready.then(pollLive);
+  if (arrival) arrive(arrival);
   setInterval(pollLive, LIVE_POLL_MS);
   setInterval(() => {
     if (document.visibilityState === 'visible') for (const name of state.expanded) loadSlots(name);
@@ -1191,7 +1313,8 @@
   // For mux-test.js, which drives this in jsdom without a server behind it.
   window.__muxForTest = {
     state, openIn, closePane, focusPane, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
-    newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen,
+    newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen, arrive, arrivalFrom,
+    readOpens, writeOpens,
     // The name the first tests knew it by: a new chat, in a free slot.
     newChatInFreeSlot: (name) => newInFreeSlot(name, 'chat'),
   };

@@ -20,6 +20,30 @@
  */
 const ICON = '/chat/pwa-icons/icon-192.png';
 
+/*
+ * Where this device wants a tapped notification to land: 'editor' or 'mux'.
+ *
+ * A device's choice, not the box's, so it lives on the device — and in the one store
+ * both this worker and a page can read without a round trip: a tap has to be answered
+ * at once, on a phone that may have no network at all. A cache is a slightly odd home
+ * for a setting, but IndexedDB would be three times the code in three files for one
+ * word. The pages that write it (pwa/mobile-overlay.js, chat-service/public/mux.js)
+ * use the same name and key.
+ */
+const PREFS_CACHE = 'triplec-prefs';
+const OPENS_KEY = '/chat/prefs/notification-opens';
+
+async function opens() {
+  try {
+    const cache = await caches.open(PREFS_CACHE);
+    const value = (await (await cache.match(OPENS_KEY))?.text())?.trim();
+    return value === 'mux' ? 'mux' : 'editor';
+  } catch {
+    // No storage (private mode, an old browser): the editor, as it always was.
+    return 'editor';
+  }
+}
+
 self.addEventListener('install', () => self.skipWaiting());
 
 self.addEventListener('activate', (event) => {
@@ -27,8 +51,10 @@ self.addEventListener('activate', (event) => {
     (async () => {
       // Left behind by the caching worker that predates all of this. A phone that
       // skipped the self-uninstalling version still has them.
+      // Not the preferences, which are not a cache of anything and would be lost to
+      // every deploy that touched this file.
       const names = await caches.keys();
-      await Promise.all(names.map((name) => caches.delete(name)));
+      await Promise.all(names.filter((name) => name !== PREFS_CACHE).map((name) => caches.delete(name)));
       await self.clients.claim();
     })(),
   );
@@ -81,6 +107,8 @@ self.addEventListener('push', (event) => {
           // knows where a project lives on disk — see projectStartUrl in
           // chat-service/manifest.js and the payload in turn-watcher.js.
           url: typeof data.url === 'string' ? data.url : null,
+          // The same conversation in the mux, for a device that prefers it.
+          muxUrl: typeof data.muxUrl === 'string' ? data.muxUrl : null,
         },
       };
 
@@ -199,6 +227,11 @@ self.addEventListener('push', (event) => {
  * is already there — throwing away a loaded editor to arrive where it already was.
  * The session id therefore travels by postMessage as well as in the URL, because the
  * URL of a window that already exists cannot be changed without reloading it.
+ *
+ * Or the mux, when this device has said so (`opens`, above). That is not the chat
+ * app's hazard either: the mux joins the slot's tmux session if one is running and
+ * starts nothing otherwise, so a tap there cannot fork a conversation. The same
+ * focus-or-open rule applies, and an open mux gets the same message.
  */
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
@@ -216,9 +249,13 @@ self.addEventListener('notificationclick', (event) => {
  * this value arrives over the network, and `//elsewhere/` is a URL to somebody else's
  * site that reads like a path.
  */
-function destination(data) {
-  const url = typeof data.url === 'string' ? data.url : '';
-  return url.startsWith('/') && !url.startsWith('//') ? url : '/chat/';
+function destination(data, prefer = 'editor') {
+  const onOrigin = (value) => typeof value === 'string' && value.startsWith('/') && !value.startsWith('//');
+  // The mux when this device asked for it and the box offered one; the editor
+  // otherwise, which is also what every notification sent before the choice carried.
+  if (prefer === 'mux' && onOrigin(data.muxUrl)) return data.muxUrl;
+  if (prefer === 'mux' && !onOrigin(data.url)) return '/chat/mux';
+  return onOrigin(data.url) ? data.url : '/chat/';
 }
 
 /** Is this window already the app the notification is pointing at? */
@@ -234,7 +271,7 @@ function inSameApp(clientUrl, target) {
 }
 
 async function openFor(data) {
-  const url = destination(data);
+  const url = destination(data, await opens());
   const target = new URL(url, self.location.origin);
   let windows = [];
   try {

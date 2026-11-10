@@ -45,7 +45,7 @@ const ORIGIN = 'https://claude.example.com';
  * and it means a syntax error or a reference to something a worker does not have
  * fails here rather than on a phone.
  */
-function boot({ windows = [], receiptFails = false, showRefused = null, onScreen = [{ tag: 'x' }] } = {}) {
+function boot({ windows = [], receiptFails = false, showRefused = null, onScreen = [{ tag: 'x' }], opens = null, cacheNames = [] } = {}) {
   const log = {
     shown: [],      // registration.showNotification(...)
     opened: [],     // clients.openWindow(...)
@@ -87,7 +87,26 @@ function boot({ windows = [], receiptFails = false, showRefused = null, onScreen
     },
   };
 
-  const caches = { keys: () => Promise.resolve([]), delete: () => Promise.resolve(true) };
+  /*
+   * The one store the worker reads: this device's choice of where a tap lands, which
+   * the mux and the overlay write with `caches.open('triplec-prefs').put(...)`. `opens`
+   * null is a device that never chose.
+   */
+  log.deleted = [];
+  const caches = {
+    keys: () => Promise.resolve(cacheNames),
+    delete: (name) => {
+      log.deleted.push(name);
+      return Promise.resolve(true);
+    },
+    open: (name) => Promise.resolve({
+      match: (key) => Promise.resolve(
+        name === 'triplec-prefs' && key === '/chat/prefs/notification-opens' && opens !== null
+          ? { text: () => Promise.resolve(opens) }
+          : undefined,
+      ),
+    }),
+  };
   /*
    * The worker is allowed exactly one request: the receipt that says a notification was
    * actually shown. Everything else is still a failure — a worker that fetches on the
@@ -132,12 +151,12 @@ function fakeWindow(url, log, { focusable = true } = {}) {
 }
 
 /** Tap a notification whose `data` is what the push handler would have stored. */
-async function tap(data, { windows = [] } = {}) {
+async function tap(data, { windows = [], opens = null } = {}) {
   // The array is handed to the worker before it is filled, and `matchAll` closes over
   // it — which is how the windows can be built against the log of the same boot they
   // will be reported by.
   const clients = [];
-  const { listeners, log } = boot({ windows: clients });
+  const { listeners, log } = boot({ windows: clients, opens });
   for (const url of windows) clients.push(fakeWindow(url, log));
 
   const handler = listeners.get('notificationclick');
@@ -174,6 +193,7 @@ async function tap(data, { windows = [] } = {}) {
     sessionId: 'S1',
     at: '2026-09-21T08:00:00.000Z',
     url: '/p/demo/?folder=%2Fworkspace%2Fprojects%2Fdemo&session=S1',
+    muxUrl: '/chat/mux?project=demo&slot=2&session=S1',
   };
   push({ data: { json: () => payload }, waitUntil: (p) => waits.push(p) });
   await Promise.all(waits);
@@ -186,6 +206,11 @@ async function tap(data, { windows = [] } = {}) {
     shown?.data?.url === payload.url,
   );
   ok('the notification lost which conversation it was about', shown?.data?.sessionId === 'S1');
+  ok(
+    `the notification dropped its place in the mux: ${JSON.stringify(shown?.data)} — a device ` +
+      'that chose the mux would land in the editor anyway',
+    shown?.data?.muxUrl === payload.muxUrl,
+  );
 
   /*
    * The receipt. Without it the server's knowledge of a notification stops at the push
@@ -458,6 +483,64 @@ for (const hostile of ['//elsewhere.example/', 'https://elsewhere.example/', 'ja
       'anything that is not a path on this origin has to fall back to the chat app',
     log.opened.length === 1 && log.opened[0] === '/chat/',
   );
+}
+
+// ------------------------------------------------- a device that chose the mux
+/*
+ * Where a tap lands is the device's choice, read at the moment of the tap. Unset is
+ * the editor, as it always was; 'mux' takes the notification's mux address; and a
+ * notification with no mux address — the test one, a transcript outside any project,
+ * one sent before the choice existed — still goes somewhere useful.
+ */
+{
+  const data = {
+    project: 'demo',
+    sessionId: 'S1',
+    url: '/p/demo/?folder=%2Fworkspace%2Fprojects%2Fdemo&session=S1',
+    muxUrl: '/chat/mux?project=demo&slot=2&session=S1',
+  };
+  let log = await tap(data);
+  ok(`a device that never chose landed on ${JSON.stringify(log.opened)}, not the editor`,
+    log.opened[0] === data.url);
+  log = await tap(data, { opens: 'editor' });
+  ok(`a device that chose the editor landed on ${JSON.stringify(log.opened)}`, log.opened[0] === data.url);
+  log = await tap(data, { opens: 'mux' });
+  ok(`a device that chose the mux landed on ${JSON.stringify(log.opened)}`, log.opened[0] === data.muxUrl);
+  log = await tap(data, { opens: 'nonsense' });
+  ok(`an unreadable choice landed on ${JSON.stringify(log.opened)} rather than the editor`,
+    log.opened[0] === data.url);
+
+  log = await tap({ ...data, muxUrl: null }, { opens: 'mux' });
+  ok(`a notification with no mux address, on a mux device, opened ${JSON.stringify(log.opened)} — ` +
+    'the editor it does name is better than nothing', log.opened[0] === data.url);
+  log = await tap({ sessionId: null }, { opens: 'mux' });
+  ok(`the test notification, on a mux device, opened ${JSON.stringify(log.opened)}`, log.opened[0] === '/chat/mux');
+
+  for (const hostile of ['//elsewhere.example/', 'https://elsewhere.example/mux']) {
+    log = await tap({ ...data, muxUrl: hostile }, { opens: 'mux' });
+    ok(`a mux address of ${JSON.stringify(hostile)} was followed: ${JSON.stringify(log.opened)}`,
+      log.opened[0] === data.url);
+  }
+
+  // A mux already open is focused and told, like an editor is.
+  log = await tap(data, { opens: 'mux', windows: [`${ORIGIN}/chat/mux`, `${ORIGIN}/p/demo/?folder=x`] });
+  ok('an open mux was passed over for another window', log.opened.length === 0 && log.focused[0] === `${ORIGIN}/chat/mux`);
+  ok(`the open mux was not told where: ${JSON.stringify(log.posted)}`, log.posted[0]?.url === data.muxUrl);
+}
+
+// --------------------------------------------- the choice survives an update
+/*
+ * The worker clears every cache on activation, for the caching worker that predates
+ * it. The choice lives in one, so that cache has to be the exception — or every deploy
+ * that touched this file would put every device back on the editor.
+ */
+{
+  const { listeners, log } = boot({ cacheNames: ['old-app-shell', 'triplec-prefs'] });
+  const waits = [];
+  listeners.get('activate')({ waitUntil: (p) => waits.push(p) });
+  await Promise.all(waits);
+  ok(`activation deleted ${JSON.stringify(log.deleted)} — the preferences have to survive it`,
+    log.deleted.includes('old-app-shell') && !log.deleted.includes('triplec-prefs'));
 }
 
 // ----------------------------------------------------------------- the report

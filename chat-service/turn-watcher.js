@@ -180,10 +180,35 @@ async function projectsByDir() {
     // The project's own directory first, then its worktrees — all of them mapped to
     // the project itself, which is the name a person knows and the window to open.
     for (const place of await projectPlaces(path)) {
-      found.set(await mangleCwd(place.cwd), { name, path });
+      found.set(await mangleCwd(place.cwd), { name, path, slot: slotNumber(place.worktree) });
     }
   }
   return found;
+}
+
+/**
+ * Which of the mux's places a directory is: 0 for the project's own checkout, N for
+ * `slot-N`, null for any other worktree — one `EnterWorktree` made, which the mux has
+ * no pane for.
+ */
+function slotNumber(worktree) {
+  if (!worktree) return 0;
+  const m = /^slot-([1-9][0-9]?)$/.exec(worktree);
+  return m ? Number(m[1]) : null;
+}
+
+/**
+ * The same conversation's place in the mux, for a device that prefers to land there.
+ *
+ * The project and the slot, which is how the mux names a pane, and the session for
+ * whatever in it wants to know which conversation this was. A worktree that is not a
+ * slot still names the project, so the mux can at least open it in the sidebar.
+ */
+export function muxStartUrl({ name, slot }, sessionId) {
+  const q = new URLSearchParams({ project: name });
+  if (slot !== null && slot !== undefined) q.set('slot', String(slot));
+  if (sessionId) q.set('session', sessionId);
+  return `/chat/mux?${q}`;
 }
 
 /**
@@ -240,6 +265,8 @@ export function createTurnWatcher({
   now = () => Date.now(),
   pollMs = POLL_MS,
   log = console.error,
+  // Whether this install has the mux, so a notification can offer it as a destination.
+  mux = false,
 } = {}) {
   /**
    * transcript path → mtime and a digest of the last message already accounted for.
@@ -439,6 +466,13 @@ export function createTurnWatcher({
           url: found
             ? `${projectStartUrl(found.name, found.path)}&session=${encodeURIComponent(sessionId)}`
             : null,
+          /*
+           * The other place it can go. Which of the two a tap opens is the device's
+           * choice, not the box's — a laptop living in the mux and a phone living in
+           * the editor are both right — so the worker picks, from what that device
+           * was told in its notification settings. See `opens` in pwa/sw.js.
+           */
+          muxUrl: found && mux ? muxStartUrl(found, sessionId) : null,
           at: new Date(at).toISOString(),
         };
         try {
