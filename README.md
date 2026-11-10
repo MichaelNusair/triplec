@@ -380,7 +380,9 @@ each new message replaces the one on screen and the one being read. Previous ste
 back to an earlier message in the conversation and reads it. From then on the sheet
 is *paused*: it stays on that message and reads it to the end, and messages that
 arrive meanwhile are kept but neither shown nor read. Next steps forward through
-them, and LIVE (or Next past the newest) goes back to following. Closing the sheet
+them, and LIVE (or Next past the newest) goes back to following. LIVE is a toggle:
+pressed while lit, it pauses right where it is, on the message showing, and lets the
+read in progress finish. Closing the sheet
 ends a pause, so every fresh open starts live.
 
 The message is **rendered, not shown as source**: bold, headings, bullets, tables,

@@ -1799,7 +1799,11 @@ Things that have burned people, in this codebase specifically:
   the message are Previous, LIVE and Next. Live (`sheetView === null`) is what the
   sheet always did: each new message replaces the one on screen and the one being
   read, and the newest message is the one wanted. Previous and Next are the explicit
-  exception, and they *pause* it. The sheet and the voice stay on the message picked
+  exception, and they *pause* it. So does pressing LIVE while it is lit: it freezes
+  the sheet on the message showing, with no step back and forth to get there, and
+  the read in progress carries on. That freeze holds only its own message
+  (`partial`) until `fillHistory` fetches what is behind it in the background, and a
+  Previous pressed before then waits for it. The sheet and the voice stay on the message picked
   and read it to the end. A message that arrives meanwhile is appended to
   `sheetHistory` for Next to reach, and the sheet redraws for the state line, but it
   neither replaces what is shown nor speaks. Next past the newest, or LIVE, goes back.

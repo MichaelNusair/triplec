@@ -1895,6 +1895,66 @@ ok(
   ok('a conversation with one message paused anyway', isLive());
   ok('a conversation with one message did not say there is nothing earlier', /nothing earlier/.test(where()));
   await drain();
+
+  /*
+   * LIVE is a toggle. Pressed while lit it freezes the sheet where it is — on the
+   * message showing, with the read in progress carrying on — rather than making you
+   * step back and forward again to reach a paused sheet.
+   */
+  history.length = 0;
+  say('f1', 'Freeze one. Started on the auth module.');
+  say('f2', 'Freeze two. Found the guard.');
+  const longLatest = 'This is a sentence of the latest message. '.repeat(20).trim();
+  say('f3', longLatest);
+  click('cmo-status-close');
+  await tapStatus();
+  const callsBeforeFreeze = messagesCalls.length;
+  utterances.length = 0;
+  click('cmo-speak');
+  ok('Read aloud did not start reading the latest message', await rise());
+  const cancelsBeforeFreeze = cancels;
+  click('cmo-nav-live');
+  ok('pressing the lit LIVE did not pause the sheet', !isLive());
+  ok('pressing the lit LIVE moved off the message showing', shownText() === longLatest);
+  ok('pressing the lit LIVE interrupted the read in progress', cancels === cancelsBeforeFreeze && barBtn.classList.contains('cmo-speaking'));
+  ok('the freeze does not say it is on the latest message', /Paused · Latest message/.test(where()));
+  await settle();
+  ok('the freeze did not fetch the history behind it, for Previous', messagesCalls.length === callsBeforeFreeze + 1);
+  ok('Previous is not offered from a freeze with earlier messages behind it', !doc.getElementById('cmo-nav-older')?.disabled);
+
+  say('f4', 'Freeze four. Arrived while frozen.');
+  w.dispatchEvent(new w.Event('focus'));
+  await settle();
+  ok('a message that arrived while frozen replaced the frozen one', shownText() === longLatest);
+  ok('a message that arrived while frozen was read out', !/Arrived while frozen/.test(heard()));
+  await drain();
+  ok('the frozen message was not read to its end', (heard().match(/sentence of the latest message/g) || []).length === 20);
+
+  utterances.length = 0;
+  click('cmo-nav-older');
+  await drain();
+  ok('Previous from a freeze did not step back one message', shownText() === history[1].text);
+  ok('Previous from a freeze did not count the message that arrived since', /^2 messages back\./.test(utterances[0] || ''));
+  utterances.length = 0;
+  click('cmo-nav-live');
+  await heardOut();
+  ok('LIVE after a freeze did not go back to the newest message', isLive() && shownText() === history[3].text);
+  ok('LIVE after a freeze did not read the newest message', /Arrived while frozen/.test(heard()));
+
+  // Freezing needs no fetch, so a failing history route still freezes — and Previous
+  // from there says why it cannot step.
+  messagesReply = null;
+  click('cmo-nav-live');
+  ok('a freeze waited on the history route instead of pausing at once', !isLive() && shownText() === history[3].text);
+  await settle();
+  click('cmo-nav-older');
+  await settle();
+  ok('Previous from a freeze whose history failed did not say why', /could not be fetched/.test(where()));
+  ok('a failed history fetch knocked the freeze back to live', !isLive());
+  click('cmo-nav-live');
+  ok('the grey LIVE did not go back to live', isLive());
+  messagesReply = () => ({ messages: history.map((m) => ({ ...m })) });
+  await drain();
 }
 speechMs = 0;
 

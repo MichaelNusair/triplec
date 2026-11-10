@@ -2577,12 +2577,13 @@
    */
   let sheetShown = null;
   /*
-   * Live, or paused on an earlier message.
+   * Live, or paused on a message.
    *
    * Live is the default and is what the sheet always was: it shows the newest thing
    * Claude said, and each new message replaces it on screen and in the voice. Paused
    * is what an explicit Previous or Next turns it into, the way scrubbing back in a
-   * live stream does: the sheet and the voice stay on the message that was picked,
+   * live stream does — or pressing the lit LIVE, which pauses right where it is,
+   * without stepping anywhere: the sheet and the voice stay on the message that was picked,
    * read to its end, and nothing newer is drawn or spoken until Next steps forward
    * or LIVE goes back. A fresh open of the sheet, a different conversation, or a
    * different pane starts live again.
@@ -3192,19 +3193,39 @@
    * (see `unlockAudio`) so the read that follows the fetch is allowed to play.
    *
    * Next from the newest message is LIVE, as running a stream's scrubber to the end
-   * is: there is nothing newer to pause on.
+   * is: there is nothing newer to pause on. Previous from a pause LIVE made may have
+   * to wait for the history behind it; see pauseHere.
    */
   async function stepMessage(by) {
     const s = status;
     if (!s?.sessionId) return;
     if (sheetView && sheetHistory && sheetView.sessionId === s.sessionId) {
-      const next = sheetView.index + by;
-      if (next < 0) return;
+      let next = sheetView.index + by;
       if (next >= sheetHistory.messages.length) {
         goLive();
         return;
       }
       stopSpeech();
+      if (next < 0) {
+        // Paused by LIVE, before the history behind that message had arrived: wait
+        // for it, then step. Anything else at the start has nowhere earlier to go.
+        if (!sheetHistory.partial) return;
+        if (!wantsBrowserVoice() && serverVoiceReady()) unlockAudio();
+        const h = sheetHistory;
+        tellWhere('Fetching earlier messages…');
+        const filled = await fillHistory();
+        if (sheetHistory !== h || !statusSheetOpen()) return;
+        if (!filled) {
+          tellWhere('Earlier messages could not be fetched — try again in a moment.');
+          return;
+        }
+        next = sheetView.index + by;
+        if (next < 0) {
+          openStatus({ auto: true });
+          tellWhere('There is nothing earlier in this conversation to go back to.');
+          return;
+        }
+      }
       sheetView.index = next;
       sheetFollowUntil = Math.max(sheetFollowUntil, Date.now() + SHEET_FOLLOW_LIMIT);
       openStatus({ auto: true });
@@ -3216,18 +3237,12 @@
     stopSpeech();
     if (!wantsBrowserVoice() && serverVoiceReady()) unlockAudio();
     const ask = ++historyAsk;
-    const where = panel.querySelector('#cmo-nav-where');
-    const tell = (text) => {
-      if (!where) return;
-      where.hidden = false;
-      where.textContent = text;
-    };
-    tell('Fetching earlier messages…');
+    tellWhere('Fetching earlier messages…');
     const messages = await fetchRecentMessages(s.sessionId);
     // The sheet moved on while that was in flight: closed, another conversation, LIVE.
     if (ask !== historyAsk || !statusSheetOpen() || status?.sessionId !== s.sessionId) return;
     if (!messages) {
-      tell('Earlier messages could not be fetched — try again in a moment.');
+      tellWhere('Earlier messages could not be fetched — try again in a moment.');
       return;
     }
     sheetHistory = { sessionId: s.sessionId, messages };
@@ -3237,7 +3252,7 @@
     const from = live === -1 ? list.length - 1 : live;
     if (from <= 0) {
       sheetHistory = null;
-      tell('There is nothing earlier in this conversation to go back to.');
+      tellWhere('There is nothing earlier in this conversation to go back to.');
       return;
     }
     sheetView = { sessionId: s.sessionId, index: from - 1 };
@@ -3246,10 +3261,87 @@
     speak(shownMessage().text, `${pausedWhere()}.`);
   }
 
+  /** A line above the message about where the sheet is, or why it could not move. */
+  function tellWhere(text) {
+    const where = panel.querySelector('#cmo-nav-where');
+    if (!where) return;
+    where.hidden = false;
+    where.textContent = text;
+  }
+
   /**
-   * LIVE: follow the newest message again, and read it — unless it is the one already
-   * on the sheet, in which case whatever is being read carries on uninterrupted and the
-   * next message to arrive is the next thing heard.
+   * LIVE is a toggle, the way a live player's badge is: lit, pressing it freezes the
+   * sheet on the message it is showing; grey, pressing it goes back to following.
+   */
+  function toggleLive() {
+    if (sheetView) goLive();
+    else pauseHere();
+  }
+
+  /**
+   * Freeze on the message on screen, without moving and without interrupting: whatever
+   * is being read carries on to its end, and nothing newer is shown or read until Next
+   * or LIVE. No await stands in front of the freeze, because a message landing during
+   * a fetch would otherwise be read out after the tap that asked for quiet.
+   *
+   * The history behind it is fetched afterwards, in the background, so Previous from
+   * here is ready by the time a thumb reaches it — and waits for it if it is not.
+   */
+  function pauseHere() {
+    const s = status;
+    if (!s?.sessionId || !s.last?.text) return;
+    sheetHistory = {
+      sessionId: s.sessionId,
+      messages: [{ id: s.last.id || null, text: s.last.text, at: s.last.at || null }],
+      partial: true,
+    };
+    sheetView = { sessionId: s.sessionId, index: 0 };
+    sheetFollowUntil = Math.max(sheetFollowUntil, Date.now() + SHEET_FOLLOW_LIMIT);
+    openStatus({ auto: true });
+    const h = sheetHistory;
+    fillHistory().then((filled) => {
+      // Redrawn for the Previous button and the "messages back" line; the message
+      // itself is unchanged, so the redraw keeps where it was scrolled to.
+      if (filled && sheetHistory === h && statusSheetOpen() && !selectionInPanel()) openStatus({ auto: true });
+    });
+  }
+
+  /**
+   * Put the conversation's earlier messages in front of a history that only holds the
+   * pause's own message (and whatever has arrived since), keeping the sheet on the
+   * message it is paused on. One fetch however many callers ask; true once it is full.
+   */
+  function fillHistory() {
+    const h = sheetHistory;
+    if (!h) return Promise.resolve(false);
+    if (!h.partial) return Promise.resolve(true);
+    if (h.filling) return h.filling;
+    h.filling = (async () => {
+      const messages = await fetchRecentMessages(h.sessionId);
+      if (sheetHistory !== h || !messages) {
+        h.filling = null; // a failure is retried by the next Previous
+        return false;
+      }
+      const at = sheetView?.index ?? 0;
+      const paused = h.messages[at];
+      const merged = messages.slice();
+      for (const m of h.messages) if (!merged.some((x) => sameMessage(x, m))) merged.push(m);
+      h.messages = merged;
+      h.partial = false;
+      h.filling = null;
+      if (sheetView) {
+        const found = merged.findIndex((m) => sameMessage(m, paused));
+        sheetView.index = found === -1 ? merged.length - 1 : found;
+      }
+      return true;
+    })();
+    return h.filling;
+  }
+
+  /**
+   * Back to live: follow the newest message again, and read it — unless it is the one
+   * already on the sheet, in which case whatever is being read carries on uninterrupted
+   * and the next message to arrive is the next thing heard.
    */
   function goLive() {
     if (!sheetView) return;
@@ -3813,11 +3905,11 @@
       ${said && s.sessionId ? `
         <div class="cmo-nav" id="cmo-nav">
           <button type="button" id="cmo-nav-older" aria-label="Previous message"${
-            paused && sheetView.index <= 0 ? ' disabled' : ''
+            paused && sheetView.index <= 0 && !sheetHistory?.partial ? ' disabled' : ''
           }>&#8249; Previous</button>
           <button type="button" id="cmo-nav-live" class="${paused ? '' : 'cmo-on'}" aria-pressed="${
             paused ? 'false' : 'true'
-          }" aria-label="${paused ? 'Back to live — follow the newest message' : 'Live — following the newest message'}">&#9679; LIVE</button>
+          }" aria-label="${paused ? 'Back to live — follow the newest message' : 'Live — tap to pause on this message'}">&#9679; LIVE</button>
           <button type="button" id="cmo-nav-newer" aria-label="Next message"${
             paused ? '' : ' disabled'
           }>Next &#8250;</button>
@@ -3859,7 +3951,7 @@
       <div id="cmo-code-reads"></div>
       <p class="cmo-hint">${
         paused
-          ? 'An earlier message. The sheet stays on it while the conversation carries on: Next steps forward, LIVE goes back to the newest.'
+          ? 'Paused. The sheet stays on this message while the conversation carries on: Previous and Next step through, LIVE goes back to following the newest.'
           : MUX
           ? muxHint(s)
           : asking
@@ -3924,7 +4016,7 @@
     // Each is a tap, and `stepMessage` / `goLive` do their in-gesture work first.
     panel.querySelector('#cmo-nav-older')?.addEventListener('click', () => stepMessage(-1));
     panel.querySelector('#cmo-nav-newer')?.addEventListener('click', () => stepMessage(1));
-    panel.querySelector('#cmo-nav-live')?.addEventListener('click', goLive);
+    panel.querySelector('#cmo-nav-live')?.addEventListener('click', toggleLive);
     panel.querySelector('#cmo-status-detail').textContent = [
       ago === null ? null : ago === 0 ? 'just now' : `${ago} min ago`,
       /*
@@ -4332,7 +4424,7 @@
     panel.querySelector('#cmo-status-follow').textContent = !following
       ? 'This has stopped refreshing itself — tap Refresh, or reopen it, to follow along again.'
       : paused
-        ? 'Paused on an earlier message: new messages are kept for Next, and none is read out until you tap LIVE.'
+        ? 'Paused: new messages are kept for Next, and none is read out until you tap LIVE.'
       : speechAvailable() || serverVoiceReady()
         ? 'Refreshing every 5 seconds while this is open, and reading out anything new that Claude says. Stop silences the message being read; closing this stops it following.'
         : 'Refreshing every 5 seconds while this is open.';
