@@ -451,7 +451,7 @@
    * is the one thing the plain-text version was already getting right.
    */
   .cmo-said p, .cmo-said li { white-space: pre-wrap; margin: 0 0 8px; }
-  .cmo-said ul, .cmo-said ol { margin: 0 0 8px; padding-left: 22px; }
+  .cmo-said ul, .cmo-said ol { margin: 0 0 8px; padding-inline-start: 22px; }
   .cmo-said li { margin: 0 0 4px; }
   .cmo-said > :last-child { margin-bottom: 0; }
   .cmo-said strong { color: #fff; }
@@ -480,7 +480,7 @@
   .cmo-md-table { margin: 0 0 8px; overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .cmo-said table { border-collapse: collapse; font-size: 12.5px; }
   .cmo-said th, .cmo-said td {
-    border: 1px solid #34342f; padding: 4px 8px; text-align: left; white-space: nowrap;
+    border: 1px solid #34342f; padding: 4px 8px; text-align: start; white-space: nowrap;
   }
   .cmo-said th { color: #fff; font-weight: 600; background: #1f1f1d; }
   /* A heading for a section part-way down a sheet, where .cmo-title is the sheet's
@@ -3591,6 +3591,16 @@
       para.push(line);
     }
     flush();
+    /*
+     * Each block finds its own direction. A message in Hebrew or Arabic laid out in
+     * the sheet's left-to-right lands left-aligned, with every trailing period,
+     * colon and quote on the wrong end of its line — readable, but backwards. `auto`
+     * goes by the first strong letter, per block rather than per message, because a
+     * Hebrew answer still has an English bullet or a file path paragraph in it.
+     * Code is code whatever language it is explained in, so it stays left-to-right.
+     */
+    for (const el of out.querySelectorAll('p, ul, ol, li, table')) el.dir = 'auto';
+    for (const el of out.querySelectorAll('pre')) el.dir = 'ltr';
     return out;
   }
 
@@ -3742,6 +3752,7 @@
     // was written — backticks, asterisks, newlines and all.
     const text = document.createElement('div');
     text.className = 'cmo-first';
+    text.dir = 'auto'; // a prompt typed in Hebrew reads right-to-left, as the message does
     text.textContent = found.text;
     block.appendChild(text);
 

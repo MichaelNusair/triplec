@@ -3577,6 +3577,28 @@ ok(
 );
 
 /*
+ * A message in Hebrew reads right to left. Without a direction the sheet lays every
+ * block out left to right, so a Hebrew paragraph sits left-aligned with its closing
+ * period and colon on the wrong end of the line. Each block says `auto`, so a Hebrew
+ * paragraph and an English bullet in the same message each go their own way; code
+ * stays left to right whatever it is explained in.
+ */
+const rtl = await openFresh(
+  ['נכון, שתיים ומינוס שתיים.', '', '- **שלב 2:** מה נותנת לנו המילה "נורמלית".', '', '```', 'x = 1', '```'].join('\n'),
+);
+ok(
+  'a paragraph of the message has no dir="auto", so Hebrew is laid out left to right ' +
+    'with its punctuation on the wrong end',
+  [...(rtl?.querySelectorAll('p') ?? [])].length > 0 &&
+    [...rtl.querySelectorAll('p')].every((el) => el.dir === 'auto'),
+);
+ok(
+  'a list has no dir="auto", so a Hebrew bullet keeps its marker on the left',
+  rtl?.querySelector('ul')?.dir === 'auto' && rtl?.querySelector('li')?.dir === 'auto',
+);
+ok('a code block was not pinned left to right', rtl?.querySelector('pre')?.dir === 'ltr');
+
+/*
  * A transcript is read while it is still being written, so the fence at the end of
  * a half-written block has not arrived yet. Dropping the block until it closes
  * would blank the most recent thing Claude said.
