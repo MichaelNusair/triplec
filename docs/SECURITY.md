@@ -201,7 +201,7 @@ on the real Chrome that `triplec-browser.service` runs on this box (host mode,
 `features.browser`). Treat it as what it is — a browser **signed in to whatever its
 owner signed in to**, plus that browser's downloads — and it is gated exactly like
 the terminal: the same `upgrade` handler, before the handshake. Behind it, nothing
-listens on a network port. x11vnc serves the screen on a unix socket in
+listens on a network port. Xvnc (TigerVNC) serves the screen on a unix socket (0600) in
 `/run/triplec-browser` (0700, the service account's), the X display refuses any
 client without the cookie kept beside it, and the chat service is the only thing
 that bridges the socket to a page. Chrome's DevTools port is `127.0.0.1:9222`, so a

@@ -1,10 +1,10 @@
 /**
  * Tests for the Browser pane: the box's Chrome, shown through noVNC.
  *
- * Needs no X server, no x11vnc and no Chrome — each is faked at the boundary the
+ * Needs no X server, no VNC server and no Chrome — each is faked at the boundary the
  * chat service actually talks across, so this runs the same on the deploy box:
  *
- *   1. The socket bridge: bytes both ways between a WebSocket and x11vnc's unix
+ *   1. The socket bridge: bytes both ways between a WebSocket and Xvnc's unix
  *      socket, untouched; a hang-up on either side ends the other; and a browser
  *      that is not running is a distinct close code the page can explain.
  *   2. Sizing: what screen a viewer of a given size gets, and that a resize asks
@@ -52,6 +52,8 @@ const fakeXrandr = join(root, 'xrandr');
 // Records its arguments and the X environment it was given; fails only when told to.
 await writeFile(fakeXrandr, `#!/bin/sh
 printf '%s|%s|%s\\n' "$DISPLAY" "$XAUTHORITY" "$*" >> "${xrandrLog}"
+# Asked with no arguments, it describes the screen the way Xvnc's does.
+[ $# -eq 0 ] && { echo "Screen 0: minimum 32 x 32, current 2400 x 1500, maximum 32768 x 32768"; echo "VNC-0 connected 2400x1500+0+0 0mm x 0mm"; }
 [ -n "$FAKE_XRANDR_FAIL" ] && case "$*" in --output*) echo "cannot set mode" >&2; exit 1;; esac
 exit 0
 `);
@@ -99,7 +101,7 @@ process.env.TRIPLEC_BROWSER_DEBUG_PORT = String(devtoolsHttp.address().port);
 process.env.TRIPLEC_XRANDR = fakeXrandr;
 const browser = await import('./browser.js');
 
-// A fake x11vnc: says the RFB greeting, then echoes everything back reversed, so a
+// A fake Xvnc: says the RFB greeting, then echoes everything back reversed, so a
 // test can tell what came from where.
 const vncSock = join(root, 'vnc.sock');
 let vncConns = [];
@@ -140,19 +142,19 @@ console.log('the socket');
 
   const vnc = await startVnc();
   check('outside host mode, a browser that is not running is not one this install has', status.installed === false);
-  check('with x11vnc listening, the status says running, and where DevTools is',
+  check('with Xvnc listening, the status says running, and where DevTools is',
     (await browser.browserStatus()).running === true
       && (await browser.browserStatus()).debugUrl === `http://127.0.0.1:${devtoolsHttp.address().port}`);
 
   const c = connect();
   await c.opened;
   await sleep(50);
-  check("x11vnc's bytes reach the page unchanged", Buffer.concat(c.got).toString() === 'RFB 003.008\n',
+  check("Xvnc's bytes reach the page unchanged", Buffer.concat(c.got).toString() === 'RFB 003.008\n',
     JSON.stringify(Buffer.concat(c.got).toString()));
   c.got.length = 0;
   c.ws.send(Buffer.from([1, 2, 3, 250]));
   await sleep(50);
-  check("the page's bytes reach x11vnc unchanged (and come back through the fake)",
+  check("the page's bytes reach Xvnc unchanged (and come back through the fake)",
     Buffer.concat(c.got).equals(Buffer.from([250, 3, 2, 1])), Buffer.concat(c.got).toString('hex'));
 
   const big = Buffer.alloc(3 * 1024 * 1024, 7);
@@ -166,14 +168,14 @@ console.log('the socket');
   const connClosed = once(conn, 'close');
   c.ws.close();
   await Promise.race([connClosed, sleep(1000)]);
-  check('the page hanging up hangs up x11vnc', conn.destroyed);
+  check('the page hanging up hangs up Xvnc', conn.destroyed);
 
   const d = connect();
   await d.opened;
   await sleep(30);
   vncConns.at(-1).end();
   const ended = await Promise.race([d.closed, sleep(1000).then(() => null)]);
-  check('x11vnc hanging up closes the page\'s socket', ended !== null, JSON.stringify(ended));
+  check('Xvnc hanging up closes the page\'s socket', ended !== null, JSON.stringify(ended));
 
   vnc.close();
   for (const s of vncConns) s.destroy();
@@ -190,7 +192,7 @@ console.log('sizing');
   check("a phone keeps its shape at Chrome's narrowest window (500, at 2×)",
     phone.width === 1000 && phone.height === 1948, JSON.stringify(phone));
   const huge = size(5000, 3000);
-  check('nothing bigger than the screen Xvfb was started with',
+  check('nothing bigger than the largest screen worth encoding',
     huge.width <= browser.MAX_SIZE.width && huge.height <= browser.MAX_SIZE.height, JSON.stringify(huge));
   check('odd sizes are evened', size(333, 700).height % 2 === 0 && size(333, 700).width === 1000, JSON.stringify(size(333, 700)));
   let threw = null;
@@ -210,8 +212,10 @@ console.log('sizing');
     lines.every((l) => l.startsWith(`:55|${join(root, 'Xauthority')}|`)), lines[0]);
   check('…making a mode of exactly that size and switching the screen to it',
     lines.some((l) => l.endsWith('|--newmode 2000x1400 0 2000 0 0 0 1400 0 0 0'))
-      && lines.some((l) => l.endsWith('|--addmode screen 2000x1400'))
-      && lines.at(-1).endsWith('|--output screen --mode 2000x1400'), lines.join(' / '));
+      && lines.some((l) => l.endsWith('|--addmode VNC-0 2000x1400'))
+      && lines.at(-1).endsWith('|--output VNC-0 --mode 2000x1400'), lines.join(' / '));
+  check("…on the output the server names, asked once rather than assumed",
+    lines.filter((l) => l.endsWith('|')).length === 1, lines.join(' / '));
   const bounds = devtoolsCalls.filter((c) => c.method === 'Browser.setWindowBounds');
   check("every Chrome window is set to fill it, in Chrome's own 2× pixels — once per window, not once per tab",
     bounds.length === 2 && bounds[0].params.bounds.windowState === 'normal'

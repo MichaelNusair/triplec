@@ -2,30 +2,34 @@
 #
 # triplec-browser — a real Google Chrome on this box, for the mux's Browser pane.
 #
-# Three processes, one unit (triplec-browser.service), so they start, stop and
+# Two processes, one unit (triplec-browser.service), so they start, stop and
 # restart together:
 #
-#   Xvfb     a virtual screen, sized up to BROWSER_MAX and switched to whatever size
-#            the viewer asks for (see resizeScreen in chat-service/browser.js).
-#            Locked with an xauth cookie: an X display is a keyboard and a screen,
-#            and without one any account on the box could type into this browser.
-#   x11vnc   that screen, as RFB, on a unix socket in a 0700 runtime directory. No
-#            TCP port at all — the chat service is the only way in, and it carries
-#            the login check (/ws/browser, behind auth.js like every other socket).
+#   Xvnc     TigerVNC's X server, which is a VNC server too: a virtual screen
+#            switched to whatever size the viewer asks for (see resizeScreen in
+#            chat-service/browser.js), served as RFB on a unix socket (0600, in a
+#            0700 runtime directory). No TCP port at all — the chat service is the
+#            only way in, and it carries the login check (/ws/browser, behind
+#            auth.js like every other socket). The X side is locked with an xauth
+#            cookie: an X display is a keyboard and a screen, and without one any
+#            account on the box could type into this browser.
+#            One process rather than Xvfb plus x11vnc, because it knows exactly
+#            what changed on screen instead of copying the screen out and comparing
+#            it: measured on this box, full-screen scrolling at 2400x1500 went from
+#            5 to 10 frames a second, and small changes from 37 to 60.
 #   chrome   the full browser, not the headless shell: tabs, omnibox, extensions,
 #            downloads, a profile that persists. Restarted if it exits, because
 #            closing its last window is something a person will do. It also listens
 #            for DevTools on 127.0.0.1:BROWSER_DEBUG_PORT, which is how a Claude on
 #            this box drives the same browser the person is watching.
 #
-# If Xvfb or x11vnc dies, this exits and systemd restarts the lot.
+# If Xvnc dies, this exits and systemd restarts the lot.
 #
 # Settings, all from the unit's environment:
 #   BROWSER_RUN_DIR     the socket and the X cookie (the unit's RuntimeDirectory)
 #   BROWSER_PROFILE     Chrome's user data directory, kept across restarts
 #   BROWSER_DISPLAY     the X display number, e.g. :91
 #   BROWSER_DEBUG_PORT  DevTools on loopback, e.g. 9222
-#   BROWSER_MAX         the largest the screen can become, e.g. 5120x3200
 #   BROWSER_SIZE        the size it starts at, e.g. 2880x1800
 #   BROWSER_SCALE       Chrome's device scale factor, a whole number (default 2).
 #                       The screen has this many pixels per CSS pixel of the page
@@ -41,7 +45,6 @@ RUN="${BROWSER_RUN_DIR:?BROWSER_RUN_DIR is not set}"
 PROFILE="${BROWSER_PROFILE:?BROWSER_PROFILE is not set}"
 DISP="${BROWSER_DISPLAY:-:91}"
 PORT="${BROWSER_DEBUG_PORT:-9222}"
-MAX="${BROWSER_MAX:-5120x3200}"
 SIZE="${BROWSER_SIZE:-2880x1800}"
 SCALE="${BROWSER_SCALE:-2}"
 case "$SCALE" in 1|2|3) ;; *) echo "triplec-browser: BROWSER_SCALE must be 1, 2 or 3" >&2; exit 1 ;; esac
@@ -62,7 +65,7 @@ rm -f "$XAUTHORITY" "$RUN/vnc.sock"
 : >"$XAUTHORITY"
 xauth -q -f "$XAUTHORITY" add "$DISP" . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
 
-# A display left locked by a previous run that died hard: Xvfb refuses to start on it.
+# A display left locked by a previous run that died hard: Xvnc refuses to start on it.
 num="${DISP#:}"
 if [ -e "/tmp/.X${num}-lock" ] && ! kill -0 "$(tr -d ' ' <"/tmp/.X${num}-lock" 2>/dev/null)" 2>/dev/null; then
   rm -f "/tmp/.X${num}-lock" "/tmp/.X11-unix/X${num}"
@@ -76,28 +79,21 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-Xvfb "$DISP" -screen 0 "${MAX}x24" -auth "$XAUTHORITY" -nolisten tcp -noreset &
+# -rfbport -1: no TCP listener. -SecurityTypes None is for the socket only, which is
+# 0600 and this account's. -SendPrimary=0: only an explicit copy reaches the viewer's
+# clipboard, not every stretch of text that happens to be selected. -FrameRate 60:
+# its default is 60 too, said here so nobody lowers it by accident.
+Xvnc "$DISP" -geometry "$SIZE" -depth 24 -auth "$XAUTHORITY" -nolisten tcp \
+  -rfbport -1 -rfbunixpath "$RUN/vnc.sock" -rfbunixmode 0600 -SecurityTypes None \
+  -AlwaysShared -FrameRate 60 -SendPrimary=0 -desktop "TripleC browser" \
+  >>"$RUN/xvnc.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 50); do
   xrandr >/dev/null 2>&1 && break
   sleep 0.1
 done
-xrandr >/dev/null 2>&1 || { echo "triplec-browser: Xvfb did not come up on $DISP" >&2; exit 1; }
-
-# Start at BROWSER_SIZE rather than the maximum: the same steps the chat service
-# takes on every resize — a mode of exactly that size, then the output switched to it.
+xrandr >/dev/null 2>&1 || { echo "triplec-browser: Xvnc did not come up on $DISP" >&2; exit 1; }
 w="${SIZE%x*}"; h="${SIZE#*x}"
-xrandr --newmode "$SIZE" 0 "$w" 0 0 0 "$h" 0 0 0 2>/dev/null
-xrandr --addmode screen "$SIZE" 2>/dev/null
-xrandr --output screen --mode "$SIZE" 2>/dev/null
-
-# -xrandr resize: follow the screen when it changes size, and tell the viewer, so the
-# page never shows a stale frame of the wrong shape. -noxdamage because Xvfb's
-# damage reports are unreliable and x11vnc's own polling is cheap at this size.
-x11vnc -display "$DISP" -auth "$XAUTHORITY" -unixsock "$RUN/vnc.sock" -rfbport 0 \
-  -forever -shared -nopw -xrandr resize -noxdamage -quiet -noipv6 \
-  -o "$RUN/x11vnc.log" &
-pids+=($!)
 
 # The profile directory signed in as BROWSER_ACCOUNT, from Chrome's own record of its
 # profiles. Asked on every start, because the profile is made the first time someone
@@ -149,8 +145,8 @@ chrome_loop() {
 chrome_loop &
 pids+=($!)
 
-# Whichever of the three ends first. Chrome's loop never does; the other two mean the
-# screen is gone, and the unit's Restart= brings everything back together.
+# Whichever ends first. Chrome's loop never does; Xvnc ending means the screen is
+# gone, and the unit's Restart= brings everything back together.
 wait -n
-echo "triplec-browser: Xvfb or x11vnc exited; restarting" >&2
+echo "triplec-browser: Xvnc exited; restarting" >&2
 exit 1

@@ -2,7 +2,7 @@
  * The Browser pane: a real Google Chrome running on this box, shown in the page.
  *
  * Chrome runs under triplec-browser.service (scripts/triplec-browser.sh) on a
- * virtual X screen, and x11vnc serves that screen as RFB on a unix socket in a 0700
+ * virtual X screen (TigerVNC's Xvnc), which serves itself as RFB on a unix socket in a 0700
  * directory. There is no TCP port for it: this module is the only way in, and it is
  * reached through /ws/browser, which server.js upgrades only after auth.js has said
  * yes — the same gate, in the same place, as the terminal's socket. A browser on the
@@ -10,9 +10,9 @@
  * downloads folder. So it is gated exactly as hard as a shell.
  *
  * What this module owns:
- *   - the socket: bytes between the page's noVNC and x11vnc, untouched both ways.
+ *   - the socket: bytes between the page's noVNC and Xvnc, untouched both ways.
  *   - the size: the page says how big it is, and the screen becomes that size
- *     (RandR on Xvfb) with Chrome's windows filling it (DevTools' setWindowBounds),
+ *     (RandR on Xvnc) with Chrome's windows filling it (DevTools' setWindowBounds),
  *     so a phone gets a phone-shaped browser and a wide pane a wide one, drawn at
  *     SCALE (2×) so a high-DPI display shows it sharp.
  *   - opening a URL in a new tab (POST /api/browser/open), also over DevTools.
@@ -44,8 +44,8 @@ export const DEBUG_PORT = Number(process.env.TRIPLEC_BROWSER_DEBUG_PORT) || 9222
 const XRANDR = process.env.TRIPLEC_XRANDR || 'xrandr';
 const socketPath = () => join(BROWSER_DIR, 'vnc.sock');
 
-// Chrome will not make a window narrower than 500 pixels, and Xvfb was started at
-// most this big (BROWSER_MAX in the unit). Outside those, the page scales.
+// Chrome will not make a window narrower than 500 pixels, and a screen bigger than
+// this would only cost encoding time nobody can see. Outside those, the page scales.
 // Chrome draws at SCALE device pixels per CSS pixel (--force-device-scale-factor, set
 // by the launcher from the same default), and the screen is sized in device pixels:
 // a pane W CSS pixels wide gets a screen W × SCALE wide, which noVNC shows at W — so a
@@ -78,9 +78,9 @@ export function browserStatus() {
 }
 
 /**
- * Serve one /ws/browser socket: noVNC on one side, x11vnc on the other.
+ * Serve one /ws/browser socket: noVNC on one side, Xvnc on the other.
  *
- * Bytes only, in both directions — RFB is x11vnc's to speak and noVNC's to read, and
+ * Bytes only, in both directions — RFB is Xvnc's to speak and noVNC's to read, and
  * nothing here needs to understand it. Back-pressure each way, because a full-screen
  * repaint is megabytes and a phone on a train drains slowly.
  */
@@ -166,14 +166,29 @@ async function xrandr(args) {
 }
 
 /**
- * Make the screen exactly `size`. Xvfb has no modes but the one it started with, so
- * each size is added as a mode first; adding one that exists already fails, harmlessly.
+ * The screen's one output, by name: VNC-0 on Xvnc, `screen` on Xvfb. Asked rather
+ * than assumed, and remembered, since it does not change while the server runs.
+ */
+let outputName = null;
+async function output() {
+  if (outputName) return outputName;
+  const query = await xrandr([]);
+  const name = query.out.match(/^(\S+) connected/m)?.[1];
+  if (name) outputName = name;
+  return name || 'screen';
+}
+
+/**
+ * Make the screen exactly `size`. The X server has no modes but a few it started
+ * with, so each size is added as a mode first; adding one that exists already fails,
+ * harmlessly.
  */
 async function resizeScreen({ width, height }) {
   const mode = `${width}x${height}`;
+  const name = await output();
   await xrandr(['--newmode', mode, '0', String(width), '0', '0', '0', String(height), '0', '0', '0']);
-  await xrandr(['--addmode', 'screen', mode]);
-  const set = await xrandr(['--output', 'screen', '--mode', mode]);
+  await xrandr(['--addmode', name, mode]);
+  const set = await xrandr(['--output', name, '--mode', mode]);
   if (!set.ok) throw Object.assign(new Error(`could not resize the screen: ${set.err}`), { status: 502 });
 }
 

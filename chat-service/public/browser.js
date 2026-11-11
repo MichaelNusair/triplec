@@ -135,7 +135,7 @@ function connect() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   rfb = new RFB(screenEl, `${proto}//${location.host}/ws/browser`, { shared: true });
   rfb.scaleViewport = true;     // fit, never scroll: the screen is already this size
-  rfb.resizeSession = false;    // sizing is /api/browser/size's, which x11vnc cannot do
+  rfb.resizeSession = false;    // sizing is /api/browser/size's: the screen is twice the page
   rfb.background = '#000';
   rfb.qualityLevel = 7;
   rfb.compressionLevel = 2;
@@ -203,7 +203,7 @@ async function pasteIntoRemote() {
   }
   if (text === null) return;
   rfb.clipboardPasteFrom(text);
-  // Give x11vnc a moment to own the selection before Chrome asks for it.
+  // Give Xvnc a moment to own the selection before Chrome asks for it.
   setTimeout(() => chord(0x76, 'KeyV'), 60);
 }
 

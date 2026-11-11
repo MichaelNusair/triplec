@@ -251,11 +251,11 @@ fi
 if [ "$F_VOICE" = true ]; then
   for p in build-essential cmake; do pkg_installed "$p" || need+=("$p"); done
 fi
-# The Browser pane: a virtual screen, the VNC server that shares it on a socket, the
-# X cookie tool, and xrandr, which is how the screen is resized to the viewer. Fonts
-# for the scripts a page may be in; Chrome brings the rest of its libraries itself.
+# The Browser pane: TigerVNC's Xvnc (a virtual screen that is its own VNC server),
+# the X cookie tool, and xrandr, which is how the screen is resized to the viewer.
+# Fonts for the scripts a page may be in; Chrome brings the rest of its libraries.
 if [ "$F_BROWSER" = true ]; then
-  for p in xvfb x11vnc xauth x11-xserver-utils fonts-noto-core fonts-noto-color-emoji; do
+  for p in tigervnc-standalone-server xauth x11-xserver-utils fonts-noto-core fonts-noto-color-emoji; do
     pkg_installed "$p" || need+=("$p")
   done
 fi
@@ -795,7 +795,6 @@ Environment=BROWSER_PROFILE=$STATE_DIR/browser/profile
 Environment=BROWSER_DISPLAY=:91
 Environment=BROWSER_DEBUG_PORT=9222
 Environment=BROWSER_SCALE=2
-Environment=BROWSER_MAX=5120x3200
 Environment=BROWSER_ACCOUNT=$BROWSER_ACCOUNT
 RuntimeDirectory=triplec-browser
 RuntimeDirectoryMode=0700
