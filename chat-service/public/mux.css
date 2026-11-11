@@ -34,8 +34,10 @@ body.mux {
 }
 .mux-layouts button.active { color: var(--text); border-color: var(--accent); }
 
+.mux-filter-row { display: flex; align-items: center; gap: 6px; margin: 0 8px 8px 14px; }
+.mux-filter-row .mux-add { flex: 0 0 auto; width: 30px; height: 30px; font-size: 18px; }
 .mux-filter {
-  margin: 0 14px 8px; padding: 6px 9px; border-radius: 7px;
+  flex: 1; min-width: 0; margin: 0; padding: 6px 9px; border-radius: 7px;
   border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit; font-size: 13px;
 }
 
@@ -255,3 +257,24 @@ body.mux {
 .mux-pane-deprecated > span { flex: 1; min-width: 0; }
 .mux-pane-deprecated.hidden { display: none; }
 .mux-deprecated-tag { font-size: 10px; opacity: .7; text-transform: uppercase; letter-spacing: .04em; }
+
+/* --- managing projects ---
+   The chat's sheets, reused: on a phone they are its bottom sheets, on a desktop a
+   dialog in the middle of the screen rather than a strip across the bottom of it. */
+.mux-manage { font-size: 14px; letter-spacing: .05em; }
+.mux-dialog .section-label { padding-left: 0; }
+.mux-dialog .inline-form { padding: 6px 0 10px; }
+.mux-dialog .opt-row { padding: 4px 0; }
+.mux-dialog .wide { margin-top: 12px; }
+.mux-status { padding: 4px 0 6px; font-size: 13px; }
+.mux-repo-picker { max-height: 40vh; overflow-y: auto; }
+.mux-repo-picker .repo-row { width: 100%; padding: 8px 4px; }
+.mux-repo-picker .empty { padding: 12px 4px; text-align: left; }
+.mux-project-body { font-size: 14px; color: var(--text-dim); }
+.mux-project-body > .repo-heading:first-child { margin-top: 0; }
+@media (min-width: 761px) {
+  .mux-dialog {
+    left: 50%; right: auto; bottom: auto; top: 10vh; transform: translateX(-50%);
+    width: min(480px, calc(100vw - 32px)); max-height: 80vh; border-radius: 14px;
+  }
+}

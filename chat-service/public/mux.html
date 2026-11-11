@@ -59,7 +59,12 @@
     <button type="button" data-kind="shell" title="New panes open a bare shell in the slot — no Claude">Shell</button>
   </div>
 
-  <input id="mux-filter" class="mux-filter" type="search" placeholder="Filter projects" autocomplete="off">
+  <!-- Adding a project lives beside the list it adds to. It used to be only in the
+       chat's "New chat" screen, which is deprecated with the chat. -->
+  <div class="mux-filter-row">
+    <input id="mux-filter" class="mux-filter" type="search" placeholder="Filter projects" autocomplete="off">
+    <button type="button" id="mux-new-project" class="mux-add" title="Add a project: clone one from GitHub, or create one" aria-label="Add a project">+</button>
+  </div>
   <div id="mux-projects" class="mux-projects">
     <div class="mux-empty">Loading…</div>
   </div>
@@ -75,6 +80,52 @@
 </aside>
 
 <main id="mux-grid" class="mux-grid"></main>
+
+<!-- Adding a project: clone a repository, or start an empty one. The same routes
+     the chat's New chat screen used, and the same server-side checks behind them. -->
+<div id="mux-add-sheet" class="sheet hidden">
+  <div class="sheet-backdrop" data-close-add></div>
+  <div class="sheet-body mux-dialog" role="dialog" aria-modal="true" aria-labelledby="mux-add-title">
+    <h2 id="mux-add-title">Add a project</h2>
+
+    <div class="section-label">Clone from GitHub</div>
+    <form id="mux-form-clone" class="inline-form">
+      <input id="mux-input-clone" type="text" placeholder="owner/repo" autocomplete="off"
+             autocapitalize="none" autocorrect="off" spellcheck="false" required>
+      <button type="submit">Clone</button>
+    </form>
+    <div class="opt-row">
+      <button type="button" id="mux-browse-repos" class="linkish">Browse my repositories</button>
+    </div>
+    <div id="mux-repo-picker" class="mux-repo-picker"></div>
+    <p class="hint mux-status" id="mux-clone-status"></p>
+
+    <div class="section-label">Create a new project</div>
+    <form id="mux-form-project" class="inline-form">
+      <input id="mux-input-project" type="text" placeholder="project-name" autocomplete="off"
+             autocapitalize="none" autocorrect="off" spellcheck="false"
+             pattern="[A-Za-z0-9._\-]+" required>
+      <button type="submit">Create</button>
+    </form>
+    <label class="opt-row"><input type="checkbox" id="mux-opt-github" checked> Create a GitHub repo and push</label>
+    <label class="opt-row"><input type="checkbox" id="mux-opt-private" checked> Private repo</label>
+    <p class="hint mux-status" id="mux-project-status"></p>
+
+    <button type="button" data-close-add class="wide subtle">Close</button>
+  </div>
+</div>
+
+<!-- One project: what it still holds, cloning another repository into it, and
+     removing it from this machine once nothing in it exists only here. -->
+<div id="mux-project-sheet" class="sheet hidden">
+  <div class="sheet-backdrop" data-close-project></div>
+  <div class="sheet-body mux-dialog" role="dialog" aria-modal="true" aria-labelledby="mux-project-title">
+    <h2 id="mux-project-title">Project</h2>
+    <div id="mux-project-body" class="mux-project-body">Checking…</div>
+    <button type="button" id="mux-project-remove" class="wide danger hidden">Push &amp; delete from this machine</button>
+    <button type="button" data-close-project class="wide subtle">Close</button>
+  </div>
+</div>
 
 <div id="toast" class="toast hidden"></div>
 <script src="/chat/mux.js"></script>

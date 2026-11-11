@@ -70,6 +70,7 @@
 
   const state = {
     projects: [],              // /api/projects
+    loaded: false,             // whether /api/projects has answered once
     slots: new Map(),          // project name -> /api/slots answer
     live: new Map(),           // `${cwd}|${sessionId}` -> { busy }
     busyCwds: new Set(),       // directories with a chat turn in flight, from /api/live
@@ -170,6 +171,7 @@
       const res = await api('/api/projects');
       if (!res.ok) throw new Error(`server returned ${res.status}`);
       state.projects = (await res.json()).projects || [];
+      state.loaded = true;
     } catch (err) {
       if (!state.projects.length) {
         $('#mux-projects').innerHTML = `<div class="mux-empty">Couldn't load projects — ${escapeHtml(err.message)}.</div>`;
@@ -384,7 +386,11 @@
 
   function renderSidebar() {
     const body = $('#mux-projects');
-    if (!state.projects.length) return;
+    if (!state.projects.length) {
+      // Only once a load has answered: before that, "Loading…" is still true.
+      if (state.loaded) body.innerHTML = '<div class="mux-empty">No projects yet. Add one with the + above.</div>';
+      return;
+    }
     const filter = state.filter.toLowerCase();
     body.innerHTML = '';
     for (const project of state.projects) {
@@ -425,7 +431,14 @@
         closeSide();
         newInFreeSlot(project.name);
       });
-      head.append(toggle, add);
+      const manage = document.createElement('button');
+      manage.type = 'button';
+      manage.className = 'mux-add mux-manage';
+      manage.title = `Manage ${project.name}: what it holds, add a repository, remove it`;
+      manage.setAttribute('aria-label', `Manage ${project.name}`);
+      manage.textContent = '⋯';
+      manage.addEventListener('click', () => openProjectSheet(project));
+      head.append(toggle, manage, add);
       group.appendChild(head);
 
       if (open) {
@@ -1120,6 +1133,300 @@
     renderSidebar();
   });
 
+  // --- managing projects ----------------------------------------------------
+  /*
+   * Adding, inspecting and removing projects. This lived only in the chat's New
+   * chat screen and its project sheet, and the chat is deprecated, so it is here
+   * now, over the same routes: /api/projects (create), /api/projects/clone,
+   * /api/github/repos, /api/project-status and /api/projects/remove. Every check
+   * that matters — a name that is safe, a folder that is not already there, work
+   * that exists nowhere but this machine — is the server's; what these dialogs
+   * show is a courtesy.
+   */
+  const addSheet = $('#mux-add-sheet');
+  const projectSheet = $('#mux-project-sheet');
+  let sheetProject = null;
+
+  function openAddSheet() {
+    closeSide();
+    $('#mux-repo-picker').innerHTML = '';
+    $('#mux-clone-status').textContent = '';
+    $('#mux-project-status').textContent = '';
+    addSheet.classList.remove('hidden');
+    $('#mux-input-clone').focus();
+  }
+  const closeAddSheet = () => addSheet.classList.add('hidden');
+
+  /** A project that just arrived: in the list, opened out, and something running in it. */
+  async function arrivedProject(project, how) {
+    closeAddSheet();
+    toast(how, 5000);
+    state.expanded.add(project.name);
+    save();
+    await loadProjects();
+    if (projectByName(project.name)) newInFreeSlot(project.name);
+  }
+
+  /**
+   * Deliberately no client-side timeout: a large repository takes minutes to clone
+   * on a small box, and abandoning the request would leave a clone still running
+   * server-side that nobody is watching. The server's own git timeout is the bound.
+   */
+  async function cloneRepo(repo) {
+    if (!repo) return;
+    const status = $('#mux-clone-status');
+    status.textContent = `Cloning ${repo}… a large repository can take a few minutes.`;
+    try {
+      const res = await api('/api/projects/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'clone failed');
+      status.textContent = '';
+      $('#mux-input-clone').value = '';
+      $('#mux-repo-picker').innerHTML = '';
+      await arrivedProject(data.project, `Cloned ${repo}.`);
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  async function browseRepos() {
+    const picker = $('#mux-repo-picker');
+    picker.innerHTML = '<div class="empty">Loading your repositories…</div>';
+    try {
+      const res = await api('/api/github/repos');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'could not list repositories');
+      if (!data.repos?.length) {
+        picker.innerHTML = '<div class="empty">No repositories visible to this workspace token.</div>';
+        return;
+      }
+      picker.innerHTML = '';
+      for (const repo of data.repos) {
+        const row = document.createElement('button');
+        row.type = 'button';
+        row.className = 'row repo-row';
+        const tags = (repo.private ? '<span class="repo-tag">private</span>' : '')
+          + (repo.present ? '<span class="repo-tag">already here</span>' : '');
+        row.innerHTML = `<div class="row-main">
+            <div class="row-title">${escapeHtml(repo.slug)}${tags}</div>
+            <div class="row-sub">${escapeHtml(repo.description || 'No description')}</div>
+          </div>`;
+        row.addEventListener('click', () => {
+          // Cloning over an existing folder is refused server-side; this saves the trip.
+          if (repo.present) {
+            toast(`"${repo.name}" is already in the workspace.`);
+            return;
+          }
+          $('#mux-input-clone').value = repo.slug;
+          cloneRepo(repo.slug);
+        });
+        picker.appendChild(row);
+      }
+    } catch (err) {
+      picker.innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+    }
+  }
+
+  async function createProject(name) {
+    const status = $('#mux-project-status');
+    if (!name) return;
+    const github = $('#mux-opt-github').checked;
+    status.textContent = github ? 'Creating folder, git repo and GitHub remote…' : 'Creating…';
+    try {
+      const res = await api('/api/projects', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, github, private: $('#mux-opt-private').checked }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'could not create the project');
+      // A local repo whose remote failed is a different result from a fully wired
+      // project, and opening a pane over it would hide that.
+      const failed = (data.project.steps || []).filter((s) => !s.ok);
+      if (failed.length) {
+        status.textContent = `Created "${name}", but `
+          + failed.map((s) => `${s.step} failed: ${s.error || 'unknown'}`).join('; ');
+        await loadProjects();
+        return;
+      }
+      status.textContent = '';
+      $('#mux-input-project').value = '';
+      const repo = (data.project.steps || []).find((s) => s.step === 'github' && s.ok);
+      await arrivedProject(data.project, repo?.url ? `Created "${name}" and pushed to ${repo.url}` : `Created "${name}".`);
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  function closeProjectSheet() {
+    projectSheet.classList.add('hidden');
+    sheetProject = null;
+  }
+
+  async function openProjectSheet(project) {
+    closeSide();
+    sheetProject = project;
+    $('#mux-project-title').textContent = project.name;
+    $('#mux-project-body').textContent = 'Checking the repository…';
+    const btn = $('#mux-project-remove');
+    btn.classList.add('hidden');
+    btn.disabled = false;
+    projectSheet.classList.remove('hidden');
+    try {
+      const res = await api(`/api/project-status?name=${encodeURIComponent(project.name)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'could not read the project');
+      // Closed, or opened on another project, while this was in flight.
+      if (sheetProject?.name !== project.name) return;
+      renderProjectFacts(data.status);
+    } catch (err) {
+      if (sheetProject?.name === project.name) $('#mux-project-body').textContent = err.message;
+    }
+  }
+
+  function factList(facts) {
+    return `<ul class="fact-list">${facts.map((f) => `<li class="${f.atRisk ? 'at-risk' : ''}">`
+      + `<span>${escapeHtml(f.label)}</span><span>${escapeHtml(f.value)}</span></li>`).join('')}</ul>`;
+  }
+
+  /** What one repository holds, in the order that matters if the folder disappears. */
+  function repoFacts(repo) {
+    const facts = [];
+    const add = (label, value, atRisk = false) => facts.push({ label, value, atRisk });
+    add('Branch', repo.hasCommits ? repo.branch || 'unknown' : 'no commits yet');
+    add('Remote', repo.remote ? repo.remote.replace(/^https:\/\/github\.com\//, '').replace(/\.git$/, '') : 'none', !repo.remote);
+    add('Uncommitted changes', repo.dirty ? `${repo.dirty} (will be committed)` : 'none');
+    add('Unpushed commits', repo.unpushed ? `${repo.unpushed} (will be pushed)` : 'none');
+    if (repo.stashes) add('Stashes', `${repo.stashes} — not pushed by anything`, true);
+    if (repo.ignored?.length) add('Not in git', repo.ignored.join(', '), true);
+    return facts;
+  }
+
+  function renderProjectFacts(status) {
+    const repos = status.repos || [];
+    let body = '';
+    if (!repos.length) body += factList([{ label: 'Git', value: 'not a repository', atRisk: true }]);
+    else if (repos.length === 1 && !repos[0].dir) body += factList(repoFacts(repos[0]));
+    else for (const repo of repos) {
+      body += `<h3 class="repo-heading">${escapeHtml(repo.dir || 'project root')}</h3>${factList(repoFacts(repo))}`;
+    }
+    const live = status.live || [];
+    const tail = [];
+    if (live.length) {
+      const busy = live.filter((c) => c.busy).length;
+      tail.push({ label: 'Open chats', value: busy ? `${live.length} (${busy} working)` : String(live.length), atRisk: Boolean(busy) });
+    }
+    tail.push({ label: 'Chat history', value: `${status.transcripts ?? 0} kept after deleting` });
+    body += factList(tail);
+    body += `<p class="hint" style="margin-top:14px">Commits and pushes ${
+      repos.length > 1 ? 'every repository above, checks each remote' : 'everything, checks the remote'
+    } really has it, then deletes the folder — slots included — from this machine. Chat history stays.</p>`
+      + '<h3 class="repo-heading">Add a repository</h3>'
+      + '<form id="mux-form-add-repo" class="inline-form">'
+      + '<input id="mux-input-add-repo" type="text" placeholder="owner/repo" autocomplete="off" '
+      + 'autocapitalize="none" autocorrect="off" spellcheck="false" required>'
+      + '<button type="submit">Clone in</button></form>'
+      + '<p class="hint" id="mux-add-repo-status">Clones it into this project, beside what is already here.</p>';
+    $('#mux-project-body').innerHTML = body;
+    $('#mux-form-add-repo').addEventListener('submit', addRepoToProject);
+    const btn = $('#mux-project-remove');
+    btn.textContent = 'Push & delete from this machine';
+    btn.onclick = () => removeProject(false);
+    btn.classList.remove('hidden');
+  }
+
+  async function addRepoToProject(e) {
+    e.preventDefault();
+    const project = sheetProject;
+    const input = $('#mux-input-add-repo');
+    const status = $('#mux-add-repo-status');
+    const repo = input.value.trim();
+    if (!project || !repo) return;
+    input.disabled = true;
+    status.textContent = `Cloning ${repo} into ${project.name}… this can take a few minutes.`;
+    try {
+      const res = await api('/api/projects/clone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo, into: project.name }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'could not clone that repository');
+      toast(`Cloned ${repo} into "${project.name}".`);
+      await loadProjects();
+      // Re-read, so the new repository appears in the facts: the confirmation it landed.
+      if (sheetProject?.name === project.name) await openProjectSheet(project);
+    } catch (err) {
+      input.disabled = false;
+      status.textContent = err.message;
+    }
+  }
+
+  async function removeProject(force) {
+    const project = sheetProject;
+    if (!project) return;
+    const btn = $('#mux-project-remove');
+    const body = $('#mux-project-body');
+    const previous = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = force ? 'Deleting…' : 'Committing, pushing, verifying…';
+    try {
+      const res = await api('/api/projects/remove', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: project.name, force }),
+      });
+      const data = await res.json();
+      // 409 is a refusal: something exists only on this machine. Say what, and make
+      // overriding a separate, deliberate second press rather than a retry.
+      if (res.status === 409) {
+        body.innerHTML = `<p style="color:var(--accent);margin:0 0 12px">${escapeHtml(data.error)}</p>`
+          + '<p class="hint" style="margin:0">Deleting now would lose that. Fix it from a terminal in '
+          + 'this project, or override — the folder goes away either way.</p>';
+        btn.disabled = false;
+        btn.textContent = 'Delete anyway, losing that work';
+        btn.onclick = () => removeProject(true);
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || 'could not remove the project');
+      closeProjectSheet();
+      toast(force
+        ? `Deleted "${project.name}" — forced, so check GitHub before relying on it.`
+        : `Pushed and deleted "${project.name}".`, 5000);
+      // Panes in the project or its slots now point at a folder that is gone.
+      const inside = (cwd) => cwd === project.path || cwd?.startsWith(`${project.path}/`);
+      state.panes.forEach((pane, i) => {
+        if (pane.project === project.name || inside(pane.cwd)) closePane(i);
+      });
+      state.expanded.delete(project.name);
+      state.slots.delete(project.name);
+      save();
+      await loadProjects();
+      renderSidebar();
+    } catch (err) {
+      btn.disabled = false;
+      btn.textContent = previous;
+      toast(err.message, 5000);
+    }
+  }
+
+  $('#mux-new-project').addEventListener('click', openAddSheet);
+  for (const el of document.querySelectorAll('[data-close-add]')) el.addEventListener('click', closeAddSheet);
+  for (const el of document.querySelectorAll('[data-close-project]')) el.addEventListener('click', closeProjectSheet);
+  $('#mux-form-clone').addEventListener('submit', (e) => {
+    e.preventDefault();
+    cloneRepo($('#mux-input-clone').value.trim());
+  });
+  $('#mux-browse-repos').addEventListener('click', browseRepos);
+  $('#mux-form-project').addEventListener('submit', (e) => {
+    e.preventDefault();
+    createProject($('#mux-input-project').value.trim());
+  });
+
   // --- chrome ---------------------------------------------------------------
   function toast(message, ms = 3600) {
     const el = $('#toast');
@@ -1315,6 +1622,14 @@
   // Alt+1…8 focuses a pane, from anywhere on this page. Inside a frame the chat or
   // the terminal has the keyboard, which is where it should be while typing.
   document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !projectSheet.classList.contains('hidden')) {
+      closeProjectSheet();
+      return;
+    }
+    if (e.key === 'Escape' && !addSheet.classList.contains('hidden')) {
+      closeAddSheet();
+      return;
+    }
     if (e.key === 'Escape' && document.body.classList.contains('side-open')) {
       closeSide();
       return;
@@ -1390,6 +1705,7 @@
     state, openIn, closePane, focusPane, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
     newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen, arrive, arrivalFrom,
     readOpens, writeOpens, openBrowser,
+    openAddSheet, cloneRepo, createProject, openProjectSheet, removeProject,
     // The name the first tests knew it by: a new chat, in a free slot.
     newChatInFreeSlot: (name) => newInFreeSlot(name, 'chat'),
   };

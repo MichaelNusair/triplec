@@ -381,6 +381,123 @@ console.log('mux page');
   w.close();
 }
 
+console.log('mux: managing projects');
+{
+  // Adding, inspecting and removing projects moved here from the deprecated chat.
+  const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'mux.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/mux' });
+  const w = dom.window;
+  const calls = [];
+  let projects = [{ name: 'demo', path: '/workspace/projects/demo', sessions: [] }];
+  let removeAnswer = { status: 409, body: { error: 'demo has 1 stash' } };
+  w.fetch = (url, options = {}) => {
+    const u = String(url);
+    calls.push({ url: u, method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null });
+    const reply = (body, status = 200) => Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve(body) });
+    if (u === '/api/projects/clone') {
+      const { repo, into } = JSON.parse(options.body);
+      if (into) return reply({ project: { name: into, path: `/workspace/projects/${into}` } });
+      const name = repo.split('/').pop();
+      projects = [...projects, { name, path: `/workspace/projects/${name}`, sessions: [] }];
+      return reply({ project: { name, path: `/workspace/projects/${name}` } });
+    }
+    if (u === '/api/projects/remove') {
+      const answer = removeAnswer;
+      if (answer.status === 200) projects = projects.filter((p) => p.name !== 'demo');
+      return reply(answer.body, answer.status);
+    }
+    if (u === '/api/projects' && options.method === 'POST') {
+      const { name } = JSON.parse(options.body);
+      projects = [...projects, { name, path: `/workspace/projects/${name}`, sessions: [] }];
+      return reply({ project: { name, path: `/workspace/projects/${name}`, steps: [{ step: 'git', ok: true }, { step: 'github', ok: false, error: 'no token' }] } });
+    }
+    if (u.startsWith('/api/projects')) return reply({ projects });
+    if (u.startsWith('/api/github/repos')) {
+      return reply({ repos: [
+        { slug: 'me/demo', name: 'demo', present: true, private: true, description: '' },
+        { slug: 'me/<b>new</b>', name: 'new', present: false, private: false, description: '<img src=x>' },
+      ] });
+    }
+    if (u.startsWith('/api/project-status')) {
+      return reply({ status: { repos: [{ dir: '', hasCommits: true, branch: 'main', remote: 'https://github.com/me/demo.git', dirty: 0, unpushed: 0, stashes: 1, ignored: [] }], live: [], transcripts: 3 } });
+    }
+    if (u.startsWith('/api/slots/prepare')) return reply({ ok: true, cwd: '/x', base: 'main', fetched: true, refreshed: true });
+    if (u.startsWith('/api/slots')) return reply({ name: 'x', path: '/x', enabled: false, slots: [] });
+    if (u.startsWith('/api/live')) return reply({ sessions: [] });
+    return reply({});
+  };
+  w.Notification = undefined;
+  const errors = [];
+  w.addEventListener('error', (e) => errors.push(e.message));
+  w.eval(js);
+  await new Promise((r) => setTimeout(r, 50));
+  const mux = w.__muxForTest;
+  const doc = w.document;
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+
+  check('the sidebar has an add-project button', Boolean(doc.querySelector('#mux-new-project')));
+  check('each project has a manage button', Boolean(doc.querySelector('.mux-project[data-project="demo"] .mux-manage')));
+
+  doc.querySelector('#mux-new-project').click();
+  check('the add button opens the add-project dialog', !doc.querySelector('#mux-add-sheet').classList.contains('hidden'));
+  doc.querySelector('#mux-browse-repos').click();
+  await tick();
+  const rows = doc.querySelectorAll('#mux-repo-picker .repo-row');
+  check('browsing lists the token\'s repositories', rows.length === 2);
+  check('repository names and descriptions are escaped',
+    !doc.querySelector('#mux-repo-picker b') && !doc.querySelector('#mux-repo-picker img'));
+  rows[0].click();
+  check('a repository already here is not cloned again', !calls.some((c) => c.url === '/api/projects/clone'));
+
+  doc.querySelector('#mux-input-clone').value = 'me/fresh';
+  doc.querySelector('#mux-form-clone').dispatchEvent(new w.Event('submit', { cancelable: true }));
+  await tick();
+  await tick();
+  const clone = calls.find((c) => c.url === '/api/projects/clone');
+  check('cloning posts the repository', clone?.method === 'POST' && clone.body.repo === 'me/fresh', JSON.stringify(clone));
+  check('the cloned project appears in the sidebar, and the dialog closes',
+    Boolean(doc.querySelector('.mux-project[data-project="fresh"]')) && doc.querySelector('#mux-add-sheet').classList.contains('hidden'));
+
+  mux.openAddSheet();
+  doc.querySelector('#mux-input-project').value = 'brand-new';
+  doc.querySelector('#mux-form-project').dispatchEvent(new w.Event('submit', { cancelable: true }));
+  await tick();
+  const create = calls.find((c) => c.url === '/api/projects' && c.method === 'POST');
+  check('creating posts the name and the GitHub choices',
+    create?.body.name === 'brand-new' && create.body.github === true && create.body.private === true, JSON.stringify(create));
+  check('a step that failed is said, not hidden behind a new pane',
+    /github failed: no token/.test(doc.querySelector('#mux-project-status').textContent)
+      && !doc.querySelector('#mux-add-sheet').classList.contains('hidden'));
+  doc.querySelector('[data-close-add]').click();
+
+  doc.querySelector('.mux-project[data-project="demo"] .mux-manage').click();
+  await tick();
+  const body = doc.querySelector('#mux-project-body').textContent;
+  check('the project sheet shows what the project still holds',
+    /me\/demo/.test(body) && /Stashes/.test(body) && /3 kept/.test(body), body);
+  const remove = doc.querySelector('#mux-project-remove');
+  check('and offers removal', !remove.classList.contains('hidden'));
+
+  mux.openIn(0, { kind: 'terminal', project: 'demo', slot: 0, cwd: '/workspace/projects/demo' });
+  remove.click();
+  await tick();
+  const first = calls.filter((c) => c.url === '/api/projects/remove');
+  check('a refusal is shown, and the override is a separate press',
+    first.length === 1 && first[0].body.force === false && /stash/.test(doc.querySelector('#mux-project-body').textContent)
+      && /anyway/.test(remove.textContent));
+  removeAnswer = { status: 200, body: { ok: true } };
+  remove.click();
+  await tick();
+  await tick();
+  const second = calls.filter((c) => c.url === '/api/projects/remove');
+  check('the override forces it', second.length === 2 && second[1].body.force === true);
+  check('the removed project leaves the sidebar, and its panes close',
+    !doc.querySelector('.mux-project[data-project="demo"]') && !mux.state.panes[0].cwd);
+  check('no page errors while managing projects', errors.length === 0, errors.join('; '));
+  w.close();
+}
+
 console.log('mux, on a phone');
 {
   const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
