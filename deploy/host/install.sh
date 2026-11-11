@@ -263,21 +263,78 @@ if [ "$F_BROWSER" = true ]; then
   done
 fi
 apt_install "${need[@]}"
-# Chrome itself, when the VM has no Chrome or Chromium: Google's own package, which
-# also adds Google's apt repository, so the VM's ordinary upgrades keep it current.
-# Only for amd64, the one Linux architecture Google builds Chrome for.
+# Chrome itself, when the VM has no Chrome or Chromium. On amd64, Google's own
+# package, which also adds Google's apt repository, so the VM's ordinary upgrades
+# keep it current. On arm64, for which Google publishes no Chrome package, Chrome
+# for Testing's current Stable build, kept under installDir and refreshed by every
+# run of this script once Stable has moved; its libraries come from the deb.deps
+# file it ships, which `apt-get satisfy` reads as written. The browser is part of
+# TripleC (features.browser is on by default), so only an architecture with neither
+# is left to a warning.
+BROWSER_CHROME=""
+CFT_ROOT="$INSTALL_DIR/chrome-for-testing"
 if [ "$F_BROWSER" = true ] && ! command -v google-chrome >/dev/null && ! command -v chromium >/dev/null \
   && ! command -v chromium-browser >/dev/null; then
-  if [ "$(dpkg --print-architecture)" = amd64 ]; then
+  case "$(dpkg --print-architecture)" in
+  amd64)
     changed "download and install Google Chrome"
     if [ "$DRY" = 0 ]; then
       curl -fsSL -o "$WORK/google-chrome.deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
         || die "could not download Google Chrome (features.browser)"
       apt_install "$WORK/google-chrome.deb"
     fi
-  else
-    warn "features.browser: no Chrome or Chromium on this VM, and Google builds Chrome for amd64 only. Install chromium, then run this again."
-  fi
+    ;;
+  arm64)
+    BROWSER_CHROME="$CFT_ROOT/current/chrome"
+    # channels.Stable, never the newest of known-good-versions: that list is every
+    # channel in ascending order, so its last entry is a Canary.
+    cft_json="$(curl -fsSL --max-time 60 \
+      https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json)" \
+      || die "could not reach Chrome for Testing (features.browser; set it false to install without the browser)"
+    cft_version="$("$NODE" -e 'const s = JSON.parse(process.argv[1]).channels.Stable;
+      const d = (s.downloads.chrome || []).find((x) => x.platform === "linux-arm64");
+      if (/^[0-9.]+$/.test(s.version) && d) console.log(s.version + " " + d.url);' "$cft_json")"
+    cft_url="${cft_version#* }"; cft_version="${cft_version%% *}"
+    [ -n "$cft_version" ] || die "Chrome for Testing lists no Stable build for linux-arm64"
+    if [ ! -x "$CFT_ROOT/$cft_version/chrome" ]; then
+      changed "download Chrome for Testing $cft_version (arm64) into $CFT_ROOT"
+      if [ "$DRY" = 0 ]; then
+        mkdir -p "$CFT_ROOT"
+        curl -fsSL -o "$WORK/chrome.zip" "$cft_url" || die "could not download Chrome for Testing $cft_version"
+        rm -rf "$WORK/cft" && mkdir -p "$WORK/cft"
+        command -v unzip >/dev/null || apt_install unzip
+        unzip -q "$WORK/chrome.zip" -d "$WORK/cft" || die "could not unpack Chrome for Testing $cft_version"
+        changed "apt-get satisfy Chrome's libraries (deb.deps)"
+        if ! { sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get satisfy -y -qq --no-install-recommends \
+          "$(grep -v '^$' "$WORK/cft/chrome-linux-arm64/deb.deps" | paste -sd, -)"; } >"$APT_LOG" 2>&1; then
+          tail -n 30 "$APT_LOG" >&2
+          die "apt-get could not install Chrome's libraries (full log: $APT_LOG)"
+        fi
+        "$WORK/cft/chrome-linux-arm64/chrome" --version >/dev/null || die "Chrome for Testing $cft_version does not run here"
+        rm -rf "${CFT_ROOT:?}/$cft_version"
+        mv "$WORK/cft/chrome-linux-arm64" "$CFT_ROOT/$cft_version"
+      fi
+    fi
+    if [ "$DRY" = 0 ] && [ "$(readlink "$CFT_ROOT/current" 2>/dev/null)" != "$cft_version" ]; then
+      ln -sfn "$cft_version" "$CFT_ROOT/current"
+    fi
+    # Older versions go once no process runs one: the service starts Chrome through
+    # current/, so a running Chrome keeps its version until it restarts.
+    for old in "$CFT_ROOT"/[0-9]*; do
+      [ -d "$old" ] && [ "$old" != "$CFT_ROOT/$cft_version" ] || continue
+      in_use=0
+      for exe in /proc/[0-9]*/exe; do
+        case "$(readlink "$exe" 2>/dev/null)" in "$old"/*) in_use=1; break ;; esac
+      done
+      [ "$in_use" = 1 ] && continue
+      changed "remove Chrome for Testing ${old##*/}"
+      [ "$DRY" = 1 ] || rm -rf "$old"
+    done
+    ;;
+  *)
+    warn "features.browser: no Chrome or Chromium on this VM, and Google builds Chrome only for amd64 and arm64. Install chromium, then run this again."
+    ;;
+  esac
 fi
 NGINX_BIN="$(command -v nginx || echo /usr/sbin/nginx)"
 
@@ -806,6 +863,7 @@ Environment=BROWSER_DISPLAY=:91
 Environment=BROWSER_DEBUG_PORT=9222
 Environment=BROWSER_SCALE=$BROWSER_SCALE
 Environment=BROWSER_ACCOUNT=$BROWSER_ACCOUNT
+Environment=BROWSER_CHROME=$BROWSER_CHROME
 RuntimeDirectory=triplec-browser
 RuntimeDirectoryMode=0700
 WorkingDirectory=$HOME_DIR

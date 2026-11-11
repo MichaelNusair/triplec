@@ -100,6 +100,9 @@ export const AWS_BOX_KEYS = {
   'pwa.name': 'PWA_NAME',
   'oidc.allowedEmails': 'OIDC_ALLOWED_EMAILS',
   'oidc.allowedDomain': 'OIDC_ALLOWED_DOMAIN',
+  // Not a UserData placeholder: bootstrap.sh reads the file's value from the
+  // payload's deployment/config.json, so this only carries the page's change to it.
+  'browser.enabled': 'BROWSER_ENABLED',
 };
 
 export function scopeOf(platform, p) {

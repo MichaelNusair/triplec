@@ -150,6 +150,14 @@
     "checkMinutes": 60
   },
 
+  "$comment_browser": [
+    "The mux's Browser pane: a real Chrome on the box, which you see and type into",
+    "from the page and a Claude on the box drives over DevTools on 127.0.0.1:9222.",
+    "Part of TripleC, so on unless this says false, which removes its service. It",
+    "travels in the payload, so changing it is an app-only deploy. docs/DEPLOY.md."
+  ],
+  "browser": { "enabled": true },
+
   "$comment_git": "Author on commits Claude makes in the workspace.",
   "gitUserName": "Your Name",
   "gitUserEmail": "you@example.com",

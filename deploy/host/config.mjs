@@ -55,7 +55,7 @@ export const DEFAULTS = {
   claudeHome: '~/.claude',
   projects: [],
   listen: { nginxPort: 8080, appPort: 9997, bind: '127.0.0.1', allowPublicBind: false },
-  features: { editor: false, voice: false, polish: false, push: true, mux: true, admin: true, retire: false, browser: false },
+  features: { editor: false, voice: false, polish: false, push: true, mux: true, admin: true, retire: false, browser: true },
   claude: {
     authMode: 'login',
     defaultModel: '',

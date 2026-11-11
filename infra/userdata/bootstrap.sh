@@ -41,9 +41,20 @@ EFFORT_LEVEL="__EFFORT_LEVEL__"
 # safe to put in a systemd Environment line and a JSON settings file from here.
 PWA_NAME="__PWA_NAME__"
 
+# The Browser pane (browser.enabled in the config): part of TripleC, so on unless the
+# config says false. Read from the payload's copy of the config rather than a UserData
+# placeholder, so turning it off or on is an app-only deploy. On a first boot there is
+# no payload yet, so it starts on; the payload's install re-runs this script and turns
+# it off if that is what the config says. The box page's change to it follows below.
+BROWSER_ENABLED=true
+if [ -f /opt/claude-web/deployment/config.json ] && command -v jq >/dev/null &&
+  [ "$(jq -r '.browser.enabled' /opt/claude-web/deployment/config.json 2>/dev/null)" = false ]; then
+  BROWSER_ENABLED=false
+fi
+
 # The box page's settings (/chat/admin), over the values above for the keys the box
 # applies to itself: the model, permission mode, effort, git identity, the app's
-# name and who may sign in. scripts/box-config.mjs keeps them on /workspace, where a
+# name, who may sign in and whether the Browser pane is on. scripts/box-config.mjs keeps them on /workspace, where a
 # deploy does not overwrite them, and prints them as quoted assignments; it refuses
 # to save a value with a quote, $, \, |, ;, & or < > in it, and leaves one out here
 # if it finds one anyway. Each applies only while the config file still says what it
@@ -1351,6 +1362,159 @@ http {
 MAINCONF
 
 # ---------------------------------------------------------------------------
+# The Browser pane (browser.enabled; see infra/config.js)
+# ---------------------------------------------------------------------------
+# A real Chrome on a virtual screen, shown in the mux and driven by a Claude on the
+# box over DevTools on 127.0.0.1:9222. The same service a host install runs
+# (deploy/host/install.sh), on the same launcher, scripts/triplec-browser.sh, which
+# the payload ships. The mux shows its Browser link only once the service answers,
+# so a step below that fails leaves the pane hidden rather than broken; none of them
+# may fail this script, which the rest of the box depends on.
+#
+# Chrome is Chrome for Testing, Google's own build: AL2023 packages no Chromium, and
+# Google's Chrome RPM is x86-only, while Chrome for Testing has linux-arm64 as well
+# as linux64. Its current Stable, refreshed whenever this runs and Stable has moved
+# (every payload install). A Chrome already running keeps its version until it
+# restarts, because restarting it closes every tab; the old version's files stay
+# until no process uses them. The full build needs a display, which Xvnc is: run
+# without one it dies at launch, which is what made it look unusable here once.
+#
+# ffmpeg streams the screen as H.264 (chat-service/browser-video.js). AL2023 has no
+# ffmpeg, so this is John Van Sickle's static build, which has x11grab and libx264
+# for both architectures; without it the pane falls back to VNC's own picture.
+BROWSER_UNIT=/etc/systemd/system/triplec-browser.service
+BROWSER_LAUNCHER=/opt/claude-web/scripts/triplec-browser.sh
+CFT_ROOT=/opt/chrome-for-testing
+BROWSER_UNIT_CHANGED=0
+CHAT_CPU_WEIGHT=""
+case "$(uname -m)" in
+  aarch64) CFT_PLATFORM=linux-arm64; FFMPEG_ARCH=arm64 ;;
+  x86_64) CFT_PLATFORM=linux64; FFMPEG_ARCH=amd64 ;;
+  *) CFT_PLATFORM=""; FFMPEG_ARCH="" ;;
+esac
+
+install_chrome() {
+  local json version url dir dl old
+  [ -n "$CFT_PLATFORM" ] || { echo "no Chrome for Testing build for $(uname -m)"; return 1; }
+  json="$(curl -fsSL --max-time 60 \
+    https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json)" || return 1
+  # channels.Stable, never the newest entry of known-good-versions: that list is
+  # every channel in ascending order, so its last entry is a Canary.
+  version="$(jq -r '.channels.Stable.version // empty' <<<"$json")"
+  url="$(jq -r --arg p "$CFT_PLATFORM" \
+    '.channels.Stable.downloads.chrome[]? | select(.platform == $p) | .url' <<<"$json")"
+  [[ "$version" =~ ^[0-9.]+$ ]] && [ -n "$url" ] || { echo "no Stable Chrome for $CFT_PLATFORM listed"; return 1; }
+  dir="$CFT_ROOT/$version"
+  if [ ! -x "$dir/chrome" ]; then
+    dl="$CFT_ROOT/.download"
+    rm -rf "$dl" && mkdir -p "$dl"
+    curl -fsSL --max-time 900 -o "$dl/chrome.zip" "$url" || return 1
+    unzip -q "$dl/chrome.zip" -d "$dl" || return 1
+    "$dl/chrome-$CFT_PLATFORM/chrome" --version || return 1
+    rm -rf "$dir"
+    mv "$dl/chrome-$CFT_PLATFORM" "$dir"
+    rm -rf "$dl"
+    echo "Chrome for Testing $version installed"
+  fi
+  ln -sfn "$version" "$CFT_ROOT/current"
+  # By each process's executable, which the kernel resolves: the service starts
+  # Chrome through current/, so no command line names the version it is running.
+  for old in "$CFT_ROOT"/[0-9]*; do
+    [ "$old" = "$dir" ] || [ ! -d "$old" ] && continue
+    chrome_in_use "$old" || rm -rf "$old"
+  done
+}
+
+chrome_in_use() {
+  local exe
+  for exe in /proc/[0-9]*/exe; do
+    case "$(readlink "$exe" 2>/dev/null)" in "$1"/*) return 0 ;; esac
+  done
+  return 1
+}
+
+install_ffmpeg() {
+  local dl="/opt/ffmpeg-static.download" base
+  command -v ffmpeg >/dev/null && return 0
+  [ -n "$FFMPEG_ARCH" ] || return 1
+  base="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-$FFMPEG_ARCH-static.tar.xz"
+  rm -rf "$dl" && mkdir -p "$dl"
+  curl -fsSL --max-time 600 -o "$dl/ffmpeg.tar.xz" "$base" || return 1
+  curl -fsSL --max-time 60 -o "$dl/ffmpeg.tar.xz.md5" "$base.md5" || return 1
+  [ "$(cut -d' ' -f1 "$dl/ffmpeg.tar.xz.md5")" = "$(md5sum "$dl/ffmpeg.tar.xz" | cut -d' ' -f1)" ] ||
+    { echo "ffmpeg download does not match its checksum"; return 1; }
+  rm -rf /opt/ffmpeg-static && mkdir -p /opt/ffmpeg-static
+  tar -xJf "$dl/ffmpeg.tar.xz" --strip-components=1 -C /opt/ffmpeg-static || return 1
+  ln -sf /opt/ffmpeg-static/ffmpeg /usr/local/bin/ffmpeg
+  rm -rf "$dl"
+}
+
+if [ "$BROWSER_ENABLED" = true ] && [ -f "$BROWSER_LAUNCHER" ]; then
+  # Xvnc is the screen and its own VNC server; xauth locks the display; xrandr is how
+  # the screen is resized to the viewer. gtk3 is what Chrome's file dialogs need, and
+  # the fonts are for the scripts a page may be written in. No weak dependencies:
+  # gtk3 recommends a desktop's worth (tracker-miners, pipewire), a hundred packages
+  # a browser on a virtual screen has no use for.
+  dnf install -y --setopt=install_weak_deps=False tigervnc-server-minimal xorg-x11-xauth xrandr gtk3 vulkan-loader \
+    liberation-fonts google-noto-sans-fonts google-noto-emoji-color-fonts \
+    google-noto-sans-cjk-ttc-fonts ||
+    echo "browser packages unavailable; the Browser pane may not start"
+  install_chrome || echo "Chrome for Testing could not be installed or refreshed"
+  install_ffmpeg || echo "ffmpeg unavailable; the Browser pane will use VNC's picture"
+fi
+
+if [ "$BROWSER_ENABLED" = true ] && [ -f "$BROWSER_LAUNCHER" ] && [ -x "$CFT_ROOT/current/chrome" ]; then
+  # On the workspace volume, so a signed-in profile survives an instance replacement.
+  install -d -o "$USER_NAME" -g "$USER_NAME" -m 0700 "$DATA_MNT/triplec-browser" "$DATA_MNT/triplec-browser/profile"
+  # The chat service runs the video encoder, so with the pane on it is given the
+  # same CPU share as the browser: when the box is busy, the picture keeps its
+  # frame rate and the terminals and the editor wait instead.
+  CHAT_CPU_WEIGHT="CPUWeight=1000"
+  # DevTools on 127.0.0.1 only, and the screen on a unix socket in a 0700 runtime
+  # directory: the only way in from outside is the chat service's /ws/browser,
+  # behind the login. Defaults the chat service assumes too (chat-service/browser.js).
+  cat > /tmp/triplec-browser.service <<SVC
+# Written by TripleC's infra/userdata/bootstrap.sh; re-run it rather than editing this.
+[Unit]
+Description=TripleC browser (Chrome on a virtual screen, for the mux's Browser pane)
+After=network-online.target $DATA_MNT.mount
+Wants=network-online.target
+Requires=$DATA_MNT.mount
+
+[Service]
+Type=simple
+User=$USER_NAME
+Environment=HOME=/home/$USER_NAME
+Environment=BROWSER_RUN_DIR=/run/triplec-browser
+Environment=BROWSER_PROFILE=$DATA_MNT/triplec-browser/profile
+Environment=BROWSER_DISPLAY=:91
+Environment=BROWSER_DEBUG_PORT=9222
+Environment=BROWSER_CHROME=$CFT_ROOT/current/chrome
+RuntimeDirectory=triplec-browser
+RuntimeDirectoryMode=0700
+WorkingDirectory=/home/$USER_NAME
+ExecStart=/bin/bash $BROWSER_LAUNCHER
+Restart=always
+RestartSec=3
+SyslogIdentifier=triplec-browser
+CPUWeight=1000
+
+[Install]
+WantedBy=multi-user.target
+SVC
+  if ! cmp -s /tmp/triplec-browser.service "$BROWSER_UNIT"; then
+    install -m 0644 /tmp/triplec-browser.service "$BROWSER_UNIT"
+    BROWSER_UNIT_CHANGED=1
+  fi
+  rm -f /tmp/triplec-browser.service
+elif [ -f "$BROWSER_UNIT" ]; then
+  # Off, or nothing to run: take the service away rather than leave it restarting.
+  # The profile stays on the volume, for whenever the pane is turned back on.
+  systemctl disable --now triplec-browser.service || true
+  rm -f "$BROWSER_UNIT"
+fi
+
+# ---------------------------------------------------------------------------
 # Services
 # ---------------------------------------------------------------------------
 # code-server's launcher: resolve the GitHub token from the secret, as a login
@@ -1428,6 +1592,7 @@ WorkingDirectory=/opt/claude-web/chat-service
 ExecStart=/usr/bin/node server.js
 Restart=always
 RestartSec=5
+$CHAT_CPU_WEIGHT
 
 [Install]
 WantedBy=multi-user.target
@@ -1478,6 +1643,16 @@ if [ -f /opt/claude-web/chat-service/server.js ]; then
   (cd /opt/claude-web/chat-service && npm install --omit=dev)
   chown -R "$USER_NAME:$USER_NAME" /opt/claude-web/chat-service
   systemctl enable --now claude-chat
+fi
+if [ -f "$BROWSER_UNIT" ]; then
+  # Restarted only when it was running on a unit that has since changed: a restart
+  # closes every tab that was open. A new launcher or a new Chrome waits for the
+  # next restart, or for Chrome's own window to be closed, which the launcher
+  # answers by starting current/ again.
+  if [ "$BROWSER_UNIT_CHANGED" = 1 ] && systemctl is-active --quiet triplec-browser; then
+    systemctl restart triplec-browser || echo "triplec-browser did not restart; see journalctl -u triplec-browser"
+  fi
+  systemctl enable --now triplec-browser || echo "triplec-browser did not start; see journalctl -u triplec-browser"
 fi
 systemctl enable --now nginx
 

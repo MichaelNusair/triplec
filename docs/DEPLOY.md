@@ -161,7 +161,7 @@ Where a change takes effect depends on the key, and each field says which:
 | Keys | Takes effect |
 |---|---|
 | `autoUpdate.*` | On the updater's next check. Nothing restarts. |
-| `defaultModel`, `permissionMode`, `effortLevel`, `gitUserName`, `gitUserEmail`, `pwa.name`, `oidc.allowedEmails`, `oidc.allowedDomain` (and every key on a host install) | When you press **Apply**. The box reinstalls itself with the saved values and checks the app still requires a login. If the check fails, it puts the previous settings back. Applying restarts the chat service, which ends chat turns in progress; terminals and the editor keep running. |
+| `defaultModel`, `permissionMode`, `effortLevel`, `gitUserName`, `gitUserEmail`, `pwa.name`, `oidc.allowedEmails`, `oidc.allowedDomain`, `browser.enabled` (and every key on a host install) | When you press **Apply**. The box reinstalls itself with the saved values and checks the app still requires a login. If the check fails, it puts the previous settings back. Applying restarts the chat service, which ends chat turns in progress; terminals and the editor keep running. |
 | Everything else on AWS (domain, instance type, volumes, `allowedCidrs`, auth mode, security, landing, …) | At the next full `./deploy.sh` from a machine with AWS credentials. The box cannot redeploy its own stack. A full deploy reads the saved values from the box over SSM before it builds anything. It stops if it cannot read them, because deploying without them would put back stack values an earlier deploy took from the box. Use `TRIPLEC_BOX_OVERRIDES=/dev/null ./deploy.sh` to deploy without them on purpose. Afterwards the page shows those values as deployed. |
 
 Every value is checked by the same rules as the config file before it is saved.
@@ -288,6 +288,7 @@ defaults and validation.
 | `gitUserName` / `gitUserEmail` | placeholder | Author on Claude's commits |
 | `deployFrom` | none | The machine full deploys run on. See above — set it |
 | `autoUpdate` | `{"mode": "off"}` | Whether the box updates itself from the repository: `"notify"` or `"install"`, with a soak period, an install window and a wait for idle. An app-only deploy applies it. See [UPDATES.md](UPDATES.md) |
+| `browser` | `{"enabled": true}` | The mux's **Browser** pane: a real Chrome on the box, on a virtual screen, that you watch and type into from the page and a Claude on the box drives over DevTools on `127.0.0.1:9222`. Part of TripleC, so on unless you set `"enabled": false`, which removes its service. Chrome is Chrome for Testing's current Stable (Google publishes no other Chrome for arm64 Linux), refreshed by every install; the profile lives on the workspace volume, at `/workspace/triplec-browser/profile`. An app-only deploy or the box page applies it. See [HOST.md](HOST.md) for what the pane does |
 
 Any key can also be set through the environment — useful in CI, where a config
 file is awkward:

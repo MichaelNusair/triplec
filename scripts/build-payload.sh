@@ -95,6 +95,8 @@ mkdir -p dist/stage/pwa && cp pwa/mobile-overlay.js dist/stage/pwa/
 # Ships in the payload rather than baked into userdata, so `cc` can be updated
 # without replacing the instance.
 mkdir -p dist/stage/scripts && cp scripts/cc-session.sh dist/stage/scripts/
+# The Browser pane's launcher, which bootstrap.sh's triplec-browser.service runs.
+cp scripts/triplec-browser.sh dist/stage/scripts/
 # The root half of an install (run by deploy.sh over SSM and by the on-box updater)
 # and the updater itself with the settings module it shares with the configs. See
 # docs/UPDATES.md.

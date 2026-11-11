@@ -110,6 +110,12 @@ console.log('what bootstrap.sh is handed');
   check('B8: and nothing for a stack key, which the stack carries', !/t4g/.test(sh));
   const tampered = { ...store, values: { ...store.values, gitUserName: "x'; reboot #" }, base: { ...store.base, gitUserName: JSON.stringify(resolved.gitUserName) } };
   check('B8: a value edited into the file by hand is still left out', !/reboot/.test(shellAssignments(resolved, tampered)));
+  check('B8: the Browser pane is on in the config by default', resolved.browser?.enabled === true);
+  check('B8: and the box page turns it off as a box key', scopeOf('aws', 'browser.enabled') === 'box'
+    && shellAssignments(resolved, withChanges(resolved, emptyStore(), { 'browser.enabled': false }, { platform: 'aws' }))
+      === "BROWSER_ENABLED='false'");
+  check('B8: as a boolean only', /browser.enabled: must be a boolean/.test(
+    (() => { try { withChanges(resolved, emptyStore(), { 'browser.enabled': 'no' }, { platform: 'aws' }); return ''; } catch (e) { return e.message; } })()));
 }
 
 console.log('saving, with each platform\'s validation');
@@ -206,6 +212,8 @@ console.log('the payload carries what the box needs');
   const build = fs.readFileSync(path.join(HERE, 'build-payload.sh'), 'utf8');
   check('B14: the payload stages box-config.mjs and infra/config.js',
     /cp scripts\/box-config\.mjs dist\/stage\/scripts\//.test(build) && /cp infra\/config\.js dist\/stage\/infra\//.test(build));
+  check('B14: and the Browser pane\'s launcher, which bootstrap.sh\'s unit runs',
+    /cp scripts\/triplec-browser\.sh dist\/stage\/scripts\//.test(build));
   // Every directory staged is one the tarball lists: it names them one by one, and a
   // staged directory left off that list is silently not shipped.
   const staged = new Set([...build.matchAll(/dist\/stage\/([a-z-]+)/g)].map((m) => m[1]));

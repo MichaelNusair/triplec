@@ -107,9 +107,12 @@ service believes the header only from a socket owned by `tailscaled` (uid 0) —
 push work on any HTTPS origin, so both the proxy hostname and the tailnet hostname
 can be installed.
 
-**Browser.** With `features.browser` on, `triplec-browser.service` runs a real Google
-Chrome (installed from Google's package if the VM has no Chrome or Chromium; amd64
-only) on a virtual screen, and the mux's **Browser** link shows it in a pane —
+**Browser.** `features.browser` is on unless the config sets it to `false`: the browser
+is part of TripleC, and turning it off removes its service. `triplec-browser.service`
+runs a real Chrome on a virtual screen — the VM's own Chrome or Chromium if it has one,
+otherwise Google Chrome from Google's package on amd64, or on arm64, for which Google
+publishes no Chrome package, Chrome for Testing's current Stable build under
+`installDir/chrome-for-testing`, refreshed by every install — and the mux's **Browser** link shows it in a pane —
 tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. The
 screen is resized to whoever is looking, so a phone gets a phone-shaped browser, and
 The picture is streamed as H.264

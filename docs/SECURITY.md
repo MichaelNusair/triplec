@@ -197,8 +197,8 @@ integer, and both reach `cc` as argv, never through a shell string.
 path-shaped name or an out-of-range slot is refused before anything is spawned.
 
 A third, `/ws/browser`, is the mux's Browser pane: a keyboard, a mouse and a screen
-on the real Chrome that `triplec-browser.service` runs on this box (host mode,
-`features.browser`). Treat it as what it is — a browser **signed in to whatever its
+on the real Chrome that `triplec-browser.service` runs on this box (on by default:
+`features.browser` on a host install, `browser.enabled` on AWS). Treat it as what it is — a browser **signed in to whatever its
 owner signed in to**, plus that browser's downloads — and it is gated exactly like
 the terminal: the same `upgrade` handler, before the handshake. Behind it, nothing
 listens on a network port. Xvnc (TigerVNC) serves the screen on a unix socket (0600) in

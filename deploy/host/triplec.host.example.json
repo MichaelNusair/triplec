@@ -11,7 +11,7 @@
     { "name": "example", "path": "~/src/example", "slots": { "count": 8, "postCreate": "" } }
   ],
   "listen": { "nginxPort": 8080, "appPort": 9997, "bind": "127.0.0.1", "allowPublicBind": false },
-  "features": { "editor": false, "voice": false, "polish": false, "push": true, "mux": true, "admin": true, "retire": false },
+  "features": { "editor": false, "voice": false, "polish": false, "push": true, "mux": true, "admin": true, "retire": false, "browser": true },
   "claude": {
     "authMode": "login",
     "defaultModel": "",

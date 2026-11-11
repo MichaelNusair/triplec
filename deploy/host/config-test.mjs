@@ -165,7 +165,13 @@ test('browser.scale is 1, 2 or 3, and reaches the chat service', () => {
   rejects(withChange('browser.scale', 1.5), 'browser.scale');
   rejects(withChange('browser.scale', '2'), 'browser.scale');
   assert.equal(env(withChange('browser.scale', 2, withChange('features.browser', true))).TRIPLEC_BROWSER_SCALE, '2');
-  assert.equal(env(withChange('browser.scale', 2)).TRIPLEC_BROWSER_SCALE, undefined, 'not without the browser');
+  assert.equal(env(withChange('browser.scale', 2, withChange('features.browser', false))).TRIPLEC_BROWSER_SCALE, undefined,
+    'not without the browser');
+});
+test('features.browser is on unless the config turns it off', () => {
+  assert.equal(resolve({ mode: 'host' }, ctx).features.browser, true);
+  assert.equal(resolve({ mode: 'host', features: { browser: false } }, ctx).features.browser, false);
+  assert.ok(env({ mode: 'host' }).TRIPLEC_FEATURES.split(',').includes('browser'));
 });
 test('browser.fps is 10 to 60, and reaches the chat service', () => {
   ok(withChange('browser.fps', 60));
@@ -212,7 +218,9 @@ test('env: the default contract, exactly', () => {
     ['PROJECTS_ROOT', '/home/dev/projects'],
     ['CLAUDE_HOME', '/home/dev/.claude'],
     ['TRIPLEC_PROJECTS_FILE', '/home/dev/.config/triplec/projects.json'],
-    ['TRIPLEC_FEATURES', 'push,mux,admin'],
+    ['TRIPLEC_FEATURES', 'push,mux,admin,browser'],
+    ['TRIPLEC_BROWSER_SCALE', '1'],
+    ['TRIPLEC_BROWSER_FPS', '30'],
     ['CLAUDE_AUTH_MODE', 'login'],
     ['DEFAULT_PERMISSION_MODE', 'manual'],
     ['DEFAULT_EFFORT', 'high'],
@@ -265,8 +273,8 @@ test('env: env backend has no secrets file', () => {
   assert.equal(env(withChange('secrets.backend', 'env')).TRIPLEC_SECRETS_FILE, undefined);
 });
 test('env: features list follows the flags', () => {
-  const all = Object.fromEntries(['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire'].map((f) => [f, true]));
-  assert.equal(env(withChange('features', all)).TRIPLEC_FEATURES, 'editor,voice,polish,push,mux,admin,retire');
+  const all = Object.fromEntries(['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire', 'browser'].map((f) => [f, true]));
+  assert.equal(env(withChange('features', all)).TRIPLEC_FEATURES, 'editor,voice,polish,push,mux,admin,retire,browser');
   const none = Object.fromEntries(Object.keys(all).map((f) => [f, false]));
   const e = env(withChange('features', none));
   assert.equal(e.TRIPLEC_FEATURES, '');

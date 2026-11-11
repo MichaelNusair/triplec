@@ -209,6 +209,21 @@ const DEFAULTS = {
   autoUpdate: { ...AUTO_UPDATE_DEFAULTS },
 
   /**
+   * The Browser pane: a real Chrome on the box, shown in the mux, and driven by a
+   * Claude on the box over DevTools on 127.0.0.1:9222. Part of TripleC, so on unless
+   * this says otherwise: `"enabled": false` uninstalls its service and stops it.
+   *
+   * bootstrap.sh installs it: Chrome for Testing's current Stable build (Google's
+   * only Chrome for Linux on arm64, and for x64 the one that needs no repository),
+   * refreshed whenever Stable moves; TigerVNC's Xvnc for the screen; a static ffmpeg
+   * for the H.264 picture; and triplec-browser.service, which runs
+   * scripts/triplec-browser.sh. The profile is on the workspace volume, so a signed
+   * in browser survives an instance replacement. It reaches the box in the payload,
+   * like autoUpdate, and the box page can change it (it applies it to itself).
+   */
+  browser: { enabled: true },
+
+  /**
    * The machine full deploys are driven from — `./deploy-remote.sh` reads this.
    *
    * A full deploy must not run on the instance this stack manages: CloudFormation
@@ -470,6 +485,7 @@ export function resolveConfig(fromFile, { env = process.env, quiet = false, repo
     pwa: { ...DEFAULTS.pwa, ...(fromFile.pwa || {}) },
     deployFrom: { ...DEFAULTS.deployFrom, ...(fromFile.deployFrom || {}) },
     security: { ...DEFAULTS.security, ...(fromFile.security || {}) },
+    browser: { ...DEFAULTS.browser, ...(fromFile.browser || {}) },
     // Validated on the file's own value below, so an unknown key in it is caught
     // rather than merged over and forgotten.
     autoUpdate: fromFile.autoUpdate,
@@ -574,6 +590,12 @@ export function resolveConfig(fromFile, { env = process.env, quiet = false, repo
     if (!Number.isInteger(value) || value < 8) {
       fail(`${key} must be a whole number of GiB, at least 8. Got ${JSON.stringify(value)}.`);
     }
+  }
+
+  // --- The Browser pane -----------------------------------------------------
+  // A boolean and nothing else: it reaches bootstrap.sh as a shell word.
+  if (typeof config.browser.enabled !== 'boolean') {
+    fail(`browser.enabled must be true or false. Got ${JSON.stringify(config.browser.enabled)}.`);
   }
 
   // --- What this deployment is called --------------------------------------
