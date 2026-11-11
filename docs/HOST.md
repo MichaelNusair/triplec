@@ -112,8 +112,9 @@ Chrome (installed from Google's package if the VM has no Chrome or Chromium; amd
 only) on a virtual screen, and the mux's **Browser** link shows it in a pane —
 tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. The
 screen is resized to whoever is looking, so a phone gets a phone-shaped browser, and
-Chrome draws at 2× (`BROWSER_SCALE` in the unit), so a high-DPI display shows it
-sharp. There is no bar around it: Ctrl/⌘+V carries the device's clipboard across, a
+`browser.scale` sets how many screen pixels Chrome draws per CSS pixel: 1 (the
+default) scrolls smoothly, 2 is sharp on a high-DPI display but scrolls at about a
+third of the rate, because every frame carries four times the pixels. There is no bar around it: Ctrl/⌘+V carries the device's clipboard across, a
 copy in the browser lands on the device's clipboard, ⌘ on a Mac is sent as Ctrl, and
 a phone gets one floating ⌨ button for its keyboard. Chrome's DevTools listen on `127.0.0.1:9222`, so a
 Claude on the VM can drive the same tabs you are watching — for example

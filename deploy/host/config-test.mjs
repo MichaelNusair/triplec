@@ -160,6 +160,13 @@ test('browser.account is an email address or empty', () => {
   rejects(withChange('browser.account', 'a@b.c\nEnvironment=X=1'), 'browser.account');
   rejects(withChange('browser.account', 7), 'browser.account');
 });
+test('browser.scale is 1, 2 or 3, and reaches the chat service', () => {
+  ok(withChange('browser.scale', 2));
+  rejects(withChange('browser.scale', 1.5), 'browser.scale');
+  rejects(withChange('browser.scale', '2'), 'browser.scale');
+  assert.equal(env(withChange('browser.scale', 2, withChange('features.browser', true))).TRIPLEC_BROWSER_SCALE, '2');
+  assert.equal(env(withChange('browser.scale', 2)).TRIPLEC_BROWSER_SCALE, undefined, 'not without the browser');
+});
 test('pwa.name shape', () => {
   ok(withChange('pwa.name', 'Dev Box 2'));
   rejects(withChange('pwa.name', '<script>'), 'pwa.name');

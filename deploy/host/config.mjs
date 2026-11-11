@@ -73,8 +73,11 @@ export const DEFAULTS = {
   maxLiveSessions: 8,
   pwa: { name: '' },
   // The Browser pane (features.browser): the Google account whose Chrome profile it
-  // opens in. Empty is Chrome's own choice, the profile used last.
-  browser: { account: '' },
+  // opens in (empty is Chrome's own choice, the profile used last), and how many
+  // screen pixels Chrome draws per CSS pixel. 1 scrolls smoothly; 2 is sharp on a
+  // high-DPI display and scrolls at about a third of the rate, since every frame has
+  // four times the pixels to encode.
+  browser: { account: '', scale: 1 },
   // Whether this install updates itself, and how. See docs/UPDATES.md.
   autoUpdate: AUTO_UPDATE_DEFAULTS,
 };
@@ -290,6 +293,9 @@ export function validate(raw) {
     || (c.browser.account !== '' && !/^[^\s@,]+@[^\s@,]+$/.test(c.browser.account))) {
     err('browser.account', 'must be an email address, or empty');
   }
+  if (isObject(c.browser) && ![1, 2, 3].includes(c.browser.scale)) {
+    err('browser.scale', 'must be 1, 2 or 3');
+  }
   if (!isObject(c.pwa) || typeof c.pwa.name !== 'string' || !/^[A-Za-z0-9 ._-]{0,40}$/.test(c.pwa.name)) {
     err('pwa.name', 'must be at most 40 letters, digits, spaces, dots, underscores or hyphens');
   }
@@ -385,6 +391,8 @@ export function envPairs(c) {
   ];
   if (c.projects.length) pairs.push(['TRIPLEC_PROJECTS_FILE', `${c.configDir}/projects.json`]);
   pairs.push(['TRIPLEC_FEATURES', FEATURES.filter((f) => c.features[f]).join(',')]);
+  // The same number the browser's unit gets, so the screen is sized to what Chrome draws.
+  if (c.features.browser) pairs.push(['TRIPLEC_BROWSER_SCALE', String(c.browser.scale)]);
   pairs.push(['CLAUDE_AUTH_MODE', c.claude.authMode]);
   if (c.claude.defaultModel) pairs.push(['ANTHROPIC_MODEL', c.claude.defaultModel]);
   pairs.push(

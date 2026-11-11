@@ -46,13 +46,16 @@ const socketPath = () => join(BROWSER_DIR, 'vnc.sock');
 
 // Chrome will not make a window narrower than 500 pixels, and a screen bigger than
 // this would only cost encoding time nobody can see. Outside those, the page scales.
-// Chrome draws at SCALE device pixels per CSS pixel (--force-device-scale-factor, set
-// by the launcher from the same default), and the screen is sized in device pixels:
-// a pane W CSS pixels wide gets a screen W × SCALE wide, which noVNC shows at W — so a
-// 2× display gets every pixel it has, instead of a 1× picture blown up and blurred.
+// Chrome draws at SCALE device pixels per CSS pixel (--force-device-scale-factor; the
+// config's browser.scale, which reaches the launcher as BROWSER_SCALE and this as
+// TRIPLEC_BROWSER_SCALE), and the screen is sized in device pixels: a pane W CSS
+// pixels wide gets a screen W × SCALE wide, which noVNC shows at W. At 2 a high-DPI
+// display gets every pixel it has; at 1 (the default) there are a quarter of the
+// pixels to encode, which is what makes scrolling smooth — measured on a 4-core box,
+// full-screen scrolling ran at 28 frames a second at 1 and 10 at 2.
 // The 500 is Chrome's narrowest window, in its own scaled pixels.
 export const SCALE = [1, 2, 3].includes(Number(process.env.TRIPLEC_BROWSER_SCALE))
-  ? Number(process.env.TRIPLEC_BROWSER_SCALE) : 2;
+  ? Number(process.env.TRIPLEC_BROWSER_SCALE) : 1;
 export const MIN_WIDTH = 500 * SCALE;
 export const MAX_SIZE = { width: 5120, height: 3200 };
 

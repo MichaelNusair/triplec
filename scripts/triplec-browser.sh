@@ -30,8 +30,10 @@
 #   BROWSER_PROFILE     Chrome's user data directory, kept across restarts
 #   BROWSER_DISPLAY     the X display number, e.g. :91
 #   BROWSER_DEBUG_PORT  DevTools on loopback, e.g. 9222
-#   BROWSER_SIZE        the size it starts at, e.g. 2880x1800
-#   BROWSER_SCALE       Chrome's device scale factor, a whole number (default 2).
+#   BROWSER_SIZE        the size it starts at (default 1440x900 times the scale)
+#   BROWSER_SCALE       Chrome's device scale factor, a whole number (default 1;
+#                       config: browser.scale). 2 is sharp on a high-DPI display
+#                       but scrolls at about a third of the rate.
 #                       The screen has this many pixels per CSS pixel of the page
 #                       showing it, so a high-DPI display gets every pixel it can
 #                       show and Chrome's UI stays the size it is on that display.
@@ -45,9 +47,9 @@ RUN="${BROWSER_RUN_DIR:?BROWSER_RUN_DIR is not set}"
 PROFILE="${BROWSER_PROFILE:?BROWSER_PROFILE is not set}"
 DISP="${BROWSER_DISPLAY:-:91}"
 PORT="${BROWSER_DEBUG_PORT:-9222}"
-SIZE="${BROWSER_SIZE:-2880x1800}"
-SCALE="${BROWSER_SCALE:-2}"
+SCALE="${BROWSER_SCALE:-1}"
 case "$SCALE" in 1|2|3) ;; *) echo "triplec-browser: BROWSER_SCALE must be 1, 2 or 3" >&2; exit 1 ;; esac
+SIZE="${BROWSER_SIZE:-$((1440 * SCALE))x$((900 * SCALE))}"
 CHROME="${BROWSER_CHROME:-}"
 if [ -z "$CHROME" ]; then
   for c in google-chrome google-chrome-stable chromium chromium-browser; do

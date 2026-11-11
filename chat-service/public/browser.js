@@ -139,6 +139,7 @@ function connect() {
   rfb.background = '#000';
   rfb.qualityLevel = 7;
   rfb.compressionLevel = 2;
+  watchCursor();
   rfb.addEventListener('connect', () => {
     retries = 0;
     status('live');
@@ -169,6 +170,75 @@ function connect() {
     }
   });
 }
+
+/*
+ * The pointer, at its proper size. Chrome on the box draws its cursors at 2× like
+ * everything else, and noVNC hands that image to the page at its full pixel size —
+ * so Chrome's pointer came out twice the size it should. Each image is restated as a
+ * high-resolution cursor (`image-set(… Nx)`), N chosen so the pointer is about the
+ * height of an ordinary one: never more than the screen's own scale, and never below
+ * 1, because not every cursor is drawn at 2× (X's plain arrow is not). Where noVNC
+ * draws the pointer itself instead (touch devices), that drawing is scaled the same.
+ */
+const POINTER_HEIGHT = 22;
+let rawCursor = '';
+const cursorSizes = new Map();      // data URL -> natural height
+const screenScale = () => {
+  const c = screenEl.querySelector('canvas');
+  return c && c.clientWidth ? c.width / c.clientWidth : 1;
+};
+const factorFor = (imageHeight) => Math.max(1, Math.min(screenScale(), imageHeight / POINTER_HEIGHT));
+function applyCursor() {
+  const canvas = screenEl.querySelector('canvas');
+  const m = rawCursor.match(/^url\("?([^")]+)"?\)\s*(\d+)\s+(\d+)/);
+  if (canvas && m) {
+    const height = cursorSizes.get(m[1]);
+    if (height === undefined) {
+      const img = new Image();
+      img.onload = () => {
+        cursorSizes.set(m[1], img.naturalHeight);
+        applyCursor();
+      };
+      img.src = m[1];
+    } else {
+      const n = factorFor(height);
+      canvas.style.cursor = n <= 1.05
+        ? rawCursor
+        : `image-set(url("${m[1]}") ${n.toFixed(3)}x) ${Math.round(m[2] / n)} ${Math.round(m[3] / n)}, default`;
+    }
+  }
+  // noVNC's own drawn pointer: a fixed canvas on the body, positioned so its hotspot
+  // is under the finger. Scaled about that hotspot, so it stays there.
+  const drawn = [...document.body.children].find((el) => el.tagName === 'CANVAS' && el.style.position === 'fixed');
+  if (drawn) {
+    const n = factorFor(drawn.height);
+    const hot = rfb?._cursor?._hotSpot || { x: 0, y: 0 };
+    drawn.style.transformOrigin = `${hot.x}px ${hot.y}px`;
+    drawn.style.transform = n > 1.05 ? `scale(${(1 / n).toFixed(4)})` : '';
+  }
+}
+function watchCursor() {
+  const canvas = screenEl.querySelector('canvas');
+  if (!canvas) return;
+  new MutationObserver(() => {
+    const cur = canvas.style.cursor;
+    // Only noVNC's own setting, never the one written here: an image-set this browser
+    // will not take leaves the old value in place, and that must not loop.
+    if (cur.startsWith('url(') && cur !== rawCursor) {
+      rawCursor = cur;
+      applyCursor();
+    } else if (!cur.startsWith('url(') && !cur.includes('image-set')) {
+      rawCursor = '';
+    }
+  }).observe(canvas, { attributes: true, attributeFilter: ['style'] });
+  // The first cursor usually arrives before the first frame has given the picture a
+  // size, when the scale still reads 1; and the scale changes with every resize.
+  new ResizeObserver(applyCursor).observe(canvas);
+  // The drawn pointer, on touch devices, changes by being redrawn at a new size.
+  const drawn = [...document.body.children].find((el) => el.tagName === 'CANVAS' && el.style.position === 'fixed');
+  if (drawn) new MutationObserver(applyCursor).observe(drawn, { attributes: true, attributeFilter: ['width', 'height'] });
+}
+new ResizeObserver(() => applyCursor()).observe(screenEl);
 
 $('#br-retry').addEventListener('click', () => {
   retries = 0;

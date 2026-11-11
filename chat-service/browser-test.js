@@ -98,6 +98,8 @@ await once(devtoolsHttp, 'listening');
 process.env.TRIPLEC_BROWSER_DIR = root;
 process.env.TRIPLEC_BROWSER_DISPLAY = ':55';
 process.env.TRIPLEC_BROWSER_DEBUG_PORT = String(devtoolsHttp.address().port);
+// At 2, so the sizing below shows the multiplication; 1 is the default.
+process.env.TRIPLEC_BROWSER_SCALE = '2';
 process.env.TRIPLEC_XRANDR = fakeXrandr;
 const browser = await import('./browser.js');
 
@@ -185,7 +187,7 @@ console.log('the socket');
 console.log('sizing');
 {
   const size = browser.screenSizeFor;
-  check('Chrome draws at 2× unless told otherwise', browser.SCALE === 2);
+  check('Chrome draws at the scale the config gives it', browser.SCALE === 2);
   check('a laptop pane gets two screen pixels per CSS pixel, so a 2× display is sharp',
     JSON.stringify(size(1200, 760)) === JSON.stringify({ width: 2400, height: 1520 }), JSON.stringify(size(1200, 760)));
   const phone = size(390, 760);
