@@ -31,6 +31,8 @@ import WebSocket from 'ws';
 import { DISPLAY, currentScreenSize, screenEvents, xEnv } from './browser.js';
 
 const FFMPEG = process.env.TRIPLEC_FFMPEG || 'ffmpeg';
+// browser.fps in the host config. 60 halves the wait for the next captured frame, so
+// a scroll shows sooner as well as smoother; it costs about 1.6 cores against 1.
 export const FPS = (() => {
   const n = Number(process.env.TRIPLEC_BROWSER_FPS);
   return Number.isInteger(n) && n >= 5 && n <= 60 ? n : 30;

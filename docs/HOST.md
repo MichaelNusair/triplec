@@ -114,7 +114,8 @@ tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. 
 screen is resized to whoever is looking, so a phone gets a phone-shaped browser, and
 The picture is streamed as H.264
 video (ffmpeg on the VM, WebCodecs in the page), so scrolling a full page runs at 30
-frames a second at a few megabits; a browser without WebCodecs falls back to VNC's
+frames a second at a few megabits — or 60, with `browser.fps`, which also shows a
+scroll sooner, for about 1.6 cores instead of one; a browser without WebCodecs falls back to VNC's
 own picture, and `?vnc` on the page's address forces that. `browser.scale` sets how
 many screen pixels Chrome draws per CSS pixel: 1 (the
 default) scrolls smoothly, 2 is sharp on a high-DPI display but scrolls at about a

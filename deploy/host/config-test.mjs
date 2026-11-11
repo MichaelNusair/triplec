@@ -167,6 +167,12 @@ test('browser.scale is 1, 2 or 3, and reaches the chat service', () => {
   assert.equal(env(withChange('browser.scale', 2, withChange('features.browser', true))).TRIPLEC_BROWSER_SCALE, '2');
   assert.equal(env(withChange('browser.scale', 2)).TRIPLEC_BROWSER_SCALE, undefined, 'not without the browser');
 });
+test('browser.fps is 10 to 60, and reaches the chat service', () => {
+  ok(withChange('browser.fps', 60));
+  rejects(withChange('browser.fps', 90), 'browser.fps');
+  rejects(withChange('browser.fps', 29.97), 'browser.fps');
+  assert.equal(env(withChange('browser.fps', 60, withChange('features.browser', true))).TRIPLEC_BROWSER_FPS, '60');
+});
 test('pwa.name shape', () => {
   ok(withChange('pwa.name', 'Dev Box 2'));
   rejects(withChange('pwa.name', '<script>'), 'pwa.name');

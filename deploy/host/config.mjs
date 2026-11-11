@@ -76,8 +76,10 @@ export const DEFAULTS = {
   // opens in (empty is Chrome's own choice, the profile used last), and how many
   // screen pixels Chrome draws per CSS pixel. 1 scrolls smoothly; 2 is sharp on a
   // high-DPI display and scrolls at about a third of the rate, since every frame has
-  // four times the pixels to encode.
-  browser: { account: '', scale: 1 },
+  // four times the pixels to encode. fps: how often the picture is captured and sent
+  // as video — 60 shows a scroll sooner and smoother, at about 1.6 cores for a viewer
+  // at 2300x1300 where 30 takes about one.
+  browser: { account: '', scale: 1, fps: 30 },
   // Whether this install updates itself, and how. See docs/UPDATES.md.
   autoUpdate: AUTO_UPDATE_DEFAULTS,
 };
@@ -296,6 +298,9 @@ export function validate(raw) {
   if (isObject(c.browser) && ![1, 2, 3].includes(c.browser.scale)) {
     err('browser.scale', 'must be 1, 2 or 3');
   }
+  if (isObject(c.browser) && !(Number.isInteger(c.browser.fps) && c.browser.fps >= 10 && c.browser.fps <= 60)) {
+    err('browser.fps', 'must be a whole number from 10 to 60');
+  }
   if (!isObject(c.pwa) || typeof c.pwa.name !== 'string' || !/^[A-Za-z0-9 ._-]{0,40}$/.test(c.pwa.name)) {
     err('pwa.name', 'must be at most 40 letters, digits, spaces, dots, underscores or hyphens');
   }
@@ -392,7 +397,9 @@ export function envPairs(c) {
   if (c.projects.length) pairs.push(['TRIPLEC_PROJECTS_FILE', `${c.configDir}/projects.json`]);
   pairs.push(['TRIPLEC_FEATURES', FEATURES.filter((f) => c.features[f]).join(',')]);
   // The same number the browser's unit gets, so the screen is sized to what Chrome draws.
-  if (c.features.browser) pairs.push(['TRIPLEC_BROWSER_SCALE', String(c.browser.scale)]);
+  if (c.features.browser) {
+    pairs.push(['TRIPLEC_BROWSER_SCALE', String(c.browser.scale)], ['TRIPLEC_BROWSER_FPS', String(c.browser.fps)]);
+  }
   pairs.push(['CLAUDE_AUTH_MODE', c.claude.authMode]);
   if (c.claude.defaultModel) pairs.push(['ANTHROPIC_MODEL', c.claude.defaultModel]);
   pairs.push(

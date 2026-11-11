@@ -28,6 +28,6 @@
   "secrets": { "backend": "file" },
   "maxLiveSessions": 8,
   "pwa": { "name": "" },
-  "browser": { "account": "", "scale": 1 },
+  "browser": { "account": "", "scale": 1, "fps": 30 },
   "autoUpdate": { "mode": "off", "soakHours": 24, "window": "", "idleMinutes": 30, "checkMinutes": 60 }
 }
