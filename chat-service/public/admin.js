@@ -930,17 +930,22 @@ for (const kind of Object.keys(SURFACES)) {
   $(`#stop-all-${kind}`).addEventListener('click', () => stopAll(kind));
 }
 
-// Polled rather than pushed. The numbers here are cheap (one `ps`, one `df`, five
+// Polled rather than pushed, once a second, so what is on screen is what the box
+// is doing now. The numbers here are cheap (one `ps`, one `df`, five
 // `systemctl show`) but they are not free, so this only runs while the page is
 // actually being looked at — a phone in a pocket with this tab open must not keep
-// waking the box.
-const POLL_MS = 5000;
+// waking the box. And a tick never stacks on one still in flight: on a loaded box
+// an overview can take longer than the interval, and a queue of them is the load.
+const POLL_MS = 1000;
 let timer = null;
+let polling = null;
+function tick() {
+  if (document.visibilityState !== 'visible' || polling) return;
+  polling = refresh().finally(() => { polling = null; });
+}
 function startPolling() {
   stopPolling();
-  timer = setInterval(() => {
-    if (document.visibilityState === 'visible') refresh();
-  }, POLL_MS);
+  timer = setInterval(tick, POLL_MS);
 }
 function stopPolling() {
   if (timer) clearInterval(timer);
