@@ -17,6 +17,9 @@
  *   - a shell: the same terminal page with `kind=shell` — a bare `bash -l` in the
  *     slot, in a tmux session of its own beside Claude's (`shell-<project>/slot-N`).
  *     For running things yourself while Claude works; exiting it resets nothing.
+ *   - the browser: the box's own Chrome (`/chat/browser?embed=1`), one per box, not
+ *     per slot — the Browser link opens it. A Claude driving it over DevTools and you
+ *     watching it here are looking at the same tabs. See browser.js.
  *
  * Either way the work belongs to the box. Shut the laptop mid-turn and the turn
  * finishes. The chat kind is deprecated — a chat pane says so, with a button across
@@ -52,6 +55,11 @@
   // Both are the terminal page; a shell is the same page asking for `bash` instead.
   const TERM_KINDS = ['terminal', 'shell'];
   const isTerm = (kind) => TERM_KINDS.includes(kind);
+  // The browser pane belongs to no project or slot. It is given this in place of a
+  // directory, so everything that asks "is there something in this pane?" says yes,
+  // and nothing that looks a directory up ever matches it.
+  const BROWSER_CWD = 'browser:';
+  const isBrowser = (pane) => pane?.kind === 'browser';
   const LIVE_POLL_MS = 5000;
   const SLOTS_POLL_MS = 15000;
   const PROJECTS_POLL_MS = 60000;
@@ -133,7 +141,8 @@
     for (let i = 0; i < 8; i++) {
       const pane = emptyPane();
       const s = panes[i];
-      if (s?.cwd && s?.project) Object.assign(pane, {
+      if (s?.kind === 'browser') Object.assign(pane, { kind: 'browser', cwd: BROWSER_CWD });
+      else if (s?.cwd && s?.project) Object.assign(pane, {
         // A layout saved before terminals existed has chats in it, and says nothing.
         kind: KINDS.includes(s.kind) ? s.kind : 'chat',
         project: s.project, slot: Number.isInteger(s.slot) ? s.slot : null,
@@ -306,7 +315,7 @@
   }
 
   const slotLabel = (n) => (n ? `slot ${n}` : 'main checkout');
-  const kindLabel = (kind) => (kind === 'terminal' ? 'terminal' : kind === 'shell' ? 'shell' : 'chat');
+  const kindLabel = (kind) => (kind === 'terminal' ? 'terminal' : kind === 'shell' ? 'shell' : kind === 'browser' ? 'browser' : 'chat');
   const kindMark = (kind) => (kind === 'terminal' ? ' ❯' : kind === 'shell' ? ' $' : '');
 
   // --- the sidebar ----------------------------------------------------------
@@ -643,6 +652,7 @@
   }
 
   function frameSrc(pane) {
+    if (isBrowser(pane)) return '/chat/browser?embed=1';
     if (isTerm(pane.kind)) {
       const q = new URLSearchParams({ embed: '1', project: pane.project, slot: String(pane.slot || 0) });
       if (pane.kind === 'shell') q.set('kind', 'shell');
@@ -719,6 +729,35 @@
       openIn(state.panes.indexOf(pane), { kind: 'terminal', project: pane.project, slot: pane.slot, cwd: pane.cwd });
     }
     loadSlots(pane.project);
+  }
+
+  /**
+   * The box's browser, in a pane: the one already on screen if there is one — two
+   * would only take turns at the size of the one screen behind them — otherwise the
+   * first empty pane, otherwise the focused one.
+   */
+  function openBrowser() {
+    const shown = visiblePanes().findIndex(isBrowser);
+    if (shown >= 0) {
+      focusPane(shown);
+      return;
+    }
+    const empty = visiblePanes().findIndex((p) => !p.cwd);
+    const index = empty >= 0 ? empty : state.focus;
+    const pane = state.panes[index];
+    if (pane.frame) {
+      pane.frame.remove();
+      pane.frame = null;
+    }
+    Object.assign(pane, {
+      kind: 'browser', project: null, slot: null, cwd: BROWSER_CWD, sessionId: null, title: '',
+      busy: false, sub: '', trouble: false, attention: false, note: '',
+    });
+    pane.src = frameSrc(pane);
+    save();
+    renderGrid();
+    focusPane(index, { input: !phone() });
+    if (phone()) closeSide();
   }
 
   /** Take something off screen. It keeps running; that is the point. */
@@ -861,7 +900,7 @@
           pane.frame.title = `Pane ${index + 1}: ${kindLabel(pane.kind)}`;
           // A chat dictates and reads aloud; a terminal pastes. A frame gets none of
           // it unless asked.
-          pane.frame.allow = isTerm(pane.kind)
+          pane.frame.allow = isTerm(pane.kind) || isBrowser(pane)
             ? 'clipboard-read; clipboard-write'
             : 'microphone; autoplay; clipboard-write';
           pane.frame.src = pane.src || frameSrc(pane);
@@ -893,7 +932,7 @@
       tab.setAttribute('aria-pressed', String(index === state.focus));
       const dot = pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle';
       tab.innerHTML = `<span class="mux-dot ${dot}"></span><span class="mux-tab-text"></span>`;
-      const where = pane.project
+      const where = isBrowser(pane) ? 'Browser' : pane.project
         ? `${pane.project} · ${pane.slot ? `slot ${pane.slot}` : 'main'}${kindMark(pane.kind)}`
         : 'empty';
       $('.mux-tab-text', tab).textContent = `${index + 1} · ${where}`;
@@ -925,10 +964,10 @@
     el.dataset.kind = pane.kind;
     const dot = $('.mux-dot', el);
     dot.className = `mux-dot ${pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle'}`;
-    $('.mux-pane-label', el).textContent = pane.project
+    $('.mux-pane-label', el).textContent = isBrowser(pane) ? `${index + 1} · Browser` : pane.project
       ? `${index + 1} · ${pane.project} · ${slotLabel(pane.slot)}${pane.kind === 'chat' ? '' : ` ·${kindMark(pane.kind)}`}`
       : `${index + 1}`;
-    const untitled = { terminal: 'Claude in a terminal', shell: 'Shell', chat: 'New chat' }[pane.kind];
+    const untitled = { terminal: 'Claude in a terminal', shell: 'Shell', chat: 'New chat', browser: 'Chrome on the box' }[pane.kind];
     $('.mux-pane-title', el).textContent = pane.title || (pane.cwd ? untitled : '');
     $('.mux-pane-sub', el).textContent = pane.sub || '';
     for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !pane.cwd;
@@ -939,6 +978,11 @@
     $('[data-act="listen"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     $('[data-act="run"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     $('[data-act="attach"]', el).hidden = !pane.cwd || pane.kind === 'chat';
+    // The browser has no slot to switch, start in or run a command in: it keeps the
+    // link for another device and the close.
+    if (isBrowser(pane)) {
+      for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !['phone', 'close'].includes(b.dataset.act);
+    }
     const kind = $('[data-act="kind"]', el);
     kind.textContent = { terminal: 'Chat', shell: 'Claude', chat: 'Terminal' }[pane.kind];
     kind.title = {
@@ -977,7 +1021,9 @@
    */
   async function copyPhoneLink(pane) {
     let url;
-    if (isTerm(pane.kind)) {
+    if (isBrowser(pane)) {
+      url = `${location.origin}/chat/browser`;
+    } else if (isTerm(pane.kind)) {
       const q = new URLSearchParams({ project: pane.project, slot: String(pane.slot || 0) });
       if (pane.kind === 'shell') q.set('kind', 'shell');
       url = `${location.origin}/chat/term?${q}`;
@@ -1277,6 +1323,24 @@
     if (pane?.cwd && pane.attention) focusPane(state.focus);
   });
 
+  // The Browser link: shown only where this box has one (the route answers at all),
+  // and opening it in a pane here rather than leaving the mux. A modified click still
+  // opens it as a page of its own.
+  const browserLink = $('#mux-browser');
+  if (browserLink) {
+    browserLink.addEventListener('click', (e) => {
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      openBrowser();
+    });
+    api('/api/browser/status')
+      .then(async (res) => {
+        const body = res.ok ? await res.json() : {};
+        browserLink.hidden = !(body.installed || body.running);
+      })
+      .catch(() => {});
+  }
+
   // --- boot -----------------------------------------------------------------
   load();
   paintAlerts();
@@ -1314,7 +1378,7 @@
   window.__muxForTest = {
     state, openIn, closePane, focusPane, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
     newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen, arrive, arrivalFrom,
-    readOpens, writeOpens,
+    readOpens, writeOpens, openBrowser,
     // The name the first tests knew it by: a new chat, in a free slot.
     newChatInFreeSlot: (name) => newInFreeSlot(name, 'chat'),
   };

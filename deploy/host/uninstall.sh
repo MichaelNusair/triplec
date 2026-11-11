@@ -33,7 +33,7 @@ done
 CONFIG="${CONFIG:-$HOME/.config/triplec/config.json}"
 NGINX_SITE=/etc/nginx/conf.d/triplec.conf
 UNIT_DIR=/etc/systemd/system
-UNITS=(triplec-update.timer triplec-update.service triplec-chat.service triplec-editor.service triplec-broker.service triplec-tmux.service)
+UNITS=(triplec-update.timer triplec-update.service triplec-chat.service triplec-editor.service triplec-broker.service triplec-tmux.service triplec-browser.service)
 CHANGES=0
 did() { echo "  $1"; CHANGES=$((CHANGES + 1)); }
 

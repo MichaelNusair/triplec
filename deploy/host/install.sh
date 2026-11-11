@@ -168,6 +168,7 @@ AUTH_MODE="$(cfg auth.mode)"
 F_EDITOR="$(cfg features.editor)"
 F_VOICE="$(cfg features.voice)"
 F_MUX="$(cfg features.mux)"
+F_BROWSER="$(cfg features.browser)"
 AUTO_UPDATE="$(cfg autoUpdate.mode)"
 # Absolute, because the update timer's unit names it and runs from /.
 CONFIG="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
@@ -249,7 +250,31 @@ fi
 if [ "$F_VOICE" = true ]; then
   for p in build-essential cmake; do pkg_installed "$p" || need+=("$p"); done
 fi
+# The Browser pane: a virtual screen, the VNC server that shares it on a socket, the
+# X cookie tool, and xrandr, which is how the screen is resized to the viewer. Fonts
+# for the scripts a page may be in; Chrome brings the rest of its libraries itself.
+if [ "$F_BROWSER" = true ]; then
+  for p in xvfb x11vnc xauth x11-xserver-utils fonts-noto-core fonts-noto-color-emoji; do
+    pkg_installed "$p" || need+=("$p")
+  done
+fi
 apt_install "${need[@]}"
+# Chrome itself, when the VM has no Chrome or Chromium: Google's own package, which
+# also adds Google's apt repository, so the VM's ordinary upgrades keep it current.
+# Only for amd64, the one Linux architecture Google builds Chrome for.
+if [ "$F_BROWSER" = true ] && ! command -v google-chrome >/dev/null && ! command -v chromium >/dev/null \
+  && ! command -v chromium-browser >/dev/null; then
+  if [ "$(dpkg --print-architecture)" = amd64 ]; then
+    changed "download and install Google Chrome"
+    if [ "$DRY" = 0 ]; then
+      curl -fsSL -o "$WORK/google-chrome.deb" https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
+        || die "could not download Google Chrome (features.browser)"
+      apt_install "$WORK/google-chrome.deb"
+    fi
+  else
+    warn "features.browser: no Chrome or Chromium on this VM, and Google builds Chrome for amd64 only. Install chromium, then run this again."
+  fi
+fi
 NGINX_BIN="$(command -v nginx || echo /usr/sbin/nginx)"
 
 # --- file helpers ---------------------------------------------------------------------------------
@@ -296,6 +321,7 @@ mkdir -p "$STAGE/chat-service/public/pwa-icons"
 done
 mkdir -p "$STAGE/scripts" "$STAGE/docs" "$STAGE/deploy/host"
 cp "$SOURCE/scripts/cc-session.sh" "$STAGE/scripts/"
+[ "$F_BROWSER" = true ] && cp "$SOURCE/scripts/triplec-browser.sh" "$STAGE/scripts/"
 # The updater, and the settings module it shares with config.mjs (which imports
 # it, so uninstall.sh needs it here too). Staged whatever autoUpdate.mode says:
 # `triplec-update run --now` is the upgrade command in every mode.
@@ -743,6 +769,46 @@ UNIT
   sync_file "$WORK/triplec-tmux.service" "$UNIT_DIR/triplec-tmux.service" 0644 root && { UNITS_CHANGED=1; TMUX_UNIT_CHANGED=1; }
 fi
 
+# The Browser pane's Chrome, on a virtual screen shared over a unix socket in
+# /run/triplec-browser — 0700, this account's, and the only way in is the chat
+# service's /ws/browser, behind the login. DevTools on 127.0.0.1:9222, for a Claude on
+# the box to drive the same browser. Defaults the chat service assumes too (see
+# chat-service/browser.js), so nothing about it goes in triplec.env. Restart=always:
+# a browser that has stopped is never what anyone wanted.
+BROWSER_UNIT_CHANGED=0
+if [ "$F_BROWSER" = true ]; then
+  cat >"$WORK/triplec-browser.service" <<UNIT
+# Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
+[Unit]
+Description=TripleC browser (Chrome on a virtual screen, for the mux's Browser pane)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$USER_NAME
+Group=$MY_GROUP
+Environment=HOME=$HOME_DIR
+Environment=BROWSER_RUN_DIR=/run/triplec-browser
+Environment=BROWSER_PROFILE=$STATE_DIR/browser/profile
+Environment=BROWSER_DISPLAY=:91
+Environment=BROWSER_DEBUG_PORT=9222
+RuntimeDirectory=triplec-browser
+RuntimeDirectoryMode=0700
+WorkingDirectory=$HOME_DIR
+ExecStart=$INSTALL_DIR/scripts/triplec-browser.sh
+Restart=always
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=triplec-browser
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  sync_file "$WORK/triplec-browser.service" "$UNIT_DIR/triplec-browser.service" 0644 root && { UNITS_CHANGED=1; BROWSER_UNIT_CHANGED=1; }
+fi
+
 if [ "$F_EDITOR" = true ]; then
   cat >"$WORK/triplec-editor.service" <<UNIT
 # Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
@@ -862,6 +928,15 @@ if [ "$F_EDITOR" = true ]; then
     [ "$DRY" = 1 ] || sudo systemctl restart triplec-editor.service
   fi
 fi
+if [ "$F_BROWSER" = true ]; then
+  ensure_up triplec-browser.service
+  # Only when its unit changed: a restart closes every tab that was open. A new
+  # launcher (scripts/triplec-browser.sh) waits for the next restart or reboot.
+  if [ "$BROWSER_UNIT_CHANGED" = 1 ] && ! started triplec-browser.service; then
+    changed "systemctl restart triplec-browser (its unit changed)"
+    [ "$DRY" = 1 ] || sudo systemctl restart triplec-browser.service
+  fi
+fi
 ensure_up triplec-chat.service
 if [ "$PAYLOAD_CHANGED$ENV_CHANGED$CHAT_UNIT_CHANGED$NPM_RAN" != 0000 ] && ! started triplec-chat.service; then
   changed "systemctl restart triplec-chat (payload, config or unit changed)"
@@ -873,7 +948,7 @@ TMUX_NOTE=""
   TMUX_NOTE="triplec-tmux.service changed but was not restarted (that ends every terminal session). When convenient: sudo systemctl restart triplec-tmux"
 
 # A feature switched off leaves its unit behind otherwise, still running.
-for pair in "triplec-tmux:$F_MUX" "triplec-editor:$F_EDITOR" "triplec-broker:$F_EDITOR"; do
+for pair in "triplec-tmux:$F_MUX" "triplec-editor:$F_EDITOR" "triplec-broker:$F_EDITOR" "triplec-browser:$F_BROWSER"; do
   unit="${pair%%:*}.service"
   if [ "${pair#*:}" != true ] && [ -f "$UNIT_DIR/$unit" ]; then
     changed "stop, disable and remove $unit (its feature is off)"
@@ -1089,6 +1164,7 @@ status_of() { systemctl is-active "$1" 2>/dev/null || true; }
 say "Services"
 say "  triplec-chat    $(status_of triplec-chat.service)"
 [ "$F_MUX" = true ] && say "  triplec-tmux    $(status_of triplec-tmux.service)"
+[ "$F_BROWSER" = true ] && say "  triplec-browser $(status_of triplec-browser.service)"
 [ "$F_EDITOR" = true ] && say "  triplec-editor  $(status_of triplec-editor.service)" &&
   say "  triplec-broker  $(status_of triplec-broker.service)"
 say "  nginx           $(status_of nginx)"

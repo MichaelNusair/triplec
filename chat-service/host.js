@@ -103,7 +103,7 @@ loadSecretsFile();
 
 // --- features -----------------------------------------------------------------
 
-export const FEATURE_NAMES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire'];
+export const FEATURE_NAMES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire', 'browser'];
 
 /**
  * Which parts of the product this install has.

@@ -1,0 +1,62 @@
+/* The Browser page: a bar, and the box's Chrome filling the rest. */
+
+body.br-page {
+  display: flex; flex-direction: column;
+  height: 100vh; height: 100dvh;
+  margin: 0; overflow: hidden;
+  background: var(--bg); color: var(--text);
+}
+
+.br-bar {
+  display: flex; align-items: center; gap: 6px;
+  padding: max(6px, env(safe-area-inset-top)) 8px 6px;
+  background: var(--bg-raised); border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+.embed .br-back { display: none; }
+.br-back { color: var(--text); text-decoration: none; font-size: 22px; line-height: 1; padding: 0 4px; }
+.br-go { flex: 1; min-width: 0; display: flex; }
+.br-go input {
+  flex: 1; min-width: 0;
+  /* 16px: anything smaller and iOS zooms the page when the field takes focus. */
+  font: inherit; font-size: 16px;
+  padding: 4px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text);
+}
+@media (pointer: fine) { .br-go input { font-size: 13px; } }
+.br-btn {
+  flex: none; font: inherit; padding: 4px 9px; border-radius: 8px; cursor: pointer;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text);
+}
+.br-btn:disabled { opacity: 0.45; cursor: default; }
+.br-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+/* A physical keyboard types straight into the screen; the button is for phones. */
+@media (pointer: fine) { #br-keys { display: none; } }
+.br-status { flex: none; color: var(--text-dim); font-size: 12px; white-space: nowrap; }
+.br-status.trouble { color: var(--error); }
+@media (max-width: 520px) { .br-status { display: none; } }
+
+/* noVNC puts its own scaled canvas in here, centred. */
+.br-screen { flex: 1; min-height: 0; position: relative; overflow: hidden; background: #000; }
+
+.br-down {
+  position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%);
+  width: min(420px, calc(100vw - 32px)); padding: 18px;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 12px;
+  text-align: center; line-height: 1.45;
+}
+.br-down code { font-size: 12px; }
+
+/* Off to the side but focusable: iOS will not open a keyboard over a field that is
+   display:none or zero-sized. */
+.br-type {
+  position: fixed; left: 0; bottom: 0; width: 1px; height: 1px;
+  opacity: 0; border: 0; padding: 0; resize: none; font-size: 16px;
+}
+
+.br-toast {
+  position: fixed; left: 50%; bottom: max(16px, env(safe-area-inset-bottom)); transform: translateX(-50%);
+  max-width: calc(100vw - 32px); padding: 8px 14px; border-radius: 10px;
+  background: var(--bg-raised); border: 1px solid var(--border); font-size: 13px;
+}
+.hidden { display: none !important; }

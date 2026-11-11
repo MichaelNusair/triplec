@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no, interactive-widget=resizes-content">
+<meta name="theme-color" content="#141413">
+<meta name="color-scheme" content="dark">
+<meta name="deployment" content="">
+<meta name="build" content="">
+<title>Browser · TripleC</title>
+<link rel="icon" href="/chat/pwa-icons/icon-192.png">
+<link rel="stylesheet" href="/chat/style.css">
+<link rel="stylesheet" href="/chat/browser.css">
+</head>
+<body class="br-page">
+
+<!--
+  A real Google Chrome, running on this box (triplec-browser.service), drawn here by
+  noVNC over /ws/browser. Everything in it — tabs, the omnibox, what is signed in —
+  is the box's, so the same browser is here from the laptop, the phone, and for any
+  Claude on the box that drives it over DevTools. Inside a mux pane (`?embed=1`) the
+  back link goes. See browser.js, and chat-service/browser.js for the server half.
+-->
+<header class="br-bar">
+  <a class="br-back" href="/chat/mux" aria-label="Back to the mux">‹</a>
+  <form id="br-go" class="br-go" autocomplete="off">
+    <input id="br-url" type="text" inputmode="url" enterkeyhint="go" autocapitalize="off"
+           autocorrect="off" spellcheck="false" placeholder="Open in a new tab…" aria-label="Address to open in a new tab">
+  </form>
+  <button type="button" id="br-keys" class="br-btn" title="Type into the browser (on-screen keyboard)" aria-label="Keyboard">⌨</button>
+  <button type="button" id="br-paste" class="br-btn" title="Paste this device's clipboard into the browser">Paste</button>
+  <button type="button" id="br-copy" class="br-btn" title="Copy what was last copied in the browser to this device" disabled>Copy</button>
+  <span id="br-status" class="br-status" role="status">connecting…</span>
+</header>
+
+<div id="br-screen" class="br-screen"></div>
+
+<div id="br-down" class="br-down hidden" role="alert">
+  <p id="br-down-text">The browser isn't running on this box.</p>
+  <button type="button" id="br-retry" class="wide">Try again</button>
+</div>
+
+<!-- A phone's keyboard needs a text field to open over. What is typed here goes to
+     the browser key by key; the field itself is never seen. -->
+<textarea id="br-type" class="br-type" autocapitalize="off" autocomplete="off" autocorrect="off"
+          spellcheck="false" aria-label="Typing into the browser"></textarea>
+<div id="br-toast" class="br-toast hidden" role="status"></div>
+
+<script type="module" src="/chat/browser.js"></script>
+</body>
+</html>

@@ -34,7 +34,7 @@ import { fileURLToPath } from 'node:url';
 import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../../scripts/auto-update-config.mjs';
 import { HOST_FILE_NAME, layer, readStore } from '../../scripts/box-config.mjs';
 
-export const FEATURES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire'];
+export const FEATURES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire', 'browser'];
 export const AUTH_MODES = ['login', 'bedrock', 'vertex', 'apiKey'];
 export const PERMISSION_MODES = ['acceptEdits', 'auto', 'bypassPermissions', 'manual', 'dontAsk', 'plan'];
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
@@ -55,7 +55,7 @@ export const DEFAULTS = {
   claudeHome: '~/.claude',
   projects: [],
   listen: { nginxPort: 8080, appPort: 9997, bind: '127.0.0.1', allowPublicBind: false },
-  features: { editor: false, voice: false, polish: false, push: true, mux: true, admin: true, retire: false },
+  features: { editor: false, voice: false, polish: false, push: true, mux: true, admin: true, retire: false, browser: false },
   claude: {
     authMode: 'login',
     defaultModel: '',

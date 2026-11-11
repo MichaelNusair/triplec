@@ -186,7 +186,7 @@ The allowlist direction matters: a new route added to `server.js` is gated
 unless someone deliberately opens it. The reverse — a denylist — is how the
 original bug happened.
 
-Two WebSockets exist, and both are authenticated in the same `upgrade` handler,
+Three WebSockets exist, and all are authenticated in the same `upgrade` handler,
 before the handshake completes: `/ws`, the chat, which can start a `claude`; and
 `/ws/term`, the mux's terminal panes, which is a pseudo-terminal running `cc` —
 a shell, in plain terms, for whoever holds one. Any other path under `/ws` is
@@ -195,6 +195,25 @@ name goes through the same validation as every project route, the slot is an
 integer, and both reach `cc` as argv, never through a shell string.
 `auth-test.js` asserts the unauthenticated upgrade is a 401, and `term-test.js` that a
 path-shaped name or an out-of-range slot is refused before anything is spawned.
+
+A third, `/ws/browser`, is the mux's Browser pane: a keyboard, a mouse and a screen
+on the real Chrome that `triplec-browser.service` runs on this box (host mode,
+`features.browser`). Treat it as what it is — a browser **signed in to whatever its
+owner signed in to**, plus that browser's downloads — and it is gated exactly like
+the terminal: the same `upgrade` handler, before the handshake. Behind it, nothing
+listens on a network port. x11vnc serves the screen on a unix socket in
+`/run/triplec-browser` (0700, the service account's), the X display refuses any
+client without the cookie kept beside it, and the chat service is the only thing
+that bridges the socket to a page. Chrome's DevTools port is `127.0.0.1:9222`, so a
+Claude on the box can drive the browser the owner is watching; anything that can
+reach loopback as this account could already do anything a shell can, so that adds
+reach to the browser's sessions, not to the box. It is also why **prompt injection
+now reaches the browser's signed-in sessions**: a Claude that reads a hostile page
+while driving it acts with every login that profile holds. Keep accounts you would
+not hand to an agent out of that profile. `auth-test.js` asserts the unauthenticated
+upgrade is a 401; `browser-test.js` covers the bridge, the resize, what the address
+box will open, and that only noVNC's own two directories of `node_modules` are
+served.
 
 The editor at `/editor/` is gated by code-server's own password, enforced by
 code-server itself, so it does not depend on the proxy being right. In `oidc`

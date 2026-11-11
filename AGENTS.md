@@ -206,6 +206,7 @@ npm run test:status    # 42/42; which conversation a device is told about, and f
 npm run test:broker    # 51/51; one process per conversation, and what counts as a turn
 npm run test:mux       # 58/58; slots against real git, the mux, the chat embedded in it
 npm run test:term      # 67/67; terminal panes: exact tmux targets, the pty relay, /ws/term
+npm run test:browser   # 52/52; the Browser pane: the socket bridge, resizing, the address box, noVNC's files
 npm run test:landing   # 53/53; the marketing page's analytics, which fails silently
 cd infra && npx cdk synth --quiet
 ```
@@ -370,6 +371,13 @@ chat-service/            The chat backend + PWA client. The security boundary.
                          a slot on a pty and relays it. Refuses without a tmux
                          server, so nothing it starts lives in this service's
                          cgroup. Serves xterm.js from node_modules.
+  browser.js             The mux's Browser pane: a real Chrome on this box
+                         (scripts/triplec-browser.sh, triplec-browser.service),
+                         shown through noVNC. /ws/browser bridges bytes to
+                         x11vnc's unix socket; the screen is resized to the viewer
+                         with xrandr and DevTools; serves noVNC's core/ and
+                         vendor/ only. DevTools on 127.0.0.1:9222, for a Claude
+                         here to drive the same tabs. Tested by browser-test.js.
   term-relay.py          The pty itself, because Node has none without a native
                          module: pty.fork, a select loop, framed stdin for
                          keystrokes and window sizes. Hang-up is a tmux detach.

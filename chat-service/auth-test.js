@@ -254,6 +254,16 @@ const guarded = [
   ['POST', '/api/term/paste?project=x&slot=1'],
   ['GET', '/api/slots?project=x'],
   ['POST', '/api/slots/prepare'],
+  // The Browser pane: Chrome on this box, signed in to whatever its owner signed in
+  // to. The page and noVNC hold nothing secret, but resizing the screen and opening a
+  // URL act on that browser, and the status names its DevTools port — so all of it
+  // is behind the gate, like the terminal.
+  ['GET', '/browser'],
+  ['GET', '/browser.js'],
+  ['GET', '/vendor/novnc/core/rfb.js'],
+  ['GET', '/api/browser/status'],
+  ['POST', '/api/browser/size'],
+  ['POST', '/api/browser/open'],
   // Which build is running. Not a secret worth widening the allowlist for — it
   // names a commit of a private repository, and the only caller is a signed-in
   // page — but an unauthenticated one would tell a stranger which version of this
@@ -293,6 +303,10 @@ console.log('\nWebSocket upgrade requires a session:');
   // Refused at the same handshake, before a relay or a `cc` is ever started.
   const term = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/term?project=demo&slot=1`);
   check('unauthenticated /ws/term → rejected with 401', term.includes('401'), `got ${term}`);
+  // The Browser pane's socket: a keyboard and mouse on a browser signed in to things,
+  // so refused at the same handshake, before anything connects to x11vnc.
+  const screen = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/browser`);
+  check('unauthenticated /ws/browser → rejected with 401', screen.includes('401'), `got ${screen}`);
   // And anything else under /ws is not a socket at all.
   const other = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/anything`);
   check('an unknown socket path is dropped', !other.includes('opened'), `got ${other}`);

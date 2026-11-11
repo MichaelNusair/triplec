@@ -30,7 +30,7 @@ first. Anyone past TripleC's login is the developer, on that VM's network.
 | Git credentials | a PAT from Secrets Manager | the VM's own `gh` login or SSH key |
 | In front | ALB → nginx on :8080 | the VM's own HTTPS proxy → one nginx site on `127.0.0.1:8080`; or Tailscale Serve → the app port |
 | Login | `password` or `oidc` (ALB) | `password`, and/or `trusted-header` (Tailscale identity) |
-| Features | all | flags: `editor voice polish push mux admin retire` |
+| Features | all | flags: `editor voice polish push mux admin retire browser` |
 
 Nothing on the AWS deployment changes: with `TRIPLEC_MODE` unset every default is
 the one it always had, and `chat-service/host.js` is the only file that knows both.
@@ -106,6 +106,18 @@ service believes the header only from a socket owned by `tailscaled` (uid 0) —
 [SECURITY.md](SECURITY.md#trusted-header-host-mode-over-a-tailnet). The PWA and
 push work on any HTTPS origin, so both the proxy hostname and the tailnet hostname
 can be installed.
+
+**Browser.** With `features.browser` on, `triplec-browser.service` runs a real Google
+Chrome (installed from Google's package if the VM has no Chrome or Chromium; amd64
+only) on a virtual screen, and the mux's **Browser** link shows it in a pane —
+tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. The
+screen is resized to whoever is looking, so a phone gets a phone-shaped browser.
+Paste carries the device's clipboard across, a copy in the browser comes back, and
+⌘ on a Mac is sent as Ctrl. Chrome's DevTools listen on `127.0.0.1:9222`, so a
+Claude on the VM can drive the same tabs you are watching — for example
+`claude mcp add chrome -- npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222`,
+or Playwright's MCP server with `--cdp-endpoint http://127.0.0.1:9222`. Restarting
+the unit closes every open tab; the profile, and so every login, survives it.
 
 **Logs.** Both units log to the journal (`journalctl -u triplec-chat`). Audit
 events are single JSON lines starting `{"audit":"triplec"`; a log agent that ships

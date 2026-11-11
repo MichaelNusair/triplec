@@ -51,6 +51,7 @@ import { startTurnWatcher } from './turn-watcher.js';
 import { createAdmin } from './admin.js';
 import { PASTE_LIMIT, RUN_LIMIT, runInTerminal, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
 import { ensureSlot, slotOf } from './slots.js';
+import { browserStatus, novncFile, openInBrowser, resizeBrowser, serveBrowser } from './browser.js';
 import {
   AUTH_MODE,
   assertAuthConfig,
@@ -117,6 +118,9 @@ function routeFeature(pathname) {
   if (pathname === '/api/transcribe' || pathname === '/api/voice-status'
     || pathname.startsWith('/api/speak') || pathname.startsWith('/api/realtime')) return 'voice';
   if (pathname.startsWith('/api/push/')) return 'push';
+  // Before the mux's /vendor/: noVNC is the browser's, and on without the mux.
+  if (pathname === '/browser' || pathname === '/browser.html' || pathname === '/ws/browser'
+    || pathname.startsWith('/api/browser/') || pathname.startsWith('/vendor/novnc/')) return 'browser';
   if (pathname === '/mux' || pathname === '/mux.html' || pathname === '/term' || pathname === '/term.html'
     || pathname.startsWith('/vendor/') || pathname === '/api/slots' || pathname.startsWith('/api/slots/')
     || pathname === '/ws/term' || pathname === '/api/term/paste' || pathname === '/api/term/run') return 'mux';
@@ -534,6 +538,52 @@ const server = http.createServer(async (req, res) => {
     // itself is the socket at /ws/term — see terminal.js.
     if (pathname === '/term' || pathname === '/term.html') {
       await serveStatic(req, res, '/term.html');
+      return;
+    }
+
+    // --- the Browser pane --------------------------------------------------------
+    // A real Chrome on this box, shown through noVNC: the page, the size it wants,
+    // an address to open, and the socket at /ws/browser. See browser.js.
+    if (pathname === '/browser' || pathname === '/browser.html') {
+      await serveStatic(req, res, '/browser.html');
+      return;
+    }
+    if (pathname === '/api/browser/status' && req.method === 'GET') {
+      json(res, 200, await browserStatus());
+      return;
+    }
+    if ((pathname === '/api/browser/size' || pathname === '/api/browser/open') && req.method === 'POST') {
+      let body;
+      try {
+        body = JSON.parse((await readBody(req, 8 * 1024)).toString() || '{}');
+      } catch (err) {
+        json(res, 400, { error: err instanceof SyntaxError ? 'the body must be JSON' : err.message });
+        return;
+      }
+      try {
+        json(res, 200, pathname === '/api/browser/size'
+          ? await resizeBrowser(body.width, body.height)
+          : await openInBrowser(body.url));
+      } catch (err) {
+        json(res, err.status || 400, { error: err.message });
+      }
+      return;
+    }
+    // noVNC's modules, from its package — see novncFile for what may be asked for.
+    if (pathname.startsWith('/vendor/novnc/') && req.method === 'GET') {
+      const file = await novncFile(pathname.slice('/vendor/novnc/'.length));
+      if (!file) {
+        json(res, 404, { error: 'not found' });
+        return;
+      }
+      const headers = { 'Content-Type': file.type, 'Cache-Control': 'no-cache', ETag: file.etag };
+      if (req.headers['if-none-match'] === file.etag) {
+        res.writeHead(304, headers);
+        res.end();
+        return;
+      }
+      res.writeHead(200, headers);
+      res.end(file.body);
       return;
     }
 
@@ -1406,12 +1456,17 @@ const wss = new WebSocketServer({ noServer: true });
 // Under /ws so nginx's existing `location /ws` (a prefix match) already proxies it,
 // upgrade headers and all. See terminal.js.
 const termWss = new WebSocketServer({ noServer: true });
+// The Browser pane: noVNC to x11vnc, bytes only. A browser signed in to things is a
+// session on this box, so it is behind the same gate as the terminal. No per-message
+// compression: the frames are already compressed images, and deflating them again is
+// CPU spent for nothing.
+const browserWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
 
 server.on('upgrade', async (req, socket, head) => {
   const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const { searchParams } = parsed;
   const { pathname } = routedPath(parsed.pathname);
-  if ((pathname !== '/ws' && pathname !== '/ws/term') || featureOff(pathname)) {
+  if ((pathname !== '/ws' && pathname !== '/ws/term' && pathname !== '/ws/browser') || featureOff(pathname)) {
     socket.destroy();
     return;
   }
@@ -1427,6 +1482,15 @@ server.on('upgrade', async (req, socket, head) => {
     // yet to send a close frame over.
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     socket.destroy();
+    return;
+  }
+
+  if (pathname === '/ws/browser') {
+    browserWss.handleUpgrade(req, socket, head, (ws) => {
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
+      serveBrowser(ws);
+    });
     return;
   }
 
@@ -1690,7 +1754,7 @@ appPing.unref?.();
 const heartbeat = setInterval(() => {
   // A dead terminal socket matters more than a dead chat one: its relay holds a tmux
   // client attached, and an attached client is what sizes the window.
-  for (const ws of [...wss.clients, ...termWss.clients]) {
+  for (const ws of [...wss.clients, ...termWss.clients, ...browserWss.clients]) {
     if (ws.isAlive === false) {
       ws.terminate();
       continue;
