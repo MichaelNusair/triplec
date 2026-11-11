@@ -715,6 +715,12 @@ if [ "$F_MUX" = true ]; then
   after_chat="$after_chat triplec-tmux.service"
   wants_chat="$wants_chat triplec-tmux.service"
 fi
+# With the Browser pane on, the chat service runs its video encoder (ffmpeg, about one
+# core at 30 fps and two at 60), so it is given ten times the default CPU share. It
+# only matters when the box is busy: then the picture keeps its frame rate and the
+# terminals and the editor wait instead. The browser's own unit gets the same.
+chat_weight=""
+[ "$F_BROWSER" = true ] && chat_weight="CPUWeight=1000"
 cat >"$WORK/triplec-chat.service" <<UNIT
 # Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
 [Unit]
@@ -737,6 +743,7 @@ RestartSec=2
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=triplec-chat
+$chat_weight
 
 [Install]
 WantedBy=multi-user.target
@@ -808,6 +815,8 @@ RestartSec=3
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=triplec-browser
+# Chrome and Xvnc ahead of everything else when the box is busy; see the chat unit.
+CPUWeight=1000
 
 [Install]
 WantedBy=multi-user.target
