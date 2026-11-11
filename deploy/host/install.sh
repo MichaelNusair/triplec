@@ -253,10 +253,12 @@ if [ "$F_VOICE" = true ]; then
   for p in build-essential cmake; do pkg_installed "$p" || need+=("$p"); done
 fi
 # The Browser pane: TigerVNC's Xvnc (a virtual screen that is its own VNC server),
-# the X cookie tool, and xrandr, which is how the screen is resized to the viewer.
-# Fonts for the scripts a page may be in; Chrome brings the rest of its libraries.
+# the X cookie tool, xrandr, which is how the screen is resized to the viewer, and
+# ffmpeg, which streams the screen as H.264 (chat-service/browser-video.js) — without
+# it the pane still works, on VNC's own picture. Fonts for the scripts a page may be
+# in; Chrome brings the rest of its libraries itself.
 if [ "$F_BROWSER" = true ]; then
-  for p in tigervnc-standalone-server xauth x11-xserver-utils fonts-noto-core fonts-noto-color-emoji; do
+  for p in tigervnc-standalone-server xauth x11-xserver-utils ffmpeg fonts-noto-core fonts-noto-color-emoji; do
     pkg_installed "$p" || need+=("$p")
   done
 fi

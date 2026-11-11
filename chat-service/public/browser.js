@@ -14,6 +14,13 @@
  * so ⌘V / Ctrl+V pastes what you copied here. What is copied there comes back onto
  * this device's clipboard. A phone types through a hidden text field, opened by the
  * one floating button (⌨), which is what its keyboard needs to open over.
+ *
+ * The picture comes as H.264 video where it can (/ws/browser-video, decoded by
+ * WebCodecs — see chat-service/browser-video.js for why), and the VNC connection is
+ * then asked for one pixel instead of the screen: it carries the keys, the pointer
+ * and the clipboard, and its canvas, transparent, stays on top to take the mouse.
+ * Anything that stops the video — no WebCodecs, a decoder error, a screen too big —
+ * falls back to VNC's own picture for the rest of the page's life. ?vnc forces that.
  */
 import RFB from '/chat/vendor/novnc/core/rfb.js';
 import keysyms from '/chat/vendor/novnc/core/input/keysymdef.js';
@@ -31,6 +38,9 @@ const XK = {
 };
 
 const screenEl = $('#br-screen');
+// noVNC's own canvas, inside the box it makes in #br-screen — not the video's, which
+// sits beside that box.
+const vncCanvas = () => screenEl.querySelector(':scope > div canvas');
 const statusEl = $('#br-status');
 let rfb = null;
 let wanted = null;          // the size last asked for, so a resize that changes nothing asks nothing
@@ -124,6 +134,7 @@ async function start() {
     return;
   }
   await fit(true);
+  await chooseVideo(state);
   connect();
 }
 
@@ -136,7 +147,8 @@ function connect() {
   rfb = new RFB(screenEl, `${proto}//${location.host}/ws/browser`, { shared: true });
   rfb.scaleViewport = true;     // fit, never scroll: the screen is already this size
   rfb.resizeSession = false;    // sizing is /api/browser/size's: the screen is twice the page
-  rfb.background = '#000';
+  // In video mode noVNC's own box must not cover the video behind it.
+  rfb.background = videoMode ? 'transparent' : '#000';
   rfb.qualityLevel = 7;
   rfb.compressionLevel = 2;
   watchCursor();
@@ -144,6 +156,7 @@ function connect() {
     retries = 0;
     status('live');
     if (!EMBED || document.hasFocus()) rfb.focus();
+    connectVideo();
   });
   rfb.addEventListener('disconnect', (e) => {
     rfb = null;
@@ -171,6 +184,170 @@ function connect() {
   });
 }
 
+// --- the picture, as video ---------------------------------------------------
+const ORIGINAL = {
+  fbUpdateRequest: RFB.messages.fbUpdateRequest,
+  enableContinuousUpdates: RFB.messages.enableContinuousUpdates,
+};
+let videoMode = false;
+let videoBroken = false;       // once it has failed, VNC's picture for the rest of this page
+let video = null;              // { ws, decoder, waitKey, n, fps, shown }
+let videoFailures = 0;
+const videoCanvas = document.createElement('canvas');
+videoCanvas.id = 'br-video';
+screenEl.prepend(videoCanvas);
+const videoCtx = videoCanvas.getContext('2d');
+
+/**
+ * Video mode on or off. On, noVNC's update requests are narrowed to one pixel — the
+ * same messages, for a 1x1 region — so the VNC server encodes nothing while the
+ * video carries the picture. Set before noVNC connects, and undone by reconnecting.
+ */
+function setVideoMode(on) {
+  videoMode = on;
+  RFB.messages.fbUpdateRequest = on
+    ? (sock, incremental) => ORIGINAL.fbUpdateRequest(sock, incremental, 0, 0, 1, 1)
+    : ORIGINAL.fbUpdateRequest;
+  RFB.messages.enableContinuousUpdates = on
+    ? (sock, enable) => ORIGINAL.enableContinuousUpdates(sock, enable, 0, 0, 1, 1)
+    : ORIGINAL.enableContinuousUpdates;
+  document.documentElement.classList.toggle('br-video', on);
+}
+
+async function chooseVideo(state) {
+  if (videoBroken || params.has('vnc') || !state.video || typeof VideoDecoder === 'undefined') {
+    setVideoMode(false);
+    return;
+  }
+  try {
+    const { supported } = await VideoDecoder.isConfigSupported({ codec: 'avc1.42E033', codedWidth: 1920, codedHeight: 1080 });
+    setVideoMode(Boolean(supported));
+  } catch {
+    setVideoMode(false);
+  }
+}
+
+/** Give up on video for this page: VNC's own picture, by reconnecting without the narrowing. */
+function failVideo(reason) {
+  console.warn('browser video: falling back to VNC —', reason);
+  videoBroken = true;
+  closeVideo();
+  setVideoMode(false);
+  if (rfb) rfb.disconnect();   // its disconnect handler reconnects, now with the whole screen
+}
+
+function closeVideo() {
+  const v = video;
+  video = null;
+  if (!v) return;
+  try { v.ws.close(); } catch { /* already closed */ }
+  try { if (v.decoder && v.decoder.state !== 'closed') v.decoder.close(); } catch { /* already closed */ }
+}
+
+/** Whether an access unit holds an IDR slice (NAL type 5). */
+function isKeyframe(data) {
+  for (let i = 0; i + 3 < data.length; i++) {
+    if (data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1) {
+      if ((data[i + 3] & 0x1f) === 5) return true;
+      i += 2;
+    }
+  }
+  return false;
+}
+
+/** Lay the video exactly under noVNC's canvas, so a click lands where it is drawn. */
+function placeVideo() {
+  const c = vncCanvas();
+  if (!c) return;
+  const a = c.getBoundingClientRect();
+  const b = screenEl.getBoundingClientRect();
+  Object.assign(videoCanvas.style, {
+    left: `${a.left - b.left}px`, top: `${a.top - b.top}px`, width: `${a.width}px`, height: `${a.height}px`,
+  });
+}
+new ResizeObserver(placeVideo).observe(screenEl);
+
+function connectVideo() {
+  if (!videoMode || video || !rfb || document.visibilityState !== 'visible') return;
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(`${proto}//${location.host}/ws/browser-video`);
+  ws.binaryType = 'arraybuffer';
+  const v = { ws, decoder: null, waitKey: true, n: 0, fps: 30, shown: false };
+  video = v;
+
+  const configure = (msg) => {
+    if (v.decoder && v.decoder.state !== 'closed') v.decoder.close();
+    v.fps = msg.fps || 30;
+    v.waitKey = true;
+    videoCanvas.width = msg.width;
+    videoCanvas.height = msg.height;
+    v.decoder = new VideoDecoder({
+      output: (frame) => {
+        videoCtx.drawImage(frame, 0, 0, videoCanvas.width, videoCanvas.height);
+        frame.close();
+        if (!v.shown) {
+          v.shown = true;
+          videoFailures = 0;
+          placeVideo();
+        }
+      },
+      error: (err) => {
+        if (video === v) failVideo(`decoder: ${err.message}`);
+      },
+    });
+    v.decoder.configure({ codec: msg.codec, codedWidth: msg.width, codedHeight: msg.height, optimizeForLatency: true });
+    placeVideo();
+  };
+
+  ws.addEventListener('message', (e) => {
+    if (video !== v) return;
+    if (typeof e.data === 'string') {
+      let msg;
+      try { msg = JSON.parse(e.data); } catch { return; }
+      if (msg.type === 'size') {
+        try {
+          configure(msg);
+        } catch (err) {
+          failVideo(`configure: ${err.message}`);
+        }
+      }
+      return;
+    }
+    const d = v.decoder;
+    if (!d || d.state !== 'configured') return;
+    const data = new Uint8Array(e.data);
+    const key = isKeyframe(data);
+    // Behind: never queue up late frames — wait for the next keyframe instead.
+    if (!key && (v.waitKey || d.decodeQueueSize > 3)) {
+      v.waitKey = true;
+      return;
+    }
+    v.waitKey = false;
+    d.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: Math.round((v.n++ * 1e6) / v.fps), data }));
+  });
+  ws.addEventListener('close', (e) => {
+    if (video !== v) return;
+    closeVideo();
+    // Refusals that will not change by asking again: too big, too many viewers.
+    if (e.code === 4413 || e.code === 4429) {
+      failVideo(e.reason || `closed ${e.code}`);
+      return;
+    }
+    videoFailures += v.shown ? 0 : 1;
+    if (videoFailures >= 3) {
+      failVideo(`could not start (${e.code} ${e.reason || ''})`);
+      return;
+    }
+    setTimeout(connectVideo, 1000);
+  });
+}
+
+// A page out of sight streams nothing: the box stops its encoder.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') connectVideo();
+  else closeVideo();
+});
+
 /*
  * The pointer, at its proper size. Chrome on the box draws its cursors at 2× like
  * everything else, and noVNC hands that image to the page at its full pixel size —
@@ -184,12 +361,12 @@ const POINTER_HEIGHT = 22;
 let rawCursor = '';
 const cursorSizes = new Map();      // data URL -> natural height
 const screenScale = () => {
-  const c = screenEl.querySelector('canvas');
+  const c = vncCanvas();
   return c && c.clientWidth ? c.width / c.clientWidth : 1;
 };
 const factorFor = (imageHeight) => Math.max(1, Math.min(screenScale(), imageHeight / POINTER_HEIGHT));
 function applyCursor() {
-  const canvas = screenEl.querySelector('canvas');
+  const canvas = vncCanvas();
   const m = rawCursor.match(/^url\("?([^")]+)"?\)\s*(\d+)\s+(\d+)/);
   if (canvas && m) {
     const height = cursorSizes.get(m[1]);
@@ -218,7 +395,7 @@ function applyCursor() {
   }
 }
 function watchCursor() {
-  const canvas = screenEl.querySelector('canvas');
+  const canvas = vncCanvas();
   if (!canvas) return;
   new MutationObserver(() => {
     const cur = canvas.style.cursor;

@@ -186,7 +186,7 @@ The allowlist direction matters: a new route added to `server.js` is gated
 unless someone deliberately opens it. The reverse — a denylist — is how the
 original bug happened.
 
-Three WebSockets exist, and all are authenticated in the same `upgrade` handler,
+Four WebSockets exist, and all are authenticated in the same `upgrade` handler,
 before the handshake completes: `/ws`, the chat, which can start a `claude`; and
 `/ws/term`, the mux's terminal panes, which is a pseudo-terminal running `cc` —
 a shell, in plain terms, for whoever holds one. Any other path under `/ws` is
@@ -210,8 +210,11 @@ reach loopback as this account could already do anything a shell can, so that ad
 reach to the browser's sessions, not to the box. It is also why **prompt injection
 now reaches the browser's signed-in sessions**: a Claude that reads a hostile page
 while driving it acts with every login that profile holds. Keep accounts you would
-not hand to an agent out of that profile. `auth-test.js` asserts the unauthenticated
-upgrade is a 401; `browser-test.js` covers the bridge, the resize, what the address
+not hand to an agent out of that profile. Its picture travels on a fourth socket,
+`/ws/browser-video` — the same screen as H.264, encoded by ffmpeg reading that X
+display with that cookie — gated in the same handler; nothing a page sends on it is
+read. `auth-test.js` asserts both unauthenticated
+upgrades are a 401; `browser-test.js` covers the bridge, the resize, what the address
 box will open, and that only noVNC's own two directories of `node_modules` are
 served.
 

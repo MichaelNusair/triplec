@@ -52,6 +52,7 @@ import { createAdmin } from './admin.js';
 import { PASTE_LIMIT, RUN_LIMIT, runInTerminal, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
 import { ensureSlot, slotOf } from './slots.js';
 import { browserStatus, novncFile, openInBrowser, resizeBrowser, serveBrowser } from './browser.js';
+import { serveVideo, videoAvailable } from './browser-video.js';
 import {
   AUTH_MODE,
   assertAuthConfig,
@@ -119,7 +120,7 @@ function routeFeature(pathname) {
     || pathname.startsWith('/api/speak') || pathname.startsWith('/api/realtime')) return 'voice';
   if (pathname.startsWith('/api/push/')) return 'push';
   // Before the mux's /vendor/: noVNC is the browser's, and on without the mux.
-  if (pathname === '/browser' || pathname === '/browser.html' || pathname === '/ws/browser'
+  if (pathname === '/browser' || pathname === '/browser.html' || pathname === '/ws/browser' || pathname === '/ws/browser-video'
     || pathname.startsWith('/api/browser/') || pathname.startsWith('/vendor/novnc/')) return 'browser';
   if (pathname === '/mux' || pathname === '/mux.html' || pathname === '/term' || pathname === '/term.html'
     || pathname.startsWith('/vendor/') || pathname === '/api/slots' || pathname.startsWith('/api/slots/')
@@ -549,7 +550,8 @@ const server = http.createServer(async (req, res) => {
       return;
     }
     if (pathname === '/api/browser/status' && req.method === 'GET') {
-      json(res, 200, await browserStatus());
+      // `video`: whether the picture can come as H.264 (browser-video.js) rather than VNC.
+      json(res, 200, { ...(await browserStatus()), video: await videoAvailable() });
       return;
     }
     if ((pathname === '/api/browser/size' || pathname === '/api/browser/open') && req.method === 'POST') {
@@ -1461,12 +1463,16 @@ const termWss = new WebSocketServer({ noServer: true });
 // compression: the frames are already compressed images, and deflating them again is
 // CPU spent for nothing.
 const browserWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 * 1024 });
+// Its picture, as H.264 (browser-video.js): the same gate again, and nothing the page
+// sends on it is read — it is a one-way stream.
+const videoWss = new WebSocketServer({ noServer: true, perMessageDeflate: false, maxPayload: 1024 });
 
 server.on('upgrade', async (req, socket, head) => {
   const parsed = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const { searchParams } = parsed;
   const { pathname } = routedPath(parsed.pathname);
-  if ((pathname !== '/ws' && pathname !== '/ws/term' && pathname !== '/ws/browser') || featureOff(pathname)) {
+  if ((pathname !== '/ws' && pathname !== '/ws/term' && pathname !== '/ws/browser' && pathname !== '/ws/browser-video')
+    || featureOff(pathname)) {
     socket.destroy();
     return;
   }
@@ -1482,6 +1488,15 @@ server.on('upgrade', async (req, socket, head) => {
     // yet to send a close frame over.
     socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n');
     socket.destroy();
+    return;
+  }
+
+  if (pathname === '/ws/browser-video') {
+    videoWss.handleUpgrade(req, socket, head, (ws) => {
+      ws.isAlive = true;
+      ws.on('pong', () => { ws.isAlive = true; });
+      serveVideo(ws);
+    });
     return;
   }
 
@@ -1754,7 +1769,7 @@ appPing.unref?.();
 const heartbeat = setInterval(() => {
   // A dead terminal socket matters more than a dead chat one: its relay holds a tmux
   // client attached, and an attached client is what sizes the window.
-  for (const ws of [...wss.clients, ...termWss.clients, ...browserWss.clients]) {
+  for (const ws of [...wss.clients, ...termWss.clients, ...browserWss.clients, ...videoWss.clients]) {
     if (ws.isAlive === false) {
       ws.terminate();
       continue;

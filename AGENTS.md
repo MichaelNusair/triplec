@@ -206,7 +206,7 @@ npm run test:status    # 42/42; which conversation a device is told about, and f
 npm run test:broker    # 51/51; one process per conversation, and what counts as a turn
 npm run test:mux       # 58/58; slots against real git, the mux, the chat embedded in it
 npm run test:term      # 67/67; terminal panes: exact tmux targets, the pty relay, /ws/term
-npm run test:browser   # 54/54; the Browser pane: the socket bridge, resizing, the address box, noVNC's files
+npm run test:browser   # 69/69; the Browser pane: the socket bridge, resizing, the address box, noVNC's files
 npm run test:landing   # 53/53; the marketing page's analytics, which fails silently
 cd infra && npx cdk synth --quiet
 ```
@@ -378,6 +378,11 @@ chat-service/            The chat backend + PWA client. The security boundary.
                          with xrandr and DevTools; serves noVNC's core/ and
                          vendor/ only. DevTools on 127.0.0.1:9222, for a Claude
                          here to drive the same tabs. Tested by browser-test.js.
+  browser-video.js       The Browser pane's picture as H.264: ffmpeg x11grab →
+                         x264 (zerolatency) → one frame per message on
+                         /ws/browser-video → WebCodecs in the page, which then asks
+                         VNC for one pixel and keeps it only for input, the pointer
+                         and the clipboard. 30 fps scrolling where VNC managed ~8.
   term-relay.py          The pty itself, because Node has none without a native
                          module: pty.fork, a select loop, framed stdin for
                          keystrokes and window sizes. Hang-up is a tmux detach.

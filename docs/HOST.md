@@ -112,7 +112,11 @@ Chrome (installed from Google's package if the VM has no Chrome or Chromium; amd
 only) on a virtual screen, and the mux's **Browser** link shows it in a pane —
 tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. The
 screen is resized to whoever is looking, so a phone gets a phone-shaped browser, and
-`browser.scale` sets how many screen pixels Chrome draws per CSS pixel: 1 (the
+The picture is streamed as H.264
+video (ffmpeg on the VM, WebCodecs in the page), so scrolling a full page runs at 30
+frames a second at a few megabits; a browser without WebCodecs falls back to VNC's
+own picture, and `?vnc` on the page's address forces that. `browser.scale` sets how
+many screen pixels Chrome draws per CSS pixel: 1 (the
 default) scrolls smoothly, 2 is sharp on a high-DPI display but scrolls at about a
 third of the rate, because every frame carries four times the pixels. There is no bar around it: Ctrl/⌘+V carries the device's clipboard across, a
 copy in the browser lands on the device's clipboard, ⌘ on a Mac is sent as Ctrl, and

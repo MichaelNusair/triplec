@@ -25,6 +25,7 @@
  * anything already running as this account on the box, which is already a shell.
  */
 import { execFile } from 'child_process';
+import { EventEmitter } from 'events';
 import { createConnection } from 'net';
 import { readFile, stat } from 'fs/promises';
 import { dirname, join, normalize, sep } from 'path';
@@ -39,7 +40,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // Where triplec-browser.service keeps its socket and X cookie, and how to reach it.
 // Overridable for browser-test.js, which runs without an X server or a Chrome.
 export const BROWSER_DIR = process.env.TRIPLEC_BROWSER_DIR || '/run/triplec-browser';
-const DISPLAY = process.env.TRIPLEC_BROWSER_DISPLAY || ':91';
+export const DISPLAY = process.env.TRIPLEC_BROWSER_DISPLAY || ':91';
 export const DEBUG_PORT = Number(process.env.TRIPLEC_BROWSER_DEBUG_PORT) || 9222;
 const XRANDR = process.env.TRIPLEC_XRANDR || 'xrandr';
 const socketPath = () => join(BROWSER_DIR, 'vnc.sock');
@@ -155,7 +156,11 @@ export function screenSizeFor(width, height) {
   return { width: w - (w % 2), height: h - (h % 2) };
 }
 
-function xEnv() {
+// 'resize', with the new size, whenever this module changes the screen's size: the
+// video stream (browser-video.js) restarts its encoder at it.
+export const screenEvents = new EventEmitter();
+
+export function xEnv() {
   return { ...process.env, DISPLAY, XAUTHORITY: join(BROWSER_DIR, 'Xauthority') };
 }
 
@@ -186,13 +191,26 @@ async function output() {
  * with, so each size is added as a mode first; adding one that exists already fails,
  * harmlessly.
  */
+/** The screen's size now, from xrandr, or null when the X server is not answering. */
+export async function currentScreenSize() {
+  const query = await xrandr([]);
+  const m = query.out.match(/current (\d+) x (\d+)/);
+  return m ? { width: Number(m[1]), height: Number(m[2]) } : null;
+}
+
 async function resizeScreen({ width, height }) {
+  // The page asks again whenever it comes back into view. Asking for the size the
+  // screen already is changes nothing, so it does nothing — and does not restart the
+  // video encoder, which a resize does.
+  const now = await currentScreenSize();
+  if (now && now.width === width && now.height === height) return;
   const mode = `${width}x${height}`;
   const name = await output();
   await xrandr(['--newmode', mode, '0', String(width), '0', '0', '0', String(height), '0', '0', '0']);
   await xrandr(['--addmode', name, mode]);
   const set = await xrandr(['--output', name, '--mode', mode]);
   if (!set.ok) throw Object.assign(new Error(`could not resize the screen: ${set.err}`), { status: 502 });
+  screenEvents.emit('resize', { width, height });
 }
 
 /**

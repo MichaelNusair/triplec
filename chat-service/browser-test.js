@@ -14,6 +14,10 @@
  *   4. noVNC's files: the two directories it needs, and not a byte else of
  *      node_modules.
  *   5. The mux: the Browser link opens one pane, never two, and a reload keeps it.
+ *   6. The video stream (browser-video.js), against a fake ffmpeg that writes a
+ *      known H.264 stream: split into frames at the delimiters, starting at a
+ *      keyframe, restarted at the new size on a resize, capped at three viewers, and
+ *      the encoder gone when the page is.
  *
  * The login gate on all of it is auth-test.js's: every route is in its `guarded`
  * list, and /ws/browser is refused at the handshake there.
@@ -102,6 +106,24 @@ process.env.TRIPLEC_BROWSER_DEBUG_PORT = String(devtoolsHttp.address().port);
 process.env.TRIPLEC_BROWSER_SCALE = '2';
 process.env.TRIPLEC_XRANDR = fakeXrandr;
 const browser = await import('./browser.js');
+
+// A fake ffmpeg: answers -version, records each run, then writes four access units —
+// a keyframe (with its SPS) and two others, each after a delimiter — and stays up,
+// the way an encoder does, until it is killed.
+const ffmpegLog = join(root, 'ffmpeg.log');
+const fakeFfmpeg = join(root, 'ffmpeg');
+await writeFile(fakeFfmpeg, `#!/bin/sh
+[ "$2" = "-version" ] && exit 0
+echo "$$ $*" >> "${ffmpegLog}"
+printf '\\000\\000\\000\\001\\011\\360\\000\\000\\000\\001\\147\\102\\000\\000\\000\\001\\145\\210'
+printf '\\000\\000\\000\\001\\011\\360\\000\\000\\000\\001\\101\\232'
+printf '\\000\\000\\000\\001\\011\\360\\000\\000\\000\\001\\101\\233'
+printf '\\000\\000\\000\\001\\011\\360'
+exec sleep 60
+`);
+await chmod(fakeFfmpeg, 0o755);
+process.env.TRIPLEC_FFMPEG = fakeFfmpeg;
+const video = await import('./browser-video.js');
 
 // A fake Xvnc: says the RFB greeting, then echoes everything back reversed, so a
 // test can tell what came from where.
@@ -216,8 +238,20 @@ console.log('sizing');
     lines.some((l) => l.endsWith('|--newmode 2000x1400 0 2000 0 0 0 1400 0 0 0'))
       && lines.some((l) => l.endsWith('|--addmode VNC-0 2000x1400'))
       && lines.at(-1).endsWith('|--output VNC-0 --mode 2000x1400'), lines.join(' / '));
-  check("…on the output the server names, asked once rather than assumed",
-    lines.filter((l) => l.endsWith('|')).length === 1, lines.join(' / '));
+  check("…on the output the server names, asked rather than assumed",
+    lines.filter((l) => l.endsWith('|')).length <= 2, lines.join(' / '));
+
+  // The fake screen says it is 2400x1500 already: asking for that again is nothing to
+  // do, and above all not a resize event, which would restart the video encoder.
+  await writeFile(xrandrLog, '');
+  const callsBefore = devtoolsCalls.length;
+  let events = 0;
+  browser.screenEvents.once('resize', () => { events += 1; });
+  await browser.resizeBrowser(1200, 750);
+  const again = (await readFile(xrandrLog, 'utf8')).trim().split('\n');
+  check('asking for the size the screen already is changes nothing, and announces nothing',
+    events === 0 && !again.some((l) => /--output|--newmode/.test(l)), again.join(' / '));
+  devtoolsCalls.length = callsBefore;
   const bounds = devtoolsCalls.filter((c) => c.method === 'Browser.setWindowBounds');
   check("every Chrome window is set to fill it, in Chrome's own 2× pixels — once per window, not once per tab",
     bounds.length === 2 && bounds[0].params.bounds.windowState === 'normal'
@@ -340,6 +374,83 @@ console.log('the mux');
   const aws = await boot({ layout: 2 }, { browserOn: 'aws' });
   check('…nor does the AWS deployment, which has the route but no browser service',
     aws.doc.querySelector('#mux-browser').hidden);
+}
+
+console.log('the video stream');
+{
+  const AUD = [0, 0, 0, 1, 9, 0xf0];
+  const unit = (...nal) => Buffer.from([...AUD, 0, 0, 1, ...nal]);
+  const stream = Buffer.concat([unit(0x67, 0x42), unit(0x65, 0x88), unit(0x41, 0x9a), Buffer.from(AUD)]);
+  const split = video.accessUnitSplitter();
+  const got = [];
+  // A byte at a time: start codes and delimiters split across chunks must still be found.
+  for (const b of stream) got.push(...split(Buffer.from([b])));
+  check('a stream is cut into frames at each delimiter, even fed a byte at a time',
+    got.length === 3 && got.every((u) => u[4] === 9 || u[3] === 9), got.map((u) => u.toString('hex')).join(' / '));
+  check('a frame with an IDR slice is a keyframe, and one without is not',
+    video.isKeyframe(unit(0x65, 0x88)) && !video.isKeyframe(unit(0x41, 0x9a)) && !video.isKeyframe(unit(0x67, 0x42)));
+  check('a 1080p screen is level 4.1', video.codecFor(1920, 1080)?.codec === 'avc1.42E029');
+  check("the owner's 2326x1274 is level 5.0", video.codecFor(2326, 1274)?.codec === 'avc1.42E032', video.codecFor(2326, 1274)?.codec);
+  check('past level 5.1 there is no video, and the page keeps VNC', video.codecFor(5120, 3200) === null);
+  const args = video.ffmpegArgs({ width: 1000, height: 700, display: ':55' });
+  const after = (flag) => args[args.indexOf(flag) + 1];
+  check('ffmpeg grabs exactly the screen, from its display, without drawing the pointer (noVNC does)',
+    after('-video_size') === '1000x700' && after('-i') === ':55' && after('-draw_mouse') === '0' && after('-f') === 'x11grab');
+  check('…and writes H.264 for latency: no B-frames, a delimiter per frame, headers per keyframe',
+    after('-tune') === 'zerolatency' && after('-profile:v') === 'baseline' && /aud=1/.test(after('-x264-params'))
+      && /repeat-headers=1/.test(after('-x264-params')) && args.at(-1) === 'pipe:1');
+  check('the box says it can stream video when ffmpeg runs', (await video.videoAvailable()) === true);
+
+  const vhttp = createHttpServer();
+  const vwss = new WebSocketServer({ server: vhttp });
+  vwss.on('connection', (ws) => video.serveVideo(ws));
+  vhttp.listen(0, '127.0.0.1');
+  await once(vhttp, 'listening');
+  const vurl = `ws://127.0.0.1:${vhttp.address().port}/`;
+  const open = () => {
+    const ws = new WebSocket(vurl);
+    const text = [];
+    const bin = [];
+    ws.on('message', (d, isBinary) => (isBinary ? bin : text).push(isBinary ? Buffer.from(d) : JSON.parse(d)));
+    const closed = new Promise((r) => ws.on('close', (code, reason) => r({ code, reason: String(reason) })));
+    return { ws, text, bin, closed, opened: once(ws, 'open') };
+  };
+  await writeFile(ffmpegLog, '');
+  const v = open();
+  await v.opened;
+  for (let i = 0; i < 50 && v.bin.length < 3; i++) await sleep(20);
+  check('a viewer is told the size and codec first', v.text[0]?.type === 'size' && v.text[0].width === 2400
+    && v.text[0].height === 1500 && /^avc1\.42E0/.test(v.text[0].codec), JSON.stringify(v.text[0]));
+  check('…then gets one message per frame, starting at the keyframe',
+    v.bin.length === 3 && video.isKeyframe(v.bin[0]) && !video.isKeyframe(v.bin[1]), `${v.bin.length} frames`);
+  const runs = () => readFile(ffmpegLog, 'utf8').then((t) => t.trim().split('\n').filter(Boolean));
+  const first = (await runs())[0] || '';
+  check('the encoder captures the screen at its current size', / -video_size 2400x1500 /.test(first), first);
+
+  browser.screenEvents.emit('resize', { width: 1000, height: 700 });
+  for (let i = 0; i < 50 && v.text.length < 2; i++) await sleep(20);
+  const all = await runs();
+  const firstPid = Number(first.split(' ')[0]);
+  let oldAlive = true;
+  try { process.kill(firstPid, 0); } catch { oldAlive = false; }
+  check('a resize restarts the encoder at the new size, announced first',
+    v.text[1]?.width === 1000 && all.length === 2 && / -video_size 1000x700 /.test(all[1]) && !oldAlive,
+    `${JSON.stringify(v.text[1])} / ${all.join(' | ')} / old alive: ${oldAlive}`);
+
+  const more = [open(), open()];
+  await Promise.all(more.map((m) => m.opened));
+  const fourth = open();
+  const refused = await Promise.race([fourth.closed, sleep(2000).then(() => null)]);
+  check(`past ${video.MAX_VIEWERS} viewers the next is refused with 4429, so it keeps VNC`, refused?.code === 4429, JSON.stringify(refused));
+
+  const lastPid = Number((await runs()).at(-1).split(' ')[0]);
+  for (const c of [v, ...more]) c.ws.close();
+  for (let i = 0; i < 50 && video.videoViewers() > 0; i++) await sleep(20);
+  await sleep(100);
+  let alive = true;
+  try { process.kill(lastPid, 0); } catch { alive = false; }
+  check('a page that leaves takes its encoder with it', video.videoViewers() === 0 && !alive, `viewers ${video.videoViewers()}, alive ${alive}`);
+  vhttp.close();
 }
 
 devtoolsHttp.close();

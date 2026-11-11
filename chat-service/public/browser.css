@@ -9,6 +9,14 @@ body.br-page {
 /* noVNC puts its own scaled canvas in here, centred. */
 .br-screen { position: absolute; inset: 0; overflow: hidden; background: #000; }
 
+/* Video mode: the H.264 picture underneath, laid exactly under noVNC's canvas
+   (placeVideo), and noVNC's box over it, transparent — still taking the mouse and
+   showing the pointer, drawing nothing. */
+#br-video { position: absolute; z-index: 0; display: none; }
+.br-video #br-video { display: block; }
+.br-video .br-screen > div { position: relative; z-index: 1; background: transparent !important; }
+.br-video .br-screen > div canvas { opacity: 0; }
+
 /* Only while it is not live: connecting, reconnecting. */
 .br-status {
   position: fixed; top: 8px; right: 8px; padding: 3px 9px; border-radius: 8px;

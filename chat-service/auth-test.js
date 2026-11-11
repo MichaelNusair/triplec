@@ -307,6 +307,9 @@ console.log('\nWebSocket upgrade requires a session:');
   // so refused at the same handshake, before anything connects to x11vnc.
   const screen = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/browser`);
   check('unauthenticated /ws/browser → rejected with 401', screen.includes('401'), `got ${screen}`);
+  // Its picture, as video: the screen of a browser signed in to things.
+  const video = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/browser-video`);
+  check('unauthenticated /ws/browser-video → rejected with 401', video.includes('401'), `got ${video}`);
   // And anything else under /ws is not a socket at all.
   const other = await wsOutcome(`ws://127.0.0.1:${PORT}/ws/anything`);
   check('an unknown socket path is dropped', !other.includes('opened'), `got ${other}`);
