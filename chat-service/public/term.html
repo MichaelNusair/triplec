@@ -25,9 +25,31 @@
   <a class="term-back" href="/chat/" aria-label="Back to the chats">‹</a>
   <span id="term-title" class="term-title">Terminal</span>
   <span id="term-status" class="term-status">connecting…</span>
+  <button type="button" id="term-font-btn" class="term-font-btn" aria-label="Font and size" title="Font and size">Aa</button>
 </header>
 
 <div id="term" class="term-host"></div>
+
+<!-- The font: this browser's choice, for every terminal it shows. See term.js. -->
+<div id="term-font" class="term-font hidden" role="dialog" aria-label="Terminal font">
+  <label class="term-font-row">Font
+    <select id="term-font-family"></select>
+  </label>
+  <input id="term-font-custom" class="hidden" type="text" spellcheck="false" autocomplete="off"
+         placeholder="An installed font's name, then Enter" aria-label="Font name">
+  <div class="term-font-row">Size
+    <span class="term-font-steps">
+      <button type="button" data-size="-1" aria-label="Smaller">−</button>
+      <output id="term-font-size">13px</output>
+      <button type="button" data-size="1" aria-label="Larger">+</button>
+    </span>
+  </div>
+  <p id="term-font-sample" class="term-font-sample">0O 1lI {}[] =&gt; ~/src ✓ ❯</p>
+  <div class="term-font-actions">
+    <button type="button" id="term-font-reset">Default</button>
+    <button type="button" id="term-font-done">Done</button>
+  </div>
+</div>
 
 <div id="term-ended" class="term-ended hidden" role="status">
   <p id="term-ended-text">This terminal's session has ended.</p>

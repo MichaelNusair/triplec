@@ -36,6 +36,41 @@ body.term-page {
    round inside the cells it already had, and the frame around it stays put. */
 .term-host .xterm .xterm-rows > div.bidi span { display: inline; }
 
+/* The font menu: over the top right of the screen, out of the way of the prompt. */
+.term-font-btn {
+  flex: 0 0 auto; padding: 2px 8px; border-radius: 6px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text);
+  font: inherit; font-size: 13px; font-family: Georgia, serif;
+}
+.term-font {
+  position: absolute; z-index: 20; right: 10px; top: 10px;
+  width: min(300px, calc(100vw - 20px)); padding: 12px 14px; border-radius: 12px;
+  background: var(--bg-raised); border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45); font-size: 13px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+html:not(.embed) .term-font { top: calc(max(8px, env(safe-area-inset-top)) + 44px); }
+.term-font.hidden, .term-font .hidden { display: none; }
+.term-font-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.term-font select, .term-font input {
+  min-width: 0; padding: 6px 8px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit;
+}
+.term-font select { flex: 1; max-width: 200px; }
+.term-font input { font-size: 16px; }
+.term-font-steps { display: flex; align-items: center; gap: 8px; }
+.term-font-steps output { min-width: 40px; text-align: center; font-variant-numeric: tabular-nums; }
+.term-font button {
+  min-width: 34px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--bg-input); color: var(--text); font: inherit;
+}
+.term-font-sample {
+  margin: 0; padding: 8px 10px; border-radius: 8px; background: #141413; color: #f5f4ef;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0;
+}
+.term-font-actions { display: flex; justify-content: space-between; }
+
 .term-ended {
   position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%);
   max-width: 340px; padding: 16px 18px; border-radius: 12px;

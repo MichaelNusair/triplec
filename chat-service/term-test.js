@@ -694,6 +694,93 @@ console.log('terminal page, on a phone');
   w.close();
 }
 
+console.log('terminal page, its font');
+{
+  const html = readFileSync(join(here, 'public', 'term.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'term.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/term?embed=1&project=demo&slot=3' });
+  const w = dom.window;
+  const parent = { postMessage() {} };
+  Object.defineProperty(w, 'parent', { get: () => parent });
+  // A choice this browser made before: the page starts in it.
+  w.localStorage.setItem('triplec.termFont', JSON.stringify({ family: 'JetBrains Mono', size: 15 }));
+  let made = null;
+  let fits = 0;
+  w.Terminal = function Terminal(options) {
+    made = this;
+    Object.assign(this, {
+      options: { ...options }, cols: 80, rows: 30,
+      loadAddon() {}, open() {}, focus() {}, reset() {}, write() {},
+      onData() {}, onBinary() {}, onBell() {}, onResize() {}, onRender() {},
+      registerLinkProvider() {}, attachCustomKeyEventHandler() {}, hasSelection: () => false,
+      parser: { registerOscHandler() {} },
+    });
+  };
+  w.FitAddon = { FitAddon: function FitAddon() { this.fit = () => { fits++; }; } };
+  w.ResizeObserver = function ResizeObserver() { this.observe = () => {}; };
+  w.matchMedia = () => ({ matches: false, addEventListener() {} });
+  w.WebSocket = function FakeSocket() { this.readyState = 1; this.addEventListener = () => {}; this.send = () => {}; };
+  w.WebSocket.OPEN = 1;
+  w.fetch = () => Promise.resolve({ status: 204 });
+  const errors = [];
+  w.addEventListener('error', (e) => errors.push(e.message));
+  w.eval(js);
+  const $ = (sel) => w.document.querySelector(sel);
+  const saved = () => JSON.parse(w.localStorage.getItem('triplec.termFont') || 'null');
+
+  check('the page boots without an error', errors.length === 0, errors.join('; '));
+  check('it starts in the font this browser chose, the default stack behind it',
+    /^"JetBrains Mono", ui-monospace/.test(made.options.fontFamily) && made.options.fontSize === 15, JSON.stringify(made.options));
+
+  const menu = $('#term-font');
+  check('the font menu starts closed', menu.classList.contains('hidden'));
+  w.dispatchEvent(new w.MessageEvent('message', { data: { type: 'font' }, origin: 'https://claude.example.com', source: parent }));
+  check("the mux pane's Aa opens it", !menu.classList.contains('hidden'));
+  w.dispatchEvent(new w.MessageEvent('message', { data: { type: 'font' }, origin: 'https://evil.example', source: parent }));
+  check('…and a message from another origin does nothing', !menu.classList.contains('hidden'));
+  const family = $('#term-font-family');
+  check('it shows the font in use', family.value === 'JetBrains Mono' && $('#term-font-size').textContent === '15px');
+
+  const before = fits;
+  menu.querySelector('[data-size="1"]').click();
+  check('+ makes it a size larger, saved, and the screen refitted',
+    made.options.fontSize === 16 && saved()?.size === 16 && fits > before, JSON.stringify(saved()));
+  for (let i = 0; i < 40; i++) menu.querySelector('[data-size="1"]').click();
+  check('…up to a limit', made.options.fontSize === 28);
+
+  family.value = '';
+  family.dispatchEvent(new w.Event('change'));
+  check('choosing the default keeps the size and drops the family',
+    made.options.fontFamily.startsWith('ui-monospace') && saved()?.family === '' && saved()?.size === 28, JSON.stringify(saved()));
+
+  family.value = '<other>';
+  family.dispatchEvent(new w.Event('change'));
+  const custom = $('#term-font-custom');
+  check('another font asks for its name', !custom.classList.contains('hidden'));
+  custom.value = 'Iosevka"; } body { x';
+  custom.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter' }));
+  check('a typed name is used, with nothing that could break out of the quotes',
+    saved()?.family === 'Iosevka  body  x' && made.options.fontFamily.startsWith('"Iosevka  body  x", ui-monospace'),
+    JSON.stringify([saved(), made.options.fontFamily]));
+  check('…and the menu then shows it chosen', family.value === 'Iosevka  body  x' && custom.classList.contains('hidden'));
+
+  // Another pane of this browser changed it: this one follows.
+  w.localStorage.setItem('triplec.termFont', JSON.stringify({ family: 'Menlo', size: 11 }));
+  w.dispatchEvent(new w.StorageEvent('storage', { key: 'triplec.termFont' }));
+  check('a change made in another pane is taken up here', /^"Menlo"/.test(made.options.fontFamily) && made.options.fontSize === 11);
+
+  $('#term-font-reset').click();
+  check('Default puts it back and forgets the choice',
+    made.options.fontFamily.startsWith('ui-monospace') && made.options.fontSize === 13 && saved() === null);
+  menu.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  check('Escape closes it', menu.classList.contains('hidden'));
+
+  w.localStorage.setItem('triplec.termFont', '{not json');
+  w.dispatchEvent(new w.StorageEvent('storage', { key: 'triplec.termFont' }));
+  check('a spoilt saved value is the default, not an error', made.options.fontSize === 13 && errors.length === 0);
+  w.close();
+}
+
 console.log('terminal panes in the mux');
 {
   const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');

@@ -805,6 +805,7 @@
         <button type="button" class="mux-pane-btn" data-act="new" title="New chat in this slot">+</button>
         <button type="button" class="mux-pane-btn" data-act="attach" title="Attach a file — an image, a PDF — to what you type here">📎</button>
         <button type="button" class="mux-pane-btn" data-act="run" title="Run your own command line in this slot's terminal — an environment variable, claude --resume <id>">❯…</button>
+        <button type="button" class="mux-pane-btn" data-act="font" title="The terminal's font and size, in this browser">Aa</button>
         <button type="button" class="mux-pane-btn" data-act="phone" title="Copy a link that opens this on the phone">⇱</button>
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
       </header>
@@ -841,6 +842,15 @@
       if (pane.project) runCommand(pane);
     });
     el.querySelector('[data-act="listen"]').addEventListener('click', () => listen(pane));
+    // Aa: the terminal in the pane opens its own font menu, where the choice is kept.
+    el.querySelector('[data-act="font"]').addEventListener('click', () => {
+      if (!pane.frame || pane.kind === 'chat') return;
+      try {
+        pane.frame.contentWindow.postMessage({ type: 'font' }, location.origin);
+      } catch {
+        /* the frame is gone */
+      }
+    });
     // 📎: picked here, where the click is, and handed to the terminal in the pane,
     // which uploads each file and pastes its path — see pasteFiles in term.js.
     el.querySelector('[data-act="attach"]').addEventListener('click', () => {
@@ -978,6 +988,7 @@
     $('[data-act="listen"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     $('[data-act="run"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     $('[data-act="attach"]', el).hidden = !pane.cwd || pane.kind === 'chat';
+    $('[data-act="font"]', el).hidden = !pane.cwd || pane.kind === 'chat';
     // The browser has no slot to switch, start in or run a command in: it keeps the
     // link for another device and the close.
     if (isBrowser(pane)) {

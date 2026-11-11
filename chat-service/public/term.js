@@ -43,10 +43,33 @@
   };
 
   // --- the emulator ---------------------------------------------------------
+  // The font is each viewer's own choice, kept in this browser (see the font menu
+  // below); until one is made it is the system's monospace at the size for a mouse
+  // or a finger.
+  const FONT_KEY = 'triplec.termFont';
+  const FONT_STACK = 'ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace';
+  const SIZE_DEFAULT = COARSE ? 12 : 13;
+  const SIZE_MIN = 8;
+  const SIZE_MAX = 28;
+  const fontName = (v) => (typeof v === 'string' ? v.replace(/["\\;{}<>]/g, '').trim().slice(0, 80) : '');
+  const fontSize = (v) => (Number.isFinite(v) ? Math.min(SIZE_MAX, Math.max(SIZE_MIN, Math.round(v))) : null);
+  function readFont() {
+    try {
+      const v = JSON.parse(window.localStorage.getItem(FONT_KEY) || 'null') || {};
+      return { family: fontName(v.family), size: fontSize(v.size) };
+    } catch {
+      return { family: '', size: null };
+    }
+  }
+  // The chosen font first, and the default stack behind it for any glyph it lacks.
+  const stackOf = (f) => (f.family ? `"${f.family}", ${FONT_STACK}` : FONT_STACK);
+  const sizeOf = (f) => f.size || SIZE_DEFAULT;
+  let font = readFont();
+
   const term = new window.Terminal({
     cursorBlink: true,
-    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace',
-    fontSize: COARSE ? 12 : 13,
+    fontFamily: stackOf(font),
+    fontSize: sizeOf(font),
     // tmux draws on the alternate screen, so the history is tmux's and scrolling is
     // asked of it — see onWheel. A scrollback here would only ever be empty.
     scrollback: 0,
@@ -70,6 +93,147 @@
     fit.fit();
   } catch {
     /* not laid out yet; the observer below fits it when it is */
+  }
+
+  /*
+   * The font menu: a family and a size, for this browser. Saved in localStorage, so
+   * every terminal this browser has open — each mux pane is a page of its own —
+   * hears of a change through the storage event and redraws in it too. On its own
+   * the page opens the menu from the bar's Aa; in a mux pane, from the pane's.
+   */
+  const FONTS = [
+    'SF Mono', 'Menlo', 'Monaco', 'Consolas', 'Cascadia Code', 'Cascadia Mono',
+    'JetBrains Mono', 'Fira Code', 'Fira Mono', 'Source Code Pro', 'IBM Plex Mono',
+    'Roboto Mono', 'Hack', 'Ubuntu Mono', 'DejaVu Sans Mono', 'Liberation Mono',
+    'Noto Sans Mono', 'Courier New',
+  ];
+  const OTHER = '<other>'; // never a name: fontName strips the brackets
+  function refit() {
+    try {
+      fit.fit();
+    } catch {
+      /* hidden; refitted when shown */
+    }
+  }
+  function applyFont(next) {
+    font = next;
+    if (term.options) {
+      term.options.fontFamily = stackOf(font);
+      term.options.fontSize = sizeOf(font);
+    }
+    // The cells change size, so the columns and rows that fit do too. A web font
+    // the browser is still fetching measures as its fallback until it arrives.
+    refit();
+    document.fonts?.load?.(`${sizeOf(font)}px ${stackOf(font)}`).then(refit, () => {});
+    paintFontMenu();
+  }
+  function saveFont(next) {
+    const clean = { family: fontName(next.family), size: fontSize(next.size) };
+    try {
+      if (!clean.family && !clean.size) window.localStorage.removeItem(FONT_KEY);
+      else window.localStorage.setItem(FONT_KEY, JSON.stringify(clean));
+    } catch {
+      /* storage refused (a private window): it holds for this page only */
+    }
+    applyFont(clean);
+  }
+  window.addEventListener('storage', (e) => {
+    if (e.key === FONT_KEY || e.key === null) applyFont(readFont());
+  });
+
+  // Which of FONTS this machine has: text measured in a font that is missing falls
+  // back to the generic family, so it comes out the same width as the generic alone.
+  let probe = null;
+  function installed(name) {
+    try {
+      const ctx = (probe ||= document.createElement('canvas')).getContext('2d');
+      if (!ctx) return true;
+      const sample = 'mmmmmmmmmmlli10OO@#WwiI';
+      return ['monospace', 'serif', 'sans-serif'].some((base) => {
+        ctx.font = `72px ${base}`;
+        const plain = ctx.measureText(sample).width;
+        ctx.font = `72px "${name}", ${base}`;
+        return ctx.measureText(sample).width !== plain;
+      });
+    } catch {
+      return true;
+    }
+  }
+  let haveFonts = null;
+  const menu = $('#term-font');
+  const family = $('#term-font-family');
+  const custom = $('#term-font-custom');
+  function fillFamilies() {
+    haveFonts ||= FONTS.filter(installed);
+    const names = [...haveFonts];
+    if (font.family && !names.includes(font.family)) names.unshift(font.family);
+    family.replaceChildren(
+      new Option('System default', ''),
+      ...names.map((n) => new Option(n, n)),
+      new Option('Another font…', OTHER),
+    );
+  }
+  function paintFontMenu() {
+    if (!menu || menu.classList.contains('hidden')) return;
+    // Mid-way through typing another font's name, the menu stays on that.
+    if (family.value !== OTHER || custom.classList.contains('hidden')) {
+      if (![...family.options].some((o) => o.value === font.family)) fillFamilies();
+      family.value = font.family;
+      custom.classList.add('hidden');
+    }
+    $('#term-font-size').textContent = `${sizeOf(font)}px`;
+    $('#term-font-sample').style.fontFamily = stackOf(font);
+    $('#term-font-sample').style.fontSize = `${sizeOf(font)}px`;
+  }
+  function openFontMenu() {
+    if (!menu) return;
+    fillFamilies();
+    menu.classList.remove('hidden');
+    paintFontMenu();
+    family.focus();
+  }
+  function closeFontMenu() {
+    if (!menu || menu.classList.contains('hidden')) return;
+    menu.classList.add('hidden');
+    if (!COARSE) term.focus();
+  }
+  const toggleFontMenu = () => (menu?.classList.contains('hidden') ? openFontMenu() : closeFontMenu());
+  if (menu) {
+    family.addEventListener('change', () => {
+      if (family.value === OTHER) {
+        custom.classList.remove('hidden');
+        custom.value = '';
+        custom.focus();
+        return;
+      }
+      saveFont({ ...font, family: family.value });
+    });
+    custom.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const name = fontName(custom.value);
+      if (!name) return;
+      custom.classList.add('hidden');
+      saveFont({ ...font, family: name });
+    });
+    for (const b of menu.querySelectorAll('[data-size]')) {
+      b.addEventListener('click', () => saveFont({ ...font, size: sizeOf(font) + Number(b.dataset.size) }));
+    }
+    $('#term-font-reset').addEventListener('click', () => {
+      custom.classList.add('hidden');
+      saveFont({ family: '', size: null });
+    });
+    $('#term-font-done').addEventListener('click', closeFontMenu);
+    menu.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        closeFontMenu();
+      }
+    });
+    document.addEventListener('pointerdown', (e) => {
+      if (!menu.contains(e.target) && !e.target.closest?.('#term-font-btn')) closeFontMenu();
+    });
+    $('#term-font-btn')?.addEventListener('click', toggleFontMenu);
   }
 
   // Right-to-left text: tag each drawn row that holds any, and term.css lets the
@@ -729,6 +893,8 @@
     window.addEventListener('message', (e) => {
       if (e.origin !== location.origin || e.source !== window.parent) return;
       if (e.data?.type === 'focus') term.focus();
+      // The pane's Aa: this page's font menu.
+      if (e.data?.type === 'font') toggleFontMenu();
       // The pane's 📎: the mux picks the files — a picker opened from a message has no
       // click behind it, so a browser would refuse it here — and hands them over.
       if (e.data?.type === 'attach' && Array.isArray(e.data.files)) pasteFiles(filesIn(e.data.files));
@@ -754,5 +920,5 @@
   }
 
   // For term-test.js and mux-test.js, which drive this in jsdom.
-  window.__termForTest = { state, term, connect, send, choiceAt, linksIn, selectionText, screenText, pasteFiles };
+  window.__termForTest = { state, term, connect, send, choiceAt, linksIn, selectionText, screenText, pasteFiles, font: () => font };
 })();
