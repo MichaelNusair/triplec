@@ -13,8 +13,9 @@
  *   - the socket: bytes between the page's noVNC and x11vnc, untouched both ways.
  *   - the size: the page says how big it is, and the screen becomes that size
  *     (RandR on Xvfb) with Chrome's windows filling it (DevTools' setWindowBounds),
- *     so a phone gets a phone-shaped browser and a wide pane a wide one, at 1:1.
- *   - opening a URL from the page's own address box, also over DevTools.
+ *     so a phone gets a phone-shaped browser and a wide pane a wide one, drawn at
+ *     SCALE (2×) so a high-DPI display shows it sharp.
+ *   - opening a URL in a new tab (POST /api/browser/open), also over DevTools.
  *   - noVNC itself, served from its npm package: two directories of ES modules and
  *     nothing else of node_modules.
  *
@@ -45,8 +46,15 @@ const socketPath = () => join(BROWSER_DIR, 'vnc.sock');
 
 // Chrome will not make a window narrower than 500 pixels, and Xvfb was started at
 // most this big (BROWSER_MAX in the unit). Outside those, the page scales.
-export const MIN_WIDTH = 500;
-export const MAX_SIZE = { width: 2560, height: 1600 };
+// Chrome draws at SCALE device pixels per CSS pixel (--force-device-scale-factor, set
+// by the launcher from the same default), and the screen is sized in device pixels:
+// a pane W CSS pixels wide gets a screen W × SCALE wide, which noVNC shows at W — so a
+// 2× display gets every pixel it has, instead of a 1× picture blown up and blurred.
+// The 500 is Chrome's narrowest window, in its own scaled pixels.
+export const SCALE = [1, 2, 3].includes(Number(process.env.TRIPLEC_BROWSER_SCALE))
+  ? Number(process.env.TRIPLEC_BROWSER_SCALE) : 2;
+export const MIN_WIDTH = 500 * SCALE;
+export const MAX_SIZE = { width: 5120, height: 3200 };
 
 /**
  * Whether the browser is up: its socket exists and something is listening on it.
@@ -117,11 +125,12 @@ export function serveBrowser(ws) {
 }
 
 /**
- * The screen size for a viewer of `width` × `height` CSS pixels.
+ * The screen size, in device pixels, for a viewer of `width` × `height` CSS pixels.
  *
- * At 1:1 where possible. Narrower than Chrome's minimum, the screen keeps the
- * viewer's shape at 500 wide and the page scales it down to fit, which on a phone
- * is a little under 0.8 — readable, and the alternative is half a browser.
+ * SCALE device pixels per CSS pixel where possible. Narrower than Chrome's minimum,
+ * the screen keeps the viewer's shape at that minimum and the page scales it down to
+ * fit, which on a phone is a little under 0.8 — readable, and the alternative is
+ * half a browser.
  */
 export function screenSizeFor(width, height) {
   let w = Math.round(Number(width));
@@ -129,13 +138,15 @@ export function screenSizeFor(width, height) {
   if (!Number.isFinite(w) || !Number.isFinite(h) || w < 100 || h < 100) {
     throw Object.assign(new Error('width and height must be numbers of pixels, at least 100'), { status: 400 });
   }
+  w *= SCALE;
+  h *= SCALE;
   if (w < MIN_WIDTH) {
     h = Math.round((h * MIN_WIDTH) / w);
     w = MIN_WIDTH;
   }
   const shrink = Math.min(1, MAX_SIZE.width / w, MAX_SIZE.height / h);
   w = Math.max(MIN_WIDTH, Math.floor(w * shrink));
-  h = Math.max(200, Math.floor(h * shrink));
+  h = Math.max(200 * SCALE, Math.floor(h * shrink));
   // Even sizes: some encoders and every video path prefer them, and nobody can see
   // the pixel.
   return { width: w - (w % 2), height: h - (h % 2) };
@@ -242,8 +253,10 @@ export async function resizeBrowser(width, height) {
     for (const windowId of await windowIds(call)) {
       // Out of maximised or fullscreen first; a window in either ignores bounds.
       await call('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } }).catch(() => {});
+      // In Chrome's own pixels, which are SCALE screen pixels each.
       await call('Browser.setWindowBounds', {
-        windowId, bounds: { left: 0, top: 0, width: size.width, height: size.height },
+        windowId,
+        bounds: { left: 0, top: 0, width: Math.floor(size.width / SCALE), height: Math.floor(size.height / SCALE) },
       }).catch(() => {});
     }
   }).catch(() => {});

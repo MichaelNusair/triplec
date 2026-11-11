@@ -183,13 +183,16 @@ console.log('the socket');
 console.log('sizing');
 {
   const size = browser.screenSizeFor;
-  check('a laptop pane is drawn 1:1', JSON.stringify(size(1200, 760)) === JSON.stringify({ width: 1200, height: 760 }));
+  check('Chrome draws at 2× unless told otherwise', browser.SCALE === 2);
+  check('a laptop pane gets two screen pixels per CSS pixel, so a 2× display is sharp',
+    JSON.stringify(size(1200, 760)) === JSON.stringify({ width: 2400, height: 1520 }), JSON.stringify(size(1200, 760)));
   const phone = size(390, 760);
-  check("a phone keeps its shape at Chrome's narrowest window", phone.width === 500 && phone.height === 974, JSON.stringify(phone));
+  check("a phone keeps its shape at Chrome's narrowest window (500, at 2×)",
+    phone.width === 1000 && phone.height === 1948, JSON.stringify(phone));
   const huge = size(5000, 3000);
   check('nothing bigger than the screen Xvfb was started with',
     huge.width <= browser.MAX_SIZE.width && huge.height <= browser.MAX_SIZE.height, JSON.stringify(huge));
-  check('odd sizes are evened', size(901, 701).width === 900 && size(901, 701).height === 700);
+  check('odd sizes are evened', size(333, 700).height % 2 === 0 && size(333, 700).width === 1000, JSON.stringify(size(333, 700)));
   let threw = null;
   try {
     size('wide', 10);
@@ -202,15 +205,15 @@ console.log('sizing');
   devtoolsCalls.length = 0;
   const result = await browser.resizeBrowser(1000, 700);
   const lines = (await readFile(xrandrLog, 'utf8')).trim().split('\n');
-  check('a resize answers the size it chose', result.width === 1000 && result.height === 700, JSON.stringify(result));
+  check('a resize answers the size it chose, in screen pixels', result.width === 2000 && result.height === 1400, JSON.stringify(result));
   check('xrandr is run against the browser\'s own display and X cookie',
     lines.every((l) => l.startsWith(`:55|${join(root, 'Xauthority')}|`)), lines[0]);
   check('…making a mode of exactly that size and switching the screen to it',
-    lines.some((l) => l.endsWith('|--newmode 1000x700 0 1000 0 0 0 700 0 0 0'))
-      && lines.some((l) => l.endsWith('|--addmode screen 1000x700'))
-      && lines.at(-1).endsWith('|--output screen --mode 1000x700'), lines.join(' / '));
+    lines.some((l) => l.endsWith('|--newmode 2000x1400 0 2000 0 0 0 1400 0 0 0'))
+      && lines.some((l) => l.endsWith('|--addmode screen 2000x1400'))
+      && lines.at(-1).endsWith('|--output screen --mode 2000x1400'), lines.join(' / '));
   const bounds = devtoolsCalls.filter((c) => c.method === 'Browser.setWindowBounds');
-  check('every Chrome window is set to fill it — once per window, not once per tab',
+  check("every Chrome window is set to fill it, in Chrome's own 2× pixels — once per window, not once per tab",
     bounds.length === 2 && bounds[0].params.bounds.windowState === 'normal'
       && JSON.stringify(bounds[1].params) === JSON.stringify({ windowId: 7, bounds: { left: 0, top: 0, width: 1000, height: 700 } }),
     JSON.stringify(bounds));

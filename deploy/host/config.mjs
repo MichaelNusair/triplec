@@ -72,6 +72,9 @@ export const DEFAULTS = {
   secrets: { backend: 'file' },
   maxLiveSessions: 8,
   pwa: { name: '' },
+  // The Browser pane (features.browser): the Google account whose Chrome profile it
+  // opens in. Empty is Chrome's own choice, the profile used last.
+  browser: { account: '' },
   // Whether this install updates itself, and how. See docs/UPDATES.md.
   autoUpdate: AUTO_UPDATE_DEFAULTS,
 };
@@ -283,6 +286,10 @@ export function validate(raw) {
   }
   if (!isInt(c.maxLiveSessions, 1, 64)) err('maxLiveSessions', 'must be an integer from 1 to 64');
   errors.push(...validateAutoUpdate(raw.autoUpdate));
+  if (!isObject(c.browser) || typeof c.browser.account !== 'string'
+    || (c.browser.account !== '' && !/^[^\s@,]+@[^\s@,]+$/.test(c.browser.account))) {
+    err('browser.account', 'must be an email address, or empty');
+  }
   if (!isObject(c.pwa) || typeof c.pwa.name !== 'string' || !/^[A-Za-z0-9 ._-]{0,40}$/.test(c.pwa.name)) {
     err('pwa.name', 'must be at most 40 letters, digits, spaces, dots, underscores or hyphens');
   }

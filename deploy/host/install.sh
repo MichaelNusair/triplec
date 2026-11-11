@@ -169,6 +169,7 @@ F_EDITOR="$(cfg features.editor)"
 F_VOICE="$(cfg features.voice)"
 F_MUX="$(cfg features.mux)"
 F_BROWSER="$(cfg features.browser)"
+BROWSER_ACCOUNT="$(cfg browser.account)"
 AUTO_UPDATE="$(cfg autoUpdate.mode)"
 # Absolute, because the update timer's unit names it and runs from /.
 CONFIG="$(cd "$(dirname "$CONFIG")" && pwd)/$(basename "$CONFIG")"
@@ -793,6 +794,9 @@ Environment=BROWSER_RUN_DIR=/run/triplec-browser
 Environment=BROWSER_PROFILE=$STATE_DIR/browser/profile
 Environment=BROWSER_DISPLAY=:91
 Environment=BROWSER_DEBUG_PORT=9222
+Environment=BROWSER_SCALE=2
+Environment=BROWSER_MAX=5120x3200
+Environment=BROWSER_ACCOUNT=$BROWSER_ACCOUNT
 RuntimeDirectory=triplec-browser
 RuntimeDirectoryMode=0700
 WorkingDirectory=$HOME_DIR

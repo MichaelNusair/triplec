@@ -111,12 +111,17 @@ can be installed.
 Chrome (installed from Google's package if the VM has no Chrome or Chromium; amd64
 only) on a virtual screen, and the mux's **Browser** link shows it in a pane —
 tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. The
-screen is resized to whoever is looking, so a phone gets a phone-shaped browser.
-Paste carries the device's clipboard across, a copy in the browser comes back, and
-⌘ on a Mac is sent as Ctrl. Chrome's DevTools listen on `127.0.0.1:9222`, so a
+screen is resized to whoever is looking, so a phone gets a phone-shaped browser, and
+Chrome draws at 2× (`BROWSER_SCALE` in the unit), so a high-DPI display shows it
+sharp. There is no bar around it: Ctrl/⌘+V carries the device's clipboard across, a
+copy in the browser lands on the device's clipboard, ⌘ on a Mac is sent as Ctrl, and
+a phone gets one floating ⌨ button for its keyboard. Chrome's DevTools listen on `127.0.0.1:9222`, so a
 Claude on the VM can drive the same tabs you are watching — for example
 `claude mcp add chrome -- npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222`,
-or Playwright's MCP server with `--cdp-endpoint http://127.0.0.1:9222`. Restarting
+or Playwright's MCP server with `--cdp-endpoint http://127.0.0.1:9222`. Set
+`browser.account` to a Google account's address and Chrome always opens in the profile
+signed in as it — sign in once, in the pane, and every start after that (a restart, a
+reboot, closing the last window) comes back to it. Restarting
 the unit closes every open tab; the profile, and so every login, survives it.
 
 **Logs.** Both units log to the journal (`journalctl -u triplec-chat`). Audit

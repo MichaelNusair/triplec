@@ -153,6 +153,13 @@ test('maxLiveSessions 1..64', () => {
   rejects(withChange('maxLiveSessions', 65), 'maxLiveSessions');
   ok(withChange('maxLiveSessions', 64));
 });
+test('browser.account is an email address or empty', () => {
+  ok(withChange('browser.account', 'someone@example.com'));
+  ok(withChange('browser.account', ''));
+  rejects(withChange('browser.account', 'not an address'), 'browser.account');
+  rejects(withChange('browser.account', 'a@b.c\nEnvironment=X=1'), 'browser.account');
+  rejects(withChange('browser.account', 7), 'browser.account');
+});
 test('pwa.name shape', () => {
   ok(withChange('pwa.name', 'Dev Box 2'));
   rejects(withChange('pwa.name', '<script>'), 'pwa.name');

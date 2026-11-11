@@ -16,24 +16,16 @@
 
 <!--
   A real Google Chrome, running on this box (triplec-browser.service), drawn here by
-  noVNC over /ws/browser. Everything in it — tabs, the omnibox, what is signed in —
-  is the box's, so the same browser is here from the laptop, the phone, and for any
-  Claude on the box that drives it over DevTools. Inside a mux pane (`?embed=1`) the
-  back link goes. See browser.js, and chat-service/browser.js for the server half.
+  noVNC over /ws/browser — the whole page, with nothing of this app's around it:
+  Chrome's own tabs and address bar are the controls. Paste is Ctrl/⌘+V, and what is
+  copied in it lands on this device's clipboard. A phone gets one floating button, for
+  its keyboard. The same browser is here from the laptop, the phone, and for any
+  Claude on the box that drives it over DevTools. See browser.js, and
+  chat-service/browser.js for the server half.
 -->
-<header class="br-bar">
-  <a class="br-back" href="/chat/mux" aria-label="Back to the mux">‹</a>
-  <form id="br-go" class="br-go" autocomplete="off">
-    <input id="br-url" type="text" inputmode="url" enterkeyhint="go" autocapitalize="off"
-           autocorrect="off" spellcheck="false" placeholder="Open in a new tab…" aria-label="Address to open in a new tab">
-  </form>
-  <button type="button" id="br-keys" class="br-btn" title="Type into the browser (on-screen keyboard)" aria-label="Keyboard">⌨</button>
-  <button type="button" id="br-paste" class="br-btn" title="Paste this device's clipboard into the browser">Paste</button>
-  <button type="button" id="br-copy" class="br-btn" title="Copy what was last copied in the browser to this device" disabled>Copy</button>
-  <span id="br-status" class="br-status" role="status">connecting…</span>
-</header>
-
 <div id="br-screen" class="br-screen"></div>
+<span id="br-status" class="br-status hidden" role="status"></span>
+<button type="button" id="br-keys" class="br-keys" aria-label="Keyboard" aria-pressed="false">⌨</button>
 
 <div id="br-down" class="br-down hidden" role="alert">
   <p id="br-down-text">The browser isn't running on this box.</p>

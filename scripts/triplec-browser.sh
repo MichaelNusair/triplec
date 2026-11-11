@@ -25,17 +25,26 @@
 #   BROWSER_PROFILE     Chrome's user data directory, kept across restarts
 #   BROWSER_DISPLAY     the X display number, e.g. :91
 #   BROWSER_DEBUG_PORT  DevTools on loopback, e.g. 9222
-#   BROWSER_MAX         the largest the screen can become, e.g. 2560x1600
-#   BROWSER_SIZE        the size it starts at, e.g. 1440x900
+#   BROWSER_MAX         the largest the screen can become, e.g. 5120x3200
+#   BROWSER_SIZE        the size it starts at, e.g. 2880x1800
+#   BROWSER_SCALE       Chrome's device scale factor, a whole number (default 2).
+#                       The screen has this many pixels per CSS pixel of the page
+#                       showing it, so a high-DPI display gets every pixel it can
+#                       show and Chrome's UI stays the size it is on that display.
+#                       Must match TRIPLEC_BROWSER_SCALE for the chat service.
 #   BROWSER_CHROME      the binary (default: google-chrome, then chromium)
+#   BROWSER_ACCOUNT     open the profile signed in as this Google account
+#                       (config: browser.account); empty is Chrome's last-used one
 set -u
 
 RUN="${BROWSER_RUN_DIR:?BROWSER_RUN_DIR is not set}"
 PROFILE="${BROWSER_PROFILE:?BROWSER_PROFILE is not set}"
 DISP="${BROWSER_DISPLAY:-:91}"
 PORT="${BROWSER_DEBUG_PORT:-9222}"
-MAX="${BROWSER_MAX:-2560x1600}"
-SIZE="${BROWSER_SIZE:-1440x900}"
+MAX="${BROWSER_MAX:-5120x3200}"
+SIZE="${BROWSER_SIZE:-2880x1800}"
+SCALE="${BROWSER_SCALE:-2}"
+case "$SCALE" in 1|2|3) ;; *) echo "triplec-browser: BROWSER_SCALE must be 1, 2 or 3" >&2; exit 1 ;; esac
 CHROME="${BROWSER_CHROME:-}"
 if [ -z "$CHROME" ]; then
   for c in google-chrome google-chrome-stable chromium chromium-browser; do
@@ -90,16 +99,48 @@ x11vnc -display "$DISP" -auth "$XAUTHORITY" -unixsock "$RUN/vnc.sock" -rfbport 0
   -o "$RUN/x11vnc.log" &
 pids+=($!)
 
+# The profile directory signed in as BROWSER_ACCOUNT, from Chrome's own record of its
+# profiles. Asked on every start, because the profile is made the first time someone
+# signs in, after this has already run — and a name like "Profile 1" is Chrome's to
+# choose, so the account is what the config names, never the directory.
+profile_for_account() {
+  [ -n "${BROWSER_ACCOUNT:-}" ] && [ -f "$PROFILE/Local State" ] || return 0
+  python3 -I -c '
+import json, sys
+try:
+    cache = json.load(open(sys.argv[1]))["profile"]["info_cache"]
+except Exception:
+    sys.exit(0)
+want = sys.argv[2].strip().lower()
+for directory, info in cache.items():
+    if str(info.get("user_name", "")).strip().lower() == want:
+        print(directory)
+        break
+' "$PROFILE/Local State" "$BROWSER_ACCOUNT" 2>/dev/null
+}
+
 chrome_loop() {
   while :; do
-    cur="$(xrandr 2>/dev/null | sed -n 's/.* current \([0-9]*\) x \([0-9]*\),.*/\1,\2/p')"
+    cur="$(xrandr 2>/dev/null | sed -n 's/.* current \([0-9]*\) x \([0-9]*\),.*/\1 \2/p')"
+    read -r cw ch <<<"${cur:-$w $h}"
+    # --window-size is in Chrome's own (scaled) pixels; the screen is in real ones.
+    win="$((cw / SCALE)),$((ch / SCALE))"
+    dir="$(profile_for_account)"
+    profile_args=()
+    if [ -n "$dir" ]; then
+      profile_args=(--profile-directory="$dir")
+    elif [ -n "${BROWSER_ACCOUNT:-}" ]; then
+      echo "triplec-browser: no profile is signed in as $BROWSER_ACCOUNT yet; sign in once in the Browser pane" >&2
+    fi
     # --remote-debugging-port binds 127.0.0.1 only; a dedicated --user-data-dir is
     # also what Chrome requires before it will accept a debugger at all.
     "$CHROME" --user-data-dir="$PROFILE" \
       --remote-debugging-port="$PORT" \
       --no-first-run --no-default-browser-check \
       --password-store=basic \
-      --window-position=0,0 --window-size="${cur:-${w},${h}}" \
+      "${profile_args[@]}" \
+      --force-device-scale-factor="$SCALE" \
+      --window-position=0,0 --window-size="$win" \
       --disable-features=TranslateUI \
       >>"$RUN/chrome.log" 2>&1
     sleep 1

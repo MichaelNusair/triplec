@@ -7,11 +7,13 @@
  * resize, and when the page comes back into view, so a laptop and a phone sharing
  * it each get their own shape when they look.
  *
- * Keys go straight to the screen from a physical keyboard (noVNC's own handling),
- * with two changes for people on a Mac: ⌘ is sent as Ctrl, because the browser on
- * the box is Linux Chrome and ⌘C there is nothing; and a paste first carries this
- * device's clipboard across, so ⌘V / Ctrl+V pastes what you copied here. A phone
- * types through a hidden text field (⌨), which is what its keyboard opens over.
+ * There is no bar: Chrome's own tabs and address bar are the controls. Keys go
+ * straight to the screen from a physical keyboard (noVNC's own handling), with two
+ * changes: on a Mac ⌘ is sent as Ctrl, because the browser on the box is Linux Chrome
+ * and ⌘C there is nothing; and a paste first carries this device's clipboard across,
+ * so ⌘V / Ctrl+V pastes what you copied here. What is copied there comes back onto
+ * this device's clipboard. A phone types through a hidden text field, opened by the
+ * one floating button (⌨), which is what its keyboard needs to open over.
  */
 import RFB from '/chat/vendor/novnc/core/rfb.js';
 import keysyms from '/chat/vendor/novnc/core/input/keysymdef.js';
@@ -36,9 +38,11 @@ let retryTimer = null;
 let retries = 0;
 let remoteClip = '';
 
+// Said only while something is wrong or pending; a live browser has nothing over it.
 function status(text, trouble = false) {
   statusEl.textContent = text;
   statusEl.classList.toggle('trouble', trouble);
+  statusEl.classList.toggle('hidden', text === 'live');
 }
 
 let toastTimer = null;
@@ -158,11 +162,10 @@ function connect() {
   });
   rfb.addEventListener('clipboard', (e) => {
     remoteClip = e.detail?.text || '';
-    $('#br-copy').disabled = !remoteClip;
-    // Straight onto this device's clipboard where the browser allows it without a
-    // tap (Chrome, focused); otherwise the Copy button is there.
-    if (remoteClip && document.hasFocus() && navigator.clipboard?.writeText) {
-      navigator.clipboard.writeText(remoteClip).catch(() => {});
+    // Straight onto this device's clipboard, which a focused page may do in Chrome.
+    // Where it may not (Safari wants a tap), the next tap on the page does it.
+    if (remoteClip && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(remoteClip).then(() => { remoteClip = ''; }).catch(() => {});
     }
   });
 }
@@ -280,36 +283,14 @@ $('#br-keys').addEventListener('click', () => {
 typeEl.addEventListener('focus', () => $('#br-keys').setAttribute('aria-pressed', 'true'));
 typeEl.addEventListener('blur', () => $('#br-keys').setAttribute('aria-pressed', 'false'));
 
-// --- the bar ----------------------------------------------------------------
-$('#br-paste').addEventListener('click', pasteIntoRemote);
-$('#br-copy').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(remoteClip);
+// A copy the clipboard refused without a gesture goes across on the next one.
+document.addEventListener('pointerdown', () => {
+  if (!remoteClip || !navigator.clipboard?.writeText) return;
+  navigator.clipboard.writeText(remoteClip).then(() => {
+    remoteClip = '';
     toast('Copied');
-  } catch {
-    window.prompt('Copy this:', remoteClip);
-  }
-});
-$('#br-go').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const input = $('#br-url');
-  const url = input.value.trim();
-  if (!url) return;
-  try {
-    const res = await api('/api/browser/open', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url }),
-    });
-    const body = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(body.error || `server returned ${res.status}`);
-    input.value = '';
-    input.blur();
-    rfb?.focus();
-  } catch (err) {
-    if (err.message !== 'signed out') toast(`Couldn't open that: ${err.message}`, 5000);
-  }
-});
+  }).catch(() => {});
+}, true);
 
 // The mux focuses its pane's frame by message; that means the screen, for keys.
 window.addEventListener('message', (e) => {
