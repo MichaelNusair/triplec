@@ -120,12 +120,12 @@ body.mux {
   background: var(--bg-raised); border-bottom: 1px solid var(--border); font-size: 12.5px;
 }
 .mux-pane-head .mux-dot { margin-top: 0; }
-.mux-pane-label { color: var(--text-dim); white-space: nowrap; }
+.mux-pane-label { min-width: 0; flex: 0 1 auto; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mux-pane-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mux-pane-sub { color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
+.mux-pane-sub { flex: 0 0 auto; color: var(--text-dim); font-size: 11.5px; white-space: nowrap; }
 .mux-pane-btn {
-  width: 24px; height: 24px; border: 0; border-radius: 5px; background: none;
-  color: var(--text-dim); font: inherit; cursor: pointer;
+  flex: 0 0 auto; width: 24px; height: 24px; border: 0; border-radius: 5px; background: none;
+  color: var(--text-dim); font: inherit; cursor: pointer; white-space: nowrap;
 }
 .mux-pane-btn:hover { background: var(--bg-input); color: var(--text); }
 .mux-pane-note {
@@ -153,7 +153,7 @@ body.mux {
 
 /* The header's switch between a slot's chat and its terminal: a word, not an icon,
    because it is the one control here whose meaning is not obvious from a glyph. */
-.mux-pane-btn.mux-pane-kind { width: auto; padding: 0 8px; font-size: 11.5px; }
+.mux-pane-btn.mux-pane-kind, .mux-pane-btn[data-act="shell"] { width: auto; padding: 0 8px; font-size: 11.5px; }
 .mux-pane[data-kind="terminal"] .mux-pane-body { background: #141413; }
 
 /* --- a phone ---
@@ -221,7 +221,7 @@ body.mux {
   .mux-pane-head { gap: 4px; padding: 4px 4px 4px 10px; font-size: 13px; }
   .mux-pane-sub { display: none; }
   .mux-pane-btn { width: 40px; height: 36px; font-size: 15px; }
-  .mux-pane-btn.mux-pane-kind { padding: 0 10px; font-size: 12.5px; }
+  .mux-pane-btn.mux-pane-kind, .mux-pane-btn[data-act="shell"] { width: auto; padding: 0 10px; font-size: 12.5px; }
 
   .mux-layouts button, .mux-kinds button { padding: 9px 0; font-size: 13px; }
   .mux-filter { padding: 10px; font-size: 16px; } /* 16px, or iOS zooms in on focus */

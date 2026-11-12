@@ -37,6 +37,7 @@
     status: 'connecting',   // connecting | attached | reconnecting | ended | error
     session: null,
     existed: null,
+    dir: '',                // the slot's directory, as the server reported it
     ended: false,           // the session's own end, not a dropped socket
     fatal: false,           // refused by the server; retrying would only repeat it
     delay: 500,
@@ -302,6 +303,7 @@
       if (msg.type === 'attached') {
         state.session = msg.session;
         state.existed = Boolean(msg.existed);
+        if (typeof msg.dir === 'string' && msg.dir) state.dir = msg.dir;
         state.delay = 500;
         setStatus('attached', msg.existed ? 'rejoined' : 'started');
         // The size the server was told at the start may be stale by now.
@@ -899,6 +901,136 @@
       // click behind it, so a browser would refuse it here — and hands them over.
       if (e.data?.type === 'attach' && Array.isArray(e.data.files)) pasteFiles(filesIn(e.data.files));
     });
+  }
+
+  // --- the bar, on its own ----------------------------------------------------
+  /*
+   * What a mux pane's header offers, for the page a phone (or a bookmark) opens on
+   * its own: this slot's chat, its shell or its Claude, Read aloud, 📎 and ❯…. In a
+   * mux pane the bar is hidden and the pane's header has the same buttons.
+   */
+  if (!EMBED) {
+    const act = (name) => document.querySelector(`.term-acts [data-act="${name}"]`);
+    const kindBtn = act('kind');
+    kindBtn.textContent = SHELL ? 'Claude' : 'Chat';
+    kindBtn.title = SHELL
+      ? 'Show this slot\'s Claude terminal instead — the shell keeps running'
+      : 'Open this slot\'s chat — the terminal keeps running';
+    // A shell has no Claude to listen to or replace; its way back is the kind button.
+    act('shell').hidden = SHELL;
+    act('listen').hidden = SHELL;
+    act('run').hidden = SHELL;
+
+    const termHref = (shell) => {
+      const q = new URLSearchParams({ project, slot: String(slot) });
+      if (shell) q.set('kind', 'shell');
+      return `/chat/term?${q}`;
+    };
+    // Links, not buttons: the other kind is another page, and a phone's long press
+    // on a link is how it opens one in a new tab.
+    act('shell').href = termHref(true);
+    if (SHELL) kindBtn.href = termHref(false);
+    act('attach').addEventListener('click', pickFile);
+
+    // Chat: the slot's newest conversation since its last reset — what the mux's
+    // Chat opens — found when asked, then followed.
+    kindBtn.addEventListener('click', async (e) => {
+      if (SHELL) return;
+      e.preventDefault();
+      try {
+        const [pr, sl] = await Promise.all([
+          fetch('/api/projects', { credentials: 'same-origin' }),
+          fetch(`/api/slots?project=${encodeURIComponent(project)}`, { credentials: 'same-origin' }),
+        ]);
+        if (!pr.ok) throw new Error(`server returned ${pr.status}`);
+        const proj = ((await pr.json()).projects || []).find((p) => p.name === project);
+        if (!proj) throw new Error(`no project called ${project}`);
+        const slots = sl.ok ? (await sl.json()).slots || [] : [];
+        const dir = state.dir || slots.find((s) => s.n === slot)?.cwd || (slot ? '' : proj.path);
+        const since = slots.find((s) => s.cwd === dir)?.resetAt || 0;
+        const latest = (proj.sessions || [])
+          .filter((s) => (s.cwd || proj.path) === dir && (!since || (s.mtime || 0) > since))
+          .sort((a, b) => b.mtime - a.mtime)[0];
+        if (!latest) {
+          toast('No chat has run in this slot yet — start one from the mux.', 3000);
+          return;
+        }
+        const q = new URLSearchParams({ cwd: proj.path, sessionCwd: dir, session: latest.sessionId, project });
+        if (latest.title) q.set('title', latest.title);
+        kindBtn.href = `/chat/?${q}`;
+        window.location.assign(kindBtn.href);
+      } catch (err) {
+        toast(`Couldn't find this slot's chat: ${err.message}`, 3000);
+      }
+    });
+
+    // ❯…: the mux's own prompt, and the line it remembered last.
+    act('run').addEventListener('click', async () => {
+      const RUN_KEY = 'triplec-mux-run';
+      let last = 'claude';
+      try {
+        last = localStorage.getItem(RUN_KEY) || last;
+      } catch {
+        /* storage blocked: start from the default */
+      }
+      const line = window.prompt(
+        `Run in ${place}'s terminal, in place of what runs there now — it is stopped. `
+          + 'NAME=value words first set its environment; quotes work, pipes and $ do not.',
+        last,
+      );
+      if (line === null || !line.trim()) return;
+      try {
+        localStorage.setItem(RUN_KEY, line.trim());
+      } catch {
+        /* not remembered; it still runs */
+      }
+      try {
+        const res = await fetch('/api/term/run', {
+          method: 'POST', credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ project, slot, command: line.trim() }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || `server returned ${res.status}`);
+      } catch (err) {
+        toast(`Couldn't run that: ${err.message}`, 3000);
+        return;
+      }
+      // Attached, the new program just appears; ended, there is nothing to see it in.
+      if (state.ended || state.status !== 'attached') {
+        $('#term-ended').classList.add('hidden');
+        term.reset();
+        connect();
+      }
+    });
+
+    // 🔊: the mux's voice stack, the overlay, in the same mode — loaded on the first
+    // press, so a page that never asks never pays for it.
+    let overlay = null;
+    const loadOverlay = () => overlay || (overlay = new Promise((resolve, reject) => {
+      window.cmoHost = { name: 'mux' };
+      const script = document.createElement('script');
+      script.src = '/chat/mobile-overlay.js';
+      script.onload = resolve;
+      script.onerror = () => { overlay = null; reject(new Error('Read aloud did not load')); };
+      document.body.appendChild(script);
+    }));
+    act('listen').addEventListener('click', async () => {
+      if (!state.dir) {
+        toast('Still connecting — try again in a moment.');
+        return;
+      }
+      try {
+        // Already loaded, this is still inside the tap — which iOS needs for audio.
+        if (typeof window.cmoHost?.open !== 'function') await loadOverlay();
+        if (typeof window.cmoHost?.open !== 'function') throw new Error('Read aloud did not load');
+        window.cmoHost.open({ cwd: state.dir, sessionId: null });
+      } catch (err) {
+        toast(err.message, 3000);
+      }
+    });
+    // Loaded ahead on a phone, where the first press is the one audio is unlocked in.
+    if (COARSE && !SHELL) setTimeout(() => loadOverlay().catch(() => {}), 1500);
   }
 
   // A phone that slept has a dead socket it still believes in. Rejoin on the way back.

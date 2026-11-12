@@ -781,6 +781,108 @@ console.log('terminal page, its font');
   w.close();
 }
 
+console.log('terminal page, on its own: the pane header\'s controls');
+{
+  const html = readFileSync(join(here, 'public', 'term.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'term.js'), 'utf8');
+  const boot = (query) => {
+    const dom = new JSDOM(html, { runScripts: 'outside-only', url: `https://claude.example.com/chat/term?${query}` });
+    const w = dom.window;
+    w.Terminal = function Terminal() {
+      Object.assign(this, {
+        cols: 80, rows: 30, options: {},
+        loadAddon() {}, open() {}, focus() {}, reset() {}, write() {}, paste() {},
+        onData() {}, onBinary() {}, onBell() {}, onResize() {}, onRender() {},
+        registerLinkProvider() {}, attachCustomKeyEventHandler() {}, hasSelection: () => false,
+        parser: { registerOscHandler() {} },
+      });
+    };
+    w.FitAddon = { FitAddon: function FitAddon() { this.fit = () => {}; } };
+    w.ResizeObserver = function ResizeObserver() { this.observe = () => {}; };
+    w.matchMedia = () => ({ matches: false, addEventListener() {} });
+    const sockets = [];
+    w.WebSocket = function FakeSocket(url) {
+      Object.assign(this, { url, readyState: 1, sent: [], listeners: {} });
+      this.addEventListener = (type, f) => { (this.listeners[type] ||= []).push(f); };
+      this.send = (m) => this.sent.push(m);
+      this.fire = (type, event = {}) => (this.listeners[type] || []).forEach((f) => f(event));
+      sockets.push(this);
+    };
+    w.WebSocket.OPEN = 1;
+    const calls = [];
+    const answers = {
+      '/api/projects': { projects: [{ name: 'demo', path: '/w/demo', sessions: [
+        { sessionId: 'OLD', cwd: '/w/demo/.claude/worktrees/slot-3', mtime: 100, title: 'before the reset' },
+        { sessionId: 'NEW', cwd: '/w/demo/.claude/worktrees/slot-3', mtime: 300, title: 'Exam prep' },
+        { sessionId: 'MAIN', mtime: 900 },
+      ] }] },
+      '/api/slots': { slots: [{ n: 3, cwd: '/w/demo/.claude/worktrees/slot-3', resetAt: 200 }] },
+      '/api/term/run': { ok: true, existed: true },
+    };
+    w.fetch = (url, options = {}) => {
+      const u = new URL(url, 'https://claude.example.com');
+      calls.push({ path: u.pathname, options });
+      const body = answers[u.pathname];
+      return Promise.resolve({ ok: Boolean(body), status: body ? 200 : 204, json: async () => body || {} });
+    };
+    const errors = [];
+    w.addEventListener('error', (e) => errors.push(e.message));
+    w.eval(js);
+    sockets[0]?.fire('message', { data: JSON.stringify({ type: 'attached', session: 'claude-demo/slot-3', existed: true, dir: '/w/demo/.claude/worktrees/slot-3' }) });
+    const act = (name) => w.document.querySelector(`.term-acts [data-act="${name}"]`);
+    return { w, act, calls, errors };
+  };
+
+  {
+    const { w, act, calls, errors } = boot('project=demo&slot=3');
+    check('the page on its own boots without an error', errors.length === 0, errors.join('; '));
+    const shown = ['kind', 'shell', 'listen', 'attach', 'run'].filter((n) => act(n) && !act(n).hidden);
+    check('on its own, the bar has the pane header\'s Chat, $ Shell, 🔊, 📎 and ❯…',
+      shown.length === 5 && act('kind').textContent === 'Chat', shown.join(','));
+    const shell = new URL(act('shell').href);
+    check('$ Shell links to this slot\'s shell', shell.pathname === '/chat/term'
+      && shell.searchParams.get('project') === 'demo' && shell.searchParams.get('slot') === '3'
+      && shell.searchParams.get('kind') === 'shell', act('shell').href);
+
+    act('kind').dispatchEvent(new w.MouseEvent('click', { bubbles: true, cancelable: true }));
+    await sleep(20);
+    const chat = new URL(act('kind').href);
+    check('Chat goes to the slot\'s newest conversation since its reset, in the chat',
+      chat.pathname === '/chat/' && chat.searchParams.get('session') === 'NEW'
+        && chat.searchParams.get('cwd') === '/w/demo'
+        && chat.searchParams.get('sessionCwd') === '/w/demo/.claude/worktrees/slot-3', act('kind').href);
+
+    w.prompt = () => 'CLAUDE_X=1 claude --resume NEW';
+    act('run').click();
+    await sleep(20);
+    const run = calls.find((c) => c.path === '/api/term/run');
+    const sent = run && JSON.parse(run.options.body);
+    check('❯… runs the line typed in this slot\'s terminal',
+      sent?.project === 'demo' && sent?.slot === 3 && sent?.command === 'CLAUDE_X=1 claude --resume NEW', run?.options.body);
+
+    let opened = null;
+    w.cmoHost = { name: 'mux', open: (t) => { opened = t; return Promise.resolve(); } };
+    act('listen').click();
+    await sleep(10);
+    check('🔊 opens Read aloud on this slot', opened?.cwd === '/w/demo/.claude/worktrees/slot-3' && opened?.sessionId === null,
+      JSON.stringify(opened));
+    w.close();
+  }
+  {
+    const { act, w } = boot('project=demo&slot=3&kind=shell');
+    const shown = ['kind', 'shell', 'listen', 'attach', 'run'].filter((n) => !act(n).hidden);
+    const back = new URL(act('kind').href);
+    check('a shell\'s bar has Claude to go back and 📎, nothing that needs a Claude',
+      shown.join(',') === 'kind,attach' && act('kind').textContent === 'Claude'
+        && back.pathname === '/chat/term' && !back.searchParams.has('kind'), `${shown.join(',')} ${act('kind').href}`);
+    w.close();
+  }
+  const muxCss = readFileSync(join(here, 'public', 'mux.css'), 'utf8');
+  check('a pane header\'s buttons never wrap or shrink, and $ Shell is as wide as its words',
+    /\.mux-pane-btn \{[^}]*flex: 0 0 auto;[^}]*white-space: nowrap;/.test(muxCss)
+      && /\.mux-pane-btn\[data-act="shell"\] \{ width: auto;/.test(muxCss));
+}
+
 console.log('terminal panes in the mux');
 {
   const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');

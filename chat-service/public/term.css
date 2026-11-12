@@ -17,6 +17,26 @@ body.term-page {
 .term-status { color: var(--text-dim); font-size: 12px; white-space: nowrap; }
 .term-status.trouble { color: var(--error); }
 
+/* A mux pane's header controls. Never wrapped and never squeezed: the title is what
+   gives way, down to its ellipsis, and on a narrow screen the status goes first. */
+.term-acts { display: flex; align-items: center; gap: 2px; flex: 0 0 auto; }
+.term-act {
+  display: inline-flex; align-items: center; justify-content: center; text-decoration: none;
+  flex: 0 0 auto; min-width: 30px; height: 28px; padding: 0 6px; border: 0; border-radius: 6px;
+  background: none; color: var(--text-dim); font: inherit; font-size: 14px; white-space: nowrap; cursor: pointer;
+}
+.term-act:hover { background: var(--bg-input); color: var(--text); }
+.term-act-word { font-size: 12.5px; padding: 0 8px; }
+.term-act[hidden] { display: none; }
+@media (max-width: 560px) { .term-status { display: none; } }
+@media (pointer: coarse) {
+  .term-acts { gap: 0; }
+  .term-act { min-width: 36px; height: 36px; font-size: 15px; }
+  .term-act-word { font-size: 13px; }
+  /* The key row has its own 📎, under the thumb. */
+  .term-act[data-act="attach"] { display: none; }
+}
+
 /* The padding is on the emulator's own element, not the host: this page is
    border-box, so padding on the host is counted as width by the fit addon, and the
    last column hangs off the right edge. The addon subtracts the element's own. */
