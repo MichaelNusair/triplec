@@ -607,6 +607,23 @@ console.log('terminal page, on a phone');
   check('…and pressing one leaves the keyboard alone', fake.focused === 0);
 
   const press = (sel) => w.document.querySelector(sel).dispatchEvent(new w.Event('pointerdown', { bubbles: true, cancelable: true }));
+  // The keyboard put away while the compose line still has the focus: a key must not
+  // bring it back, which on Android any tap does while a text field is focused.
+  const compose = w.document.querySelector('#term-line');
+  compose.focus();
+  press('[data-key="esc"]');
+  check('a key tapped with the keyboard down lets go of a focused text field, so it does not reopen',
+    w.document.activeElement !== compose && inputs().at(-1) === '\x1b');
+  const fullHeight = w.innerHeight;
+  Object.defineProperty(w, 'innerHeight', { value: fullHeight - 300, configurable: true });
+  w.dispatchEvent(new w.Event('resize'));
+  compose.focus();
+  press('[data-key="up"]');
+  check('…but with the keyboard up, the field keeps it, and the keyboard stays',
+    w.document.activeElement === compose && inputs().at(-1) === '\x1b[A');
+  compose.blur();
+  Object.defineProperty(w, 'innerHeight', { value: fullHeight, configurable: true });
+  w.dispatchEvent(new w.Event('resize'));
   press('[data-key="sendnow"]');
   await sleep(100);
   check('^X^S is the two keys, apart', inputs().slice(-2).join('|') === '\x18|\x13', JSON.stringify(inputs().slice(-2)));

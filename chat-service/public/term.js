@@ -828,11 +828,36 @@
     keys.slice(1).forEach((k, i) => setTimeout(() => send({ type: 'input', data: k }), (i + 1) * 40));
   }
 
+  // Whether the phone's keyboard is up: the page is a keyboard's height shorter than
+  // it has been at this width. Both pages say resizes-content, and the mux fits its
+  // body to the visible part, so this holds in a pane's frame as well.
+  const tallest = new Map();
+  const viewHeight = () => window.visualViewport?.height ?? window.innerHeight;
+  const noteHeight = () => {
+    const width = Math.round(window.innerWidth);
+    tallest.set(width, Math.max(tallest.get(width) || 0, viewHeight()));
+  };
+  const keyboardUp = () => {
+    noteHeight();
+    return viewHeight() < tallest.get(Math.round(window.innerWidth)) - 150;
+  };
+  window.addEventListener('resize', noteHeight);
+  window.visualViewport?.addEventListener('resize', noteHeight);
+  noteHeight();
+
   for (const button of document.querySelectorAll('.term-keys [data-key], .term-keys [data-text], .term-keys [data-mod]')) {
     // pointerdown + preventDefault, so tapping a key leaves the focus where it was:
     // the phone's keyboard stays open if it was, and is not opened if it was not.
+    //
+    // Except that a keyboard put away with Back or its own ⌄ leaves the terminal or
+    // the compose line focused, and Android brings the keyboard back on any tap while
+    // a text field has the focus, a key here included, re-laying the whole screen
+    // out under a run of key presses. So with the keyboard down, the field lets go
+    // first: the keyboard opens from a tap on the terminal or the line, never a key.
     button.addEventListener('pointerdown', (e) => {
       e.preventDefault();
+      const field = document.activeElement;
+      if (COARSE && field?.matches?.('input, textarea') && !keyboardUp()) field.blur();
       const { mod } = button.dataset;
       if (mod) return setMod(mod, !mods[mod]);
       const data = button.dataset.key ? KEYS[button.dataset.key] : button.dataset.text;
