@@ -122,6 +122,13 @@ console.log('cc, naming a slot');
   check('a running slot session is rejoined, not restarted',
     /Rejoining/.test(rejoin.out) && !rejoin.log.includes('new-session'), rejoin.out + rejoin.log);
 
+  // A `wall` broadcast is written onto any tty utmp lists as writable, and tmux
+  // lists its panes; the pane's tty is looked up, exactly, before attaching.
+  const ttyAsk = 'display-message -p -t =claude-demo/slot-3: #{pane_tty}\n';
+  const before = (log) => log.includes(ttyAsk) && log.indexOf(ttyAsk) < log.indexOf('attach-session');
+  check("a new session's pane is closed to broadcasts before it is attached", before(fresh.log), fresh.log);
+  check('…and so is one that is rejoined, which may predate this', before(rejoin.log), rejoin.log);
+
   for (const bad of ['demo/../etc', 'demo/.hidden', 'demo/a/b', '.demo/slot-1', 'demo/']) {
     const res = await runCc([bad]);
     check(`refuses ${JSON.stringify(bad)}`, !res.ok && !res.log.includes('new-session'), res.out + res.log);
