@@ -256,7 +256,7 @@ VOLLINK
 #
 # It states the one thing about this machine that no repository can state on its
 # own: several sessions are usually live in the same project directory at once —
-# the editor's tmux session, every chat and panel conversation, a phone — and they
+# the project's tmux session, every panel and chat conversation, a phone — and they
 # share one working tree, one index and one stash stack. A session that does not
 # know that collides quietly, by committing another's half-written file, and the
 # fix is a worktree, which no session reaches for unless it is told to.
@@ -275,10 +275,11 @@ of the machine.
 ## Several Claude sessions run here at once, in the same checkout
 
 A project directory under /workspace/projects usually holds more than one live
-session: the editor's tmux session (`cc <project>`), every conversation in the chat
-and in the editor's panel — one `claude` process each — and whatever a phone has
-open. They hold separate context, they cannot see each other, and they share one
-working tree, one git index and one stash stack. Nothing arbitrates between them.
+session: the tmux session `cc <project>` opens (which is also the terminal TripleC's
+Mux opens on a project's main checkout), every conversation in the editor's panel
+and in the chat — one `claude` process each — and whatever a phone has open. They
+hold separate context, they cannot see each other, and they share one working tree,
+one git index and one stash stack. Nothing arbitrates between them.
 
 The collisions are the quiet kind. `git add -A` sweeps up another session's
 half-written file and puts a commit on the branch that nobody can build; a
@@ -314,13 +315,14 @@ Then remove the worktree — `git worktree remove`, or `ExitWorktree` with `remo
 One left behind holds a branch and a second copy of the tree, and becomes the next
 session's confusion about whose work it is.
 
-## Except a slot: `.claude/worktrees/slot-1` … `slot-8`
+## Except a slot: `.claude/worktrees/slot-1` … `slot-N`
 
-Every project TripleC clones or creates has eight standing worktrees, one per
-pane in TripleC's desktop view (`/chat/mux`), each on a branch of the same name. A
-slot's agent is either a chat or the CLI in a terminal — the tmux session that
-`cc <project>/slot-N` opens. If your working directory is one of them, you are
-already isolated:
+Every project TripleC clones or creates has standing worktrees for the agents in
+TripleC's Mux (`/chat/mux`, the app's main view): `slot-1` to `slot-N`, where N is
+the deployment's `mux.slots` (ten by default), each on a branch of the same name.
+A slot's agent is the Claude Code CLI in a terminal — the tmux session that
+`cc <project>/slot-N` opens — or, less often, a chat. If your working directory is
+one of them, you are already isolated:
 
 - **Do not enter another worktree** and do not give yourself one. Work where you are.
 - **Never remove a slot** — not your own when you finish, and not one you find
@@ -328,9 +330,15 @@ already isolated:
 - **Finish the same way:** commit on the slot's branch, then
   `git push origin HEAD:main` (or whatever the project ships from) and deploy from
   the project's main checkout as its own instructions say. Leave the slot clean —
-  everything committed and pushed — so the next chat in it can be brought up to date.
-  TripleC fast-forwards a clean slot to the default branch when a new chat starts in
-  it, and leaves one with uncommitted or unmerged work exactly as it is.
+  everything committed and pushed — so the next agent in it can be brought up to
+  date. TripleC fast-forwards a clean slot to its base branch when a new agent
+  starts in it, and again when Claude exits there (`/exit` resets the slot), and
+  leaves one with uncommitted or unmerged work exactly as it is.
+
+A directory named `<project>--<name>` is a workspace: another full clone of
+`<project>`, on a branch of its own, with its own slots. The rules above apply to
+it, except that its slots branch from and refresh to the workspace's branch, not the
+default one — so that branch is what the next agent there starts from.
 PROJECTSMD
 chown "$USER_NAME:$USER_NAME" "$DATA_MNT/projects/CLAUDE.md"
 

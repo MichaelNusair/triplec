@@ -55,6 +55,11 @@ Verified against Claude Code 2.1.312: `manual` (which the CLI reports as
 `default`) asks for a shell command that writes, approve runs it, deny blocks it
 with the message the model is shown.
 
+That relay is the chat's. A terminal pane in the Mux — what a new pane opens — is the
+interactive CLI itself, started by `cc` as `claude` in the slot's tmux session with
+no flags, so it takes the developer's own settings and asks for approval in the
+terminal, exactly as it does over SSH.
+
 **Hooks and settings.** The CLI is run unmodified — no `--settings`,
 `--setting-sources`, `--mcp-config` or `--bare` — with the developer's `HOME`, so it
 loads the same user, project and local settings, hooks, skills and MCP servers as
@@ -62,15 +67,15 @@ over SSH. Hooks run under every permission mode, `bypassPermissions` included:
 verified with a project `PreToolUse` hook that exits 2, which blocked a `Write` in
 `bypassPermissions` and surfaced the hook's own message.
 
-**Slots.** A registered project gets `slots.count` worktrees (up to 10) under
-`.claude/worktrees/slot-N`, each on a branch of that name. `slots.postCreate` is a
-shell command run once in a newly created slot — install dependencies, so the
-repository's commit hooks can run there — in the background and one slot at a time
-per project. Opening a slot waits for it; a failure is shown in the mux pane with
-the end of its output, and the slot stays usable. A slot removed from under
-TripleC (a reaper for idle worktrees, a `git worktree remove`) is recreated the next
-time it is opened, from its branch, and its past conversations stay listed
-throughout. No git call TripleC makes passes `--depth`, `--deepen` or
+**Slots.** A registered project gets `slots.count` worktrees (at most `mux.slots`,
+ten by default) under `.claude/worktrees/slot-N`, each on a branch of that name.
+`slots.postCreate` is a shell command run once in a newly created slot — install
+dependencies, so the repository's commit hooks can run there — in the background
+and one slot at a time per project. Opening a slot waits for it; a failure is shown
+in the mux pane with the end of its output, and the slot stays usable. A slot
+removed from under TripleC (a reaper for idle worktrees, a `git worktree remove`) is
+recreated the next time it is opened, from its branch, and its past conversations
+stay listed throughout. No git call TripleC makes passes `--depth`, `--deepen` or
 `--unshallow`: a shallow clone stays shallow.
 
 **Registry.** With `projects` set, those are the only projects. Creating or cloning
@@ -85,9 +90,10 @@ runs; joining a live chat never counts against it, and a new one past it is refu
 with a message saying so. The admin page shows memory per session.
 
 **Connections.** The service binds loopback only, and refuses anything else unless
-`allowPublicBind` is set. It serves the chat under `/chat/` and redirects the bare
-root there itself, so it works whether or not nginx is in front. Cookies are
-`Secure` behind any TLS proxy that says `X-Forwarded-Proto: https` from loopback.
+`allowPublicBind` is set. It serves the app under `/chat/` and redirects the bare
+root itself — to the Mux, `/chat/mux`, or to the chat list with `features.mux` off —
+so it works whether or not nginx is in front. Cookies are `Secure` behind any TLS
+proxy that says `X-Forwarded-Proto: https` from loopback.
 Every chat socket gets an application ping every 25 seconds, which the page
 watches: after 75 seconds of silence it reconnects and reattaches, which replays
 anything it missed — so a turn that is quiet for longer than a proxy's idle
@@ -114,8 +120,8 @@ otherwise Google Chrome from Google's package on amd64, or on arm64, for which G
 publishes no Chrome package, Chrome for Testing's current Stable build under
 `installDir/chrome-for-testing`, refreshed by every install — and the mux's **Browser** link shows it in a pane —
 tabs, address bar, extensions and a profile kept in `stateDir/browser/profile`. The
-screen is resized to whoever is looking, so a phone gets a phone-shaped browser, and
-The picture is streamed as H.264
+screen is resized to whoever is looking, so a phone gets a phone-shaped browser. The
+picture is streamed as H.264
 video (ffmpeg on the VM, WebCodecs in the page), so scrolling a full page runs at 30
 frames a second at a few megabits — or 60, with `browser.fps`, which also shows a
 scroll sooner, for about 1.6 cores instead of one. Both the browser's unit and the
@@ -158,8 +164,8 @@ serves. The same requirements are covered without a VM by
 Two checks need a person, and the script says what is left for one:
 
 - **PWA and push.** Install the app on iOS and on Android over the tailnet, let a
-  chat finish while the app is closed, and confirm the notification; then confirm a
-  laptop session through the VM's proxy.
+  turn in a Mux terminal finish while the app is closed, and confirm the
+  notification; then confirm a laptop session through the VM's proxy.
 - **Permission prompts.** In a chat in `manual` mode, ask for something that
   writes; approve one request and deny another from a phone, and find both in the
   audit log.

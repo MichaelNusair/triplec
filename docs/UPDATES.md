@@ -28,7 +28,7 @@ triplec-update check     # fetch, and say what an update would do right now
 triplec-update status    # the settings, what is installed, and the last run (--json for a program)
 ```
 
-The routes you had before still work. On a host install that is
+The other routes work too. On a host install that is
 `deploy/host/upgrade.sh` from your checkout. On AWS it is `./deploy.sh` from a
 machine with AWS credentials, which is also the only route for a change to the
 stack itself.
@@ -105,8 +105,9 @@ Each step guards against something specific:
    so. Run `./deploy.sh` from a machine with AWS credentials, and updates resume
    from that commit.
 4. **Wait for quiet.** An install restarts the chat service and the editor, which
-   ends any turn in progress. So it waits until it is inside `window` and no
-   conversation has been active for `idleMinutes`.
+   ends a chat's turn in progress and drops every editor page's connection. The
+   Mux's terminals are tmux sessions and keep running. So it waits until it is
+   inside `window` and no conversation has been active for `idleMinutes`.
 5. **Test.** `npm ci` and the full `npm test` run in the updater's own clone. If
    the tests fail, nothing is installed.
 6. **Install.** On AWS this builds the payload on the box

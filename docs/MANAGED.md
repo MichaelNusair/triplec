@@ -18,7 +18,7 @@ on a hostname you choose, with a login only you have.
 | --- | --- | --- |
 | Whose AWS account | Yours | Ours |
 | Who pays AWS | You (~$75/month idle, plus model usage) | Us |
-| Who upgrades it | You, by running `./deploy.sh` | Us |
+| Who upgrades it | You: `triplec-update` on the box, by hand or on a timer, and `./deploy.sh` for stack changes | Us |
 | TLS, DNS, backups | You | Us |
 | Who can reach the box | You | You, and our operators (see below) |
 | Cost to you | $0, forever | $0 today — see below |

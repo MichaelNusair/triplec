@@ -13,11 +13,18 @@ It is not optional, and it is the instruction agents here have most often skippe
 ## What this project is, in one paragraph
 
 A self-hosted web front end for Claude Code, running on one EC2 instance in the
-user's own AWS account. The primary surface is a phone-friendly chat PWA; a full
-VS Code (code-server) instance is available at `/editor/`. The chat is a thin UI
-over the real `claude` CLI: one long-lived process per conversation, driven over
-`--input-format stream-json`, which is what makes it behave like a messaging app
-rather than a series of one-shot commands. Claude runs with
+user's own AWS account, or — in host mode ([docs/HOST.md](docs/HOST.md)) — on a
+Linux VM that already exists. The app opens on the **Mux** (`/chat/mux`), an
+installable PWA: every project down the side with its worktree slots (ten per
+project by default, `mux.slots`; and up to five full clones of a repository as
+workspaces, `mux.workspaces`), and panes beside each other (eight by default,
+`mux.panes`). A pane is usually a terminal running the real Claude Code CLI in that
+slot's tmux session, so the work outlives the page, the deploy and the device; it
+can also be a plain shell, a command line of your own, or the box's own Chrome. On a
+phone it is one pane at a time. A full VS Code (code-server) is at `/editor/`, and
+`/chat/admin` is the operations page. The older chat — a UI over `claude` driven
+through `--input-format stream-json`, one process per conversation — is still
+served at `/chat/` but is deprecated in favour of the Mux. Claude runs with
 `--permission-mode bypassPermissions` by default, so it executes shell commands
 without prompting.
 
@@ -191,27 +198,39 @@ itself is not something you will do on an internet-facing deployment.
 ### Before you finish any change to auth, routing, or the stack
 
 ```bash
-npm run test:auth      # must be 95/95 or better; never fewer checks than before
-npm run test:host      # 84/84; host mode against a fake CLI — providers, relay, registry, trusted-header
-npm run test:client
+npm run test:auth      # must be 122/122 or better; never fewer checks than before
+npm run test:host      # 95/95; host mode against a fake CLI — providers, relay, registry, trusted-header
+npm run test:client    # the chat client booted in jsdom
 npm run test:panes     # several projects at once; what closing a tab must not do
-npm run test:overlay   # 106/106; the editor overlay: chords, drafts, clipboard, speech
+npm run test:read      # 94 checks; Read aloud in the chat
+npm run test:talk      # 110 checks; Talk it over, and that it never reaches Claude
+npm run test:overlay   # 664/664; the editor overlay: chords, drafts, clipboard, speech
 npm run test:polish    # 19/19; the dictation cleanup's bounds, and its failure paths
-npm run test:speak     # 64/64; where a read-aloud message is cut, and every refusal
-npm run test:projects  # 53/53; real git repos, real pushes
-npm run test:admin     # the operations surface, and every refusal it makes
+npm run test:speak     # 198/198; where a read-aloud message is cut, and every refusal
+npm run test:realtime  # 111/111; the spoken conversation, and that it cannot act
+npm run test:transcribe
+npm run test:azure
+npm run test:projects  # 97/97; real git repos, real pushes
+npm run test:manifest  # 173/173; manifests, scopes, and every nginx route to code-server gated
 npm run test:build     # 47/47; which build the app says it is, from a payload
                        # that has no .git, and a tab left open through a deploy
-npm run test:status    # 42/42; which conversation a device is told about, and from where
-npm run test:broker    # 51/51; one process per conversation, and what counts as a turn
-npm run test:mux       # 58/58; slots against real git, the mux, the chat embedded in it
-npm run test:term      # 67/67; terminal panes: exact tmux targets, the pty relay, /ws/term
-npm run test:browser   # 69/69; the Browser pane: the socket bridge, resizing, the address box, noVNC's files
-npm run test:landing   # 53/53; the marketing page's analytics, which fails silently
+npm run test:admin     # the operations surface, and every refusal it makes
+npm run test:status    # 136/136; which conversation a device is told about, and from where
+npm run test:push      # 97/97; RFC 8291 byte for byte, and a fake push service
+npm run test:sw        # 47/47; what tapping a notification opens
+npm run test:turns     # 96/96; when the turn watcher buzzes, and when it must not
+npm run test:broker    # 90/90; one process per conversation, and what counts as a turn
+npm run test:mux       # 148 checks; slots and workspaces against real git, the mux in jsdom
+npm run test:term      # 163 checks; terminal and shell panes: exact tmux targets, the pty relay, /ws/term
+npm run test:browser   # 69 checks; the Browser pane: the socket bridge, resizing, the address box, noVNC's files
+npm run test:landing   # 83 checks; the marketing page's analytics, which fails silently
+npm run test:update    # 71/71; when the on-box updater installs, holds or rolls back
+npm run test:hostconfig  # 100/100; host mode's config schema
+npm run test:boxconfig   # 51/51; settings saved on the box page
 cd infra && npx cdk synth --quiet
 ```
 
-`npm test` runs all of them in that order.
+`npm test` runs all of them in that order, except `cdk synth`.
 
 If you add a route to `server.js`, add it to the `guarded` list in
 `auth-test.js`. A route with no test is a route nobody is checking.
@@ -280,11 +299,13 @@ Two things to know about it:
 ## More than one session is in this checkout
 
 Several Claude sessions run on this box at once, and more than one of them is
-usually in *this* directory: the editor's tmux session (`cc triplec`), every
-conversation in the chat and in the editor's panel — one `claude` process each,
-keyed by cwd and conversation id — and whatever a phone has open. They hold
-separate context, they cannot see each other, and they share one working tree, one
-index and one stash stack. Nothing arbitrates between them.
+usually in *this* directory: the tmux session `cc triplec` opens (which is also the
+Mux's terminal on the main checkout), every conversation in the editor's panel and
+in the chat — one `claude` process each, keyed by cwd and conversation id — and
+whatever a phone has open. They hold separate context, they cannot see each other,
+and they share one working tree, one index and one stash stack. Nothing arbitrates
+between them. (The Mux's slots are the exception: each is a worktree of its own —
+see [The mux and its slots](#the-mux-and-its-slots).)
 
 That is a sharper problem here than in most repositories, because of the finishing
 rule at the top of this file: every session is told to sweep the tree and ship what
@@ -363,17 +384,28 @@ chat-service/            The chat backend + PWA client. The security boundary.
   server.js              HTTP routes, static files, WebSocket upgrade gate.
   session-manager.js     One `claude` process per conversation; transcripts;
                          the project lifecycle (create, clone, remove).
-  slots.js               Eight standing worktrees per project
-                         (.claude/worktrees/slot-N), made on clone/create and on
-                         first use; a new chat fast-forwards a clean one and
-                         leaves one holding work exactly as it is.
+  slots.js               Standing worktrees per project (.claude/worktrees/slot-N,
+                         ten by default, `mux.slots`), made on clone/create and
+                         on first use; starting something new in one
+                         fast-forwards it if it is clean and leaves one holding
+                         work exactly as it is. Claude exiting in a slot's
+                         terminal resets it the same way.
+  workspaces.js          A workspace: another full clone of a project
+                         (`<project>--<slug>`) on its own branch, with its own
+                         slots, marked by a note in its .git naming the project
+                         it belongs to. Up to five per repository by default,
+                         the original included (`mux.workspaces`).
   terminal.js            The mux's terminal panes: /ws/term, which runs `cc` for
-                         a slot on a pty and relays it. Refuses without a tmux
-                         server, so nothing it starts lives in this service's
-                         cgroup. Serves xterm.js from node_modules.
+                         a slot on a pty and relays it, or a bare shell in a tmux
+                         session of its own (kind=shell). /api/term/run swaps
+                         the program in a pane's session for a command line of
+                         your own; /api/term/paste takes a file for it to read.
+                         Refuses without a tmux server, so nothing it starts
+                         lives in this service's cgroup. Serves xterm.js from
+                         node_modules.
   browser.js             The mux's Browser pane: a real Chrome on this box
                          (scripts/triplec-browser.sh, triplec-browser.service),
-                         shown through noVNC. /ws/browser bridges bytes to
+                         on Xvnc, with noVNC for input. /ws/browser bridges bytes to
                          Xvnc's unix socket; the screen is resized to the viewer
                          with xrandr and DevTools; serves noVNC's core/ and
                          vendor/ only. DevTools on 127.0.0.1:9222, for a Claude
@@ -486,16 +518,20 @@ chat-service/            The chat backend + PWA client. The security boundary.
                          a conversation: a background project rendering off
                          screen, the live cap, switching chats inside one tab,
                          and that neither that nor closing a tab stops anything.
-  mux-test.js            Slots against real git (a refresh never loses an edit or
-                         a commit; removal refuses over a dirty slot), the mux in
-                         jsdom, and the chat embedded in its panes.
-  term-test.js           Terminal panes from `cc` to the page: exact tmux targets
-                         against a fake tmux, the relay on a real pty, /ws/term
-                         end to end through a fake `cc`. Needs no tmux.
-  public/                index.html, app.js, style.css, login.html,
-                         admin.html + admin.js for the operations surface,
-                         mux.html + mux.js + mux.css for the desktop surface, and
-                         term.html + term.js + term.css for a terminal pane.
+  mux-test.js            Slots and workspaces against real git (a refresh never
+                         loses an edit or a commit; removal refuses over a dirty
+                         slot), the mux in jsdom — layouts, two windows, swaps,
+                         project management — and the chat embedded in its panes.
+  term-test.js           Terminal and shell panes from `cc` to the page: exact
+                         tmux targets against a fake tmux, the relay on a real
+                         pty, /ws/term end to end through a fake `cc`, a command
+                         line of your own, file uploads. Needs no tmux.
+  public/                mux.html + mux.js + mux.css for the Mux, the app's main
+                         view; term.html + term.js + term.css for a terminal pane;
+                         browser.html + browser.js + browser.css for the Browser
+                         pane; admin.html + admin.js for the operations surface;
+                         login.html; and index.html + app.js + style.css, the
+                         deprecated chat (style.css is shared with the Mux).
 
 deploy/host/             Host mode: install onto an existing Ubuntu 24.04 VM as its
                          developer (install.sh, upgrade.sh, uninstall.sh), the
@@ -532,6 +568,16 @@ landing/                 The public marketing page. Static, no build step.
   analytics.js           PostHog, proxied through the site's own origin. Ships
                          holding placeholders; stamped at deploy time.
   landing-test.js        Runs analytics.js in a stub browser. `npm run test:landing`.
+scripts/                 What runs on the box, shipped in the payload.
+  cc-session.sh          `cc`: open or rejoin a project's or slot's tmux session.
+  build-payload.sh       Stages and tars the payload; install-payload.sh installs
+                         it as root. deploy.sh and the updater both run them.
+  triplec-update.mjs     The on-box updater (docs/UPDATES.md): follow a branch,
+                         test, install, verify, roll back. update-test.mjs.
+  box-config.mjs         Settings saved on the box page, layered over the config
+                         file. box-config-test.mjs.
+  triplec-browser.sh     Starts Chrome on Xvnc for the Browser pane.
+  host-conformance.sh    Host mode's conformance check (docs/HOST.md).
 pwa/                     Assets copied into chat-service/public/ by deploy.sh.
                          THIS IS THE SOURCE OF TRUTH for manifest + sw.js.
 voice-extension/         VS Code dictation extension (for the editor surface).
@@ -606,12 +652,12 @@ is "keep running full deploys from here, not from the workspace".
 ### "It deployed but X is broken"
 
 First settle whether the new build is even live, because "deployed" and "running"
-are different facts and half of this section is wasted on the gap. Settings in the
-chat names the running build (`v3.0.0 · 33d370b · deployed 2h ago`) and says so
-again if the open tab was served by an older one; `/chat/admin` carries the same
-line. From a shell on the box, the stamp itself is the answer:
-`cat /opt/claude-web/chat-service/build.json` — `/api/version` serves the same
-thing but is gated like every other route, so curl gets the login. If the id is the
+are different facts and half of this section is wasted on the gap. The box page,
+`/chat/admin`, names the running build (`v3.0.0 · 33d370b · deployed 2h ago`), and
+the deprecated chat's Settings carries the same line and says so again if the open
+tab was served by an older one. From a shell on the box, the stamp itself is the
+answer: `cat /opt/claude-web/chat-service/build.json` — `/api/version` serves the
+same thing but is gated like every other route, so curl gets the login. If the id is the
 commit you expected, the deploy worked and the bug is yours.
 
 The Troubleshooting section of [docs/DEPLOY.md](docs/DEPLOY.md) covers the known
@@ -632,6 +678,14 @@ message says so. That is correct behaviour, not a crash — find out why
 `/etc/claude-auth.env` is empty.
 
 ### "Add a feature to the chat"
+
+First ask whether it belongs in the Mux instead. The chat list and chat panes are
+deprecated — each carries a banner pointing at the Mux, and the Mux marks the Chat
+kind of pane the same way — so a new feature for working with an agent goes in
+`public/mux.js` (the sidebar, panes, layouts) or `public/term.js` (a terminal
+pane), with routes in `server.js` and `terminal.js`; see
+[The mux and its slots](#the-mux-and-its-slots). A fix to the chat itself still
+goes where it always did:
 
 `server.js` routes → `session-manager.js` for anything touching the `claude`
 process → `public/app.js` for UI. Client requests go through the `api()` wrapper
@@ -668,8 +722,9 @@ on purpose. `pane-test.js` holds all of that down and `deploy.sh` runs it.
 ### "Delete a project I'm done with"
 
 `POST /api/projects/remove` — commit, push every branch and tag, verify with the
-remote that it landed, then `rm -rf` the directory. Reachable from the chat: New
-chat → the ⋯ next to a project.
+remote that it landed, then `rm -rf` the directory. Reachable from the Mux: the ⋯
+on a project's row opens its sheet, which ends in **Push & delete from this
+machine** (the deprecated chat's New chat screen has the same sheet).
 
 The order matters and the verification is not decoration. A `git push` that exits
 0 is not proof the remote has anything: the remote-tracking ref it updated is a
@@ -691,6 +746,10 @@ later lands next to its own history.
 ### "Clone one of my GitHub repos"
 
 `POST /api/projects/clone`, or the repository list from `GET /api/github/repos`.
+In the Mux both are behind the `+` beside the project filter (**Add a project**),
+which also creates an empty project, optionally with a GitHub repository. A second
+full clone of a project already here is a workspace, made from its ⋯ sheet through
+`POST /api/projects/add-workspace` — see [The mux and its slots](#the-mux-and-its-slots).
 
 `parseGithubRepo()` accepts `owner/repo` and github.com URLs and **rejects every
 other host**. That is a security boundary, not tidiness: the workspace's git
@@ -774,19 +833,20 @@ Know this before answering any question about long-running work:
 
 | Surface | Who owns `claude` | Survives closing the app | Shared live across devices |
 | --- | --- | --- | --- |
-| Chat (`/`) | `claude-chat` systemd service | yes | yes — `getBySession` hands both sockets the same process |
+| Mux (`/chat/mux`) — **the app's main view**, where `/` lands | a terminal pane (the default): the tmux server, exactly as `cc`. A chat pane (deprecated): `claude-chat`, exactly as the chat | yes | yes — a terminal pane is `cc <project>/slot-N`, so any other terminal or device joins it; a chat pane *is* the chat, framed |
+| `cc` / tmux | the tmux server, owned by `claude-tmux.service` | yes | yes — multiple tmux clients, one session |
 | Extension panel — **the editor's default** | `claude-broker.service`, reached through the wrapper | yes | yes — one process per conversation, every page attached |
 | Extension panel, broker stopped | extension host, tied to the browser | **no — dies in ~5s** | **no — it forks** |
-| `cc` / tmux | the tmux server, owned by `claude-tmux.service` | yes | yes — multiple tmux clients, one session |
-| Mux (`/chat/mux`) — the desktop view | a chat pane: `claude-chat`, exactly as the chat. A terminal pane: the tmux server, exactly as `cc` | yes | yes — a chat pane *is* the chat, framed, and the phone opens it from its list; a terminal pane is `cc <project>/slot-N`, so any other terminal joins it |
+| Chat (`/chat/`, deprecated) | `claude-chat` systemd service | yes | yes — `getBySession` hands both sockets the same process |
 
-The mux is not a fifth owner, and that is deliberate: each of its two kinds of pane
-is an existing surface in a frame — the chat app, or a tmux client running `cc` — so
-it inherits that surface's ownership and its `--session-id` and `sessionOwner`
-checks below rather than needing its own. See
+The mux is not a fifth owner, and that is deliberate: each kind of pane that runs
+Claude is an existing surface in a frame — a tmux client running `cc`, or the chat
+app — so it inherits that surface's ownership and its `--session-id` and
+`sessionOwner` checks below rather than needing its own. A shell pane is a tmux
+session too, and a Browser pane runs no Claude at all. See
 [The mux and its slots](#the-mux-and-its-slots).
 
-The middle two rows are the same panel. Which one you get depends on whether
+The two extension-panel rows are the same panel. Which one you get depends on whether
 `claude-broker.service` is running and `claudeCode.claudeProcessWrapper` points at
 it, so when someone reports the panel forking, that is the first thing to check:
 
@@ -932,10 +992,43 @@ deliberate restart, chosen at a moment when losing the running work is acceptabl
 
 ### The mux and its slots
 
-`/chat/mux` is the laptop's view: every project down the side with its eight
-worktree slots, a light on each (orange working, blue ring finished while nobody
-looked, amber another surface has a process there), and one to eight panes side by
-side. Linked from the chat list's tab bar.
+`/chat/mux` is the app's main view: the bare domain redirects there, so does a
+bare `/chat/`, and it is the installed PWA's `start_url`. Every project is down
+the side with its worktree slots (ten by default, `mux.slots`), a light on each
+(orange working, blue ring finished while nobody looked, amber another surface has
+a process there), and panes side by side — eight by default (`mux.panes`), shown
+one to eight at a time (layouts 1, 2, 3, 4, 6 and 8). The sidebar's head links to
+the deprecated chat list (**Chats**), the box page (**Box**) and, when this install
+has one, the **Browser**.
+
+**Projects are managed from the sidebar.** The `+` beside the filter is **Add a
+project** — clone `owner/repo`, browse the token's repositories, or create an
+empty one with an optional GitHub repository — and the ⋯ on a project opens its
+sheet: what it still holds, cloning another repository into it, a new workspace,
+and push & delete. These are the same routes and server-side checks the chat's
+New chat screen uses.
+
+**A workspace is another full clone of a project**, for a second task on its own
+branch: `mono` on `master` with its ten slots, `mono · Feature A` on `feat/a` with
+ten more. Up to five per repository by default, the original included
+(`mux.workspaces`). It is an ordinary project to everything that names one — a
+directory `<project>--<slug>` under the projects root — so terminals, `cc`, slots,
+notifications and the auth checks need nothing new. What makes it a workspace is a
+note in its `.git` (`chat-service/workspaces.js`), never in the tree, naming the
+project it belongs to, its display name and its branch; `/api/projects` carries
+it, and the sidebar nests the workspace under its project. `createWorkspace`
+clones from the project's own checkout, points `origin` at the real remote and
+fetches, checks out the branch (the remote's, or new from the default), then makes
+the slots. A workspace's slots branch from, and refresh to, the workspace's branch,
+so a slot agent starts from what the task has so far.
+
+**One window per screen.** When the layout has more than one page — with eight
+panes, 1–3 and 4–6 for three across, 1–4 and 5–8 for four — each window picks the
+page it shows, kept per window in sessionStorage. The panes themselves are shared
+through localStorage, but a window writes only the panes it shows or was asked to
+change, and follows the other window's saves through the `storage` event, so two
+windows never undo each other. ⇄ in a pane's header (or Alt+Shift+N) swaps it one
+for one with any pane, one in the other window included.
 
 **On a phone** (≤760px, the width app.js calls narrow) it is one pane at a time:
 mux.css hides every pane but the focused one, the sidebar becomes a drawer behind ☰,
@@ -945,8 +1038,10 @@ laptop's. Opening something there does not hand the frame the keyboard. Nothing 
 that is a desktop rule: the desktop styles are untouched, and a touch screen only
 adds `@media (hover: none)`, which shows the slot rows' hover-only `+`.
 
-**On a touch screen the terminal page** (embedded or not) has the keys a phone lacks,
-a compose line that types its text and then, separately, Enter (sent together the
+**On a touch screen the terminal page** (embedded or not) has the keys a phone lacks
+— two rows of them, with Ctrl and Alt that hold for the next key so any chord can
+be typed, and one tap each for the chords Claude Code and a shell use most — a
+compose line that types its text and then, separately, Enter (sent together the
 CLI reads a paste and puts a newline in its prompt), and **tap-to-choose**:
 `choiceAt` reads the tapped row from xterm's buffer and, if it is a numbered option
 in the same menu as a `❯`-marked one, sends its digit. A numbered list in prose is
@@ -972,19 +1067,52 @@ one before asking, so the poll never reads another slot's history out as news. T
 floating bar is there only while something is playing. Once the sheet is dismissed
 it is the only Stop. Dictation is deliberately not offered here.
 
-A pane is a **chat** or a **terminal** — the sidebar's "New" switch picks what a `+`
-opens, and each pane's header switches its own slot between the two. Both kinds are
-frames on something that already exists, never a second implementation of it.
+A pane is a **terminal** (the default), a **shell**, or a **chat** (deprecated) —
+the sidebar's "New" switch picks what a `+` opens, and each pane's header switches
+its own slot between Claude and a shell, or moves a chat pane to a terminal. Every
+kind is a frame on something that already exists, never a second implementation of
+it. A terminal pane's header also has 📎 (attach any file: it is uploaded through
+`/api/term/paste` and its path typed in), `❯…` (a command line of your own in place
+of `claude`, below), **Aa** (the terminal's font and size, chosen per browser), 🔊
+(voice, above) and ⇱ (a link that opens the same pane on the phone).
+
+**A Browser pane** is the fourth kind, opened from the sidebar's head: a real
+Chrome on the box, on Xvnc (on AWS, Chrome for Testing's Stable), streamed to the
+page as H.264 with VNC as the fallback, with DevTools on `127.0.0.1:9222` so a
+Claude on the box drives the tabs you are watching. It is on by default on AWS and
+on a host install (`browser.enabled`, `features.browser`);
+[docs/HOST.md](docs/HOST.md#running) has what it does.
+
+**The main checkout takes a terminal too**, for read-only work with an agent: its
+row's `+` and a click start one there with no slot to prepare, and the pane notes
+that feature work belongs in a slot, since every session shares that tree. A chat
+does not start there.
+
+**A shell pane is a bare `bash -l`** in the slot (or the main checkout), in a tmux
+session of its own, `shell-<project>[/slot-N]`, in the same tmux server as
+Claude's, so it outlives a deploy too. The `$` on every slot row opens or rejoins
+it in the focused pane without preparing the slot or asking about the Claude in it.
+Exiting a shell ends only the shell; it never resets the slot.
+
+**A command line of your own** replaces `claude` in a pane's session —
+`CLAUDE_X=off claude --resume <id>` — because a pane always starts `bash -lc
+claude` and leaves nowhere to put a flag or a variable. `POST /api/term/run`
+restarts the session's program with tmux's `respawn-pane`, keeping the session, so
+nothing is reset and every attached device sees the new program. It is never a
+shell string: the line is split into words with quotes honoured and nothing
+expanded, pipes, `$` and globs are refused, and the words reach tmux as argv.
 
 **A chat pane is the chat app in a frame** — `/chat/?embed=1&cwd=<slot>&session=<id>`
-— not a second client. That is the whole design, for two reasons. The conversation
-is owned by `claude-chat.service` the moment it starts, so shutting the laptop
-mid-turn loses nothing and the phone finds it in its list, labelled with the slot.
-And there is one renderer, one voice stack and one set of tool cards to keep right.
-`EMBED` in app.js is what an embedded page leaves out: it writes no device tabs
-(eight frames would clobber the phone-style set), holds no wake lock, repairs no
-push subscription, loads no list and polls nothing. It reports its state to the
-mux with `postMessage`, same-origin only, and the mux does the rings.
+— not a second client. It is deprecated with the chat: the pane shows a line saying
+so with a **Switch to terminal** button, and choosing Chat for new panes says so too.
+It stays a frame for two reasons. The conversation is owned by
+`claude-chat.service` the moment it starts, so shutting the laptop mid-turn loses
+nothing. And there is one renderer, one voice stack and one set of tool cards to
+keep right. `EMBED` in app.js is what an embedded page leaves out: it writes no
+device tabs (eight frames would clobber the phone-style set), holds no wake lock,
+repairs no push subscription, loads no list and polls nothing, and it shows no
+deprecation banner. It reports its state to the mux with `postMessage`,
+same-origin only, and the mux does the rings.
 
 **A terminal pane is `cc` in a frame** — `/chat/term?embed=1&project=<p>&slot=<n>`,
 an xterm.js page whose socket is `/ws/term`. `chat-service/terminal.js` runs
@@ -1004,6 +1132,11 @@ pane is one more tmux client. What follows from that:
   and `term-test.js` checks it against a fake tmux.
 - **A slot's session is `claude-<project>/slot-N`**, and `cc` accepts that name or the
   slot's path. The basename alone (`slot-3`) is in every project.
+- **Claude exiting in a slot's terminal (`/exit`) resets the slot**: the conversation
+  is over, so the slot is refreshed exactly as a new start would refresh it
+  (fast-forward only, never over work) and marked with the time in its worktree's
+  git directory, so the sidebar and the pane stop showing the title of a
+  conversation that has ended. A shell exiting resets nothing.
 - **Scrolling is tmux's copy mode**, driven from the server (`copy-mode -e`,
   `send-keys -X scroll-up`), because tmux draws on the alternate screen and the
   emulator has no history of its own. Nothing turns on tmux's mouse mode, which would
@@ -1019,22 +1152,27 @@ pane is one more tmux client. What follows from that:
   it is an infra change and lands with the next full deploy.
 
 **Slots** (`chat-service/slots.js`) are ordinary linked worktrees at
-`<project>/.claude/worktrees/slot-1` … `slot-8`, each on a branch of the same name,
-made when a project is cloned or created and on first use otherwise. That path is
-the one `projectPlaces` already reads, which is why nothing else had to change for
-a slot's conversations to appear in the phone's list. The rules that keep them safe:
+`<project>/.claude/worktrees/slot-1` … `slot-N`, where N is the deployment's
+`mux.slots` (ten by default; a host registry can give one project fewer with
+`slots.count`), each on a branch of the same name, made when a project is cloned
+or created and on first use otherwise. That path is the one `projectPlaces` already
+reads, which is why nothing else had to change for a slot's conversations to be
+found. The rules that keep them safe:
 
 - `.claude/worktrees/` goes in the project's `.git/info/exclude`, not its
   .gitignore — no project is left with an uncommitted change by being cloned, and
-  the main checkout's `git add -A` never records eight nested checkouts.
-- A new chat in a slot first fast-forwards it to the default branch, after a fetch,
-  **only** if it is clean and has no commit the base lacks. `--ff-only` is the
-  argument: there is no reset anywhere in this code, so a slot holding work is
-  started on as it is, and the pane says so.
-- Opening an *existing* conversation does not touch its slot.
+  the main checkout's `git add -A` never records a set of nested checkouts.
+- Starting a new terminal or chat in a slot first fast-forwards it to its base,
+  after a fetch, **only** if it is clean and has no commit the base lacks. The
+  base is the remote's default branch, or a workspace's own branch. `--ff-only` is
+  the argument: there is no reset anywhere in this code, so a slot holding work is
+  started on as it is, and the pane says so. A `/exit` reset is the same refresh.
+- Opening an *existing* conversation, or rejoining a running terminal, does not
+  touch its slot.
 - `removeProject` refuses while any worktree holds uncommitted changes. It used to
   `rm -rf` them unasked, because `findRepos` skips dot-directories and a worktree's
-  `.git` is a file; with eight slots per project that stopped being an edge case.
+  `.git` is a file; with a full set of slots in every project that stopped being an
+  edge case.
   Their commits were already safe — a slot's branch is a branch of the root repo,
   so `push --all` and the per-branch unpushed check cover it.
 - The generated `/workspace/projects/CLAUDE.md` tells a session in a slot not to
@@ -1043,7 +1181,8 @@ a slot's conversations to appear in the phone's list. The rules that keep them s
 
 A slot is "held" when any `claude` on the box has its cwd there, read from `/proc`
 (`claudeCwds`), so one taken by the panel or a tmux session reads as taken, and
-`/api/slots` says which slots have a terminal session (`terminal`, `rootTerminal`).
+`/api/slots` says which slots have a terminal or a shell session (`terminal`,
+`shell`, and `rootTerminal`, `rootShell` for the main checkout).
 Starting a second agent in a held slot — a chat beside a terminal, or the reverse —
 asks first; joining a slot's running terminal does not, because that is what a tmux
 session is for. The `+` on a project picks a free, clean one. A slot a pane names
@@ -1115,9 +1254,14 @@ Which leaves one question — *is it done yet* — and three answers, deliberate
 separate, because they fail in different places and one of them can wake a phone up
 at night.
 
-**A conversation this app is running announces itself on screen.** `announce()` in
-`app.js`: a toast, and a buzz through the Vibration API. It knows the turn ended
-because it is holding the socket, so nothing has to be polled or guessed.
+**A conversation on screen announces itself there.** In the Mux, a pane whose turn
+ends while nobody is looking gets the blue ring, in its header, on its slot and in
+the tab title, until someone focuses it — from the transcript and the terminal bell
+for a terminal pane, from the frame's `postMessage` for a chat pane — and the
+footer's **Desktop alerts** adds a browser notification while the page is hidden.
+In the deprecated chat it is `announce()` in `app.js`: a toast, and a buzz through
+the Vibration API. Both are the page's own, so neither can reach a phone in a
+pocket; that is the next answer's job.
 
 **A conversation this app is *not* running is watched from the transcripts.**
 `chat-service/turn-watcher.js`, started by `server.js`, polls every five seconds
@@ -1213,8 +1357,17 @@ wrong; a tap that does nothing is indistinguishable from a broken app. So:
   directory name, and `?folder=` needs the real path. A transcript whose directory is
   not a project gets no URL and falls back to `/chat/`, which is also where the test
   notification goes.
-- **The tap opens that project's window, not the chat app.** Notifications only ever
-  fire for sessions this app is *not* driving, so resuming one in the chat app would
+- **The tap opens that project's editor window, or the Mux, as each device chooses
+  — never the chat app.** Every notification carries both addresses: the project's
+  window, and `muxUrl`, `/chat/mux?project=&slot=` for the slot the conversation is
+  in. The service worker picks one at the moment of the tap from this device's
+  choice (`opens()` in `pwa/sw.js`, kept in a `triplec-prefs` cache entry the worker
+  can read offline), set from the Mux sidebar's footer ("Notifications open: …") or
+  the overlay's notification sheet; the default is the editor. A Mux arriving from a
+  tap joins what is running — it focuses a pane already on that slot, or opens the
+  slot's live terminal in a free pane, and otherwise shows the slot in the sidebar
+  without starting a second Claude. The chat app is never the answer: notifications
+  only ever fire for sessions this app is *not* driving, so resuming one there would
   start a second `claude --resume` against the same transcript — the thing
   `claude-broker` exists to prevent. `/p/<project>/` is an installed app with one
   window, so an existing window for that project is focused rather than navigated: the
@@ -1234,12 +1387,14 @@ wrong; a tap that does nothing is indistinguishable from a broken app. So:
   exactly like a phone ignoring the tap.
 
 **Notifications are switched on from either surface, and there is only one of
-them.** The chat app's Settings sheet has a checkbox; the editor overlay's status
-sheet has a button (`toggleNotify` in `pwa/mobile-overlay.js`). Same origin, same
-worker under `/chat/`, same subscription, same row in the device list — turning it on
-in one place turns it on in both, which is why the wording says "this device" and
-never "this app". The editor needed its own switch because the sessions being watched
-are the editor's: someone who only ever opens `/editor/` could not reach the one
+them.** The overlay's status sheet has a button (`toggleNotify` in
+`pwa/mobile-overlay.js`), in the editor and over the Mux, where a pane's 🔊 opens
+that sheet; the deprecated chat's Settings sheet has a checkbox. (The Mux footer's
+**Desktop alerts** is something else: page notifications while the Mux is open,
+not Web Push.) Same origin, same worker under `/chat/`, same subscription, same row
+in the device list — turning it on in one place turns it on in both, which is why
+the wording says "this device" and never "this app". The editor needed its own
+switch because the sessions being watched are the editor's: someone who only ever opens `/editor/` could not reach the one
 feature written for them. The plumbing is deliberately duplicated rather than
 imported — the overlay is a plain script nginx injects into code-server's HTML, and a
 switch that depends on a second request and on code-server's CSP is a switch that
@@ -1378,18 +1533,20 @@ each project install after it with "already installed". The phone reported exact
 that, on a freshly moved domain where the chat icon was the first thing installed.
 So the chat app now lives at `/chat/`:
 
-- `pwa/manifest.webmanifest`: `start_url` and `scope` are `/chat/`, and `id` is
-  pinned to `"/"`. The `id` is explicit because it otherwise defaults to `start_url`
-  — and a changed `id` is a *different application*, so every phone with the chat
-  icon already on it would keep a dead one and install a second beside it instead of
-  updating the one it has.
-- `infra/userdata/bootstrap.sh`: `location = /` is now a path-only 302 into
-  `/chat/` — to `/chat/mux` since 2026-11-07, when the user made the mux the default
-  view; the manifest's `start_url` is `/chat/mux` for the same reason, and goes back
-  to `/chat/` on a host install without the mux feature (`chatManifest`).
-  That redirect is not a courtesy. An install can only be offered from a page inside
-  the scope of the manifest it links, so a bare domain still serving the shell in
-  place would be a chat app nobody could add to a home screen.
+- `pwa/manifest.webmanifest`: `scope` is `/chat/`, `start_url` is `/chat/mux` —
+  the Mux, the app's main view — and `id` is pinned to `"/"`. The `id` is explicit
+  because it otherwise defaults to `start_url`, and a changed `id` is a *different
+  application*: every phone with the icon already on it would keep a dead one and
+  install a second beside it instead of updating the one it has. On a host install
+  without the mux feature `start_url` is `/chat/` (`chatManifest`).
+- `infra/userdata/bootstrap.sh`: `location = /` is a path-only 302 to `/chat/mux`,
+  and the service sends a bare `/chat/` there too, so an app installed with `/chat/`
+  as its address opens the Mux as well (a Safari web app keeps the URL it was added
+  with). Anything with a query still gets the chat: a conversation link, a mux
+  pane, or `?chat=1`, which is the Mux's **Chats** link. The bare-domain redirect is
+  not a courtesy. An install can only be offered from a page inside the scope of
+  the manifest it links, so a bare domain serving the app in place would be an app
+  nobody could add to a home screen.
 - The `Editor` shortcut points at `/chat/editor/`, which is inside the scope and
   redirects out, because a browser drops an out-of-scope shortcut **silently** — a
   menu item that quietly stops existing.
@@ -1506,9 +1663,11 @@ Things that have burned people, in this codebase specifically:
   and no listener on any recorded port.
   So **only the broker's and tmux's conversations genuinely survive a deploy**, because
   no deploy path restarts those units — and that, not the editor panel, is where long
-  work belongs. Say which surfaces you are about to disturb rather than being clever
-  about it when someone asks to deploy mid-task, and tell the other live sessions
-  first: `ListAgents` shows them, and they cannot see your deploy coming.
+  work belongs. Every Mux terminal and shell pane is a tmux session: the pane
+  reconnects after a deploy and the work in it never stopped. Say which surfaces you
+  are about to disturb rather than being clever about it when someone asks to
+  deploy mid-task, and tell the other live sessions first: `ListAgents` shows them,
+  and they cannot see your deploy coming.
   `/chat/admin` prints this under the chat's own conversations for the same reason.
 - **`/api/projects` reads every transcript, so nothing may poll it.** It stats and
   opens each `.jsonl` to build the titles — fine once per screen, ruinous every few
@@ -1686,8 +1845,8 @@ Things that have burned people, in this codebase specifically:
   `smoke-test.js` (span guards, the switch, a send that waits) and `overlay-test.js`
   (copy order, a 503).
 - **The CLI's flags are process arguments**, so model, permission mode and effort
-  are fixed for the life of a conversation. Settings changes apply to new chats
-  only. This is not a bug to fix.
+  are fixed for the life of a conversation. Settings changes apply to new
+  conversations only. This is not a bug to fix.
 - **The broker is byte-transparent, and must stay that way.**
   `chat-service/session-manager.js` translates stream-json into a small vocabulary
   for its own UI; `claude-broker/broker.js` deliberately does not, because it is
@@ -2063,10 +2222,8 @@ stack names. Two consequences an agent runs into:
 There is no staging environment, so local verification is what you have:
 
 ```bash
-npm test                                   # auth + client + panes + overlay + polish
-                                           # + project lifecycle + per-project manifest
-                                           # + operations surface + conversation status
-                                           # + push + turn watcher + broker
+npm test                                   # every suite in "Before you finish any
+                                           # change to auth, routing, or the stack"
 cd infra && npx cdk synth --quiet          # stack compiles
 bash -n deploy.sh migrate.sh infra/userdata/bootstrap.sh claude-broker/install.sh
 node --check chat-service/server.js
