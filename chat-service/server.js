@@ -709,6 +709,16 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // A workspace: another full clone of `project`, with its own checkout and slots,
+    // for one orchestrated task. See createWorkspace.
+    if (pathname === '/api/projects/add-workspace' && req.method === 'POST') {
+      const body = JSON.parse((await readBody(req, 4 * 1024)).toString() || '{}');
+      json(res, 200, {
+        project: await manager.createWorkspace({ project: body.project, name: body.name, branch: body.branch }),
+      });
+      return;
+    }
+
     if (pathname === '/api/github/repos' && req.method === 'GET') {
       json(res, 200, { repos: await manager.listGithubRepos() });
       return;

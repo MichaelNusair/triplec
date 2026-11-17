@@ -14,6 +14,7 @@ import { randomUUID } from 'crypto';
 import { EventEmitter } from 'events';
 import { promisify } from 'util';
 import { ensureSlots, listSlots, prepareSlot, claudeCwds, parseSlot, slotPath } from './slots.js';
+import { MAX_WORKSPACES, readWorkspace, workspaceDirName, workspaceSlug, writeWorkspace } from './workspaces.js';
 import {
   PROJECTS_ROOT,
   CLAUDE_HOME,
@@ -954,10 +955,13 @@ export class SessionManager {
       // A registered project whose directory is not there (yet) is not listed: there
       // is nothing to open, and creating it is what POST /api/projects is for.
       if (hasRegistry() && !(await stat(entry.path).catch(() => null))?.isDirectory()) continue;
+      const workspace = await readWorkspace(entry.path);
       projects.push({
         name: entry.name,
         path: entry.path,
         sessions: await this.listSessions(entry.path),
+        // A second (third…) full clone of another project, shown nested under it.
+        ...(workspace ? { workspace } : {}),
       });
     }
     projects.sort((a, b) => {
@@ -1853,6 +1857,104 @@ export class SessionManager {
       return { name: into, path: parent, repo: target, sessions: await this.listSessions(parent), steps };
     }
     return { name: target, path, sessions: [], steps };
+  }
+
+  /**
+   * A workspace: another full clone of a project, with its own main checkout and its
+   * own slots, for one orchestrated task — `mono` on master, `mono · Feature A` on
+   * feat/a, each with ten agents of its own. Up to MAX_WORKSPACES per repository,
+   * the original included.
+   *
+   * It is an ordinary project as far as everything else knows (a directory under the
+   * projects root, `<project>--<slug>`), so terminals, slots, notifications and the
+   * auth checks treat it exactly as they treat any project. What makes it a
+   * workspace is a note in its `.git` naming the project it belongs to, read by
+   * listProjects so the mux can nest it.
+   *
+   * Cloned from the project's own checkout, which is quick and needs no network for
+   * the objects, then pointed at the project's real remote and fetched from there.
+   */
+  async createWorkspace({ project, name, branch } = {}) {
+    const parentPath = projectPathFor(project);
+    if (!(await stat(parentPath).catch(() => null))?.isDirectory()) throw new Error(`no project named "${project}"`);
+    if (await readWorkspace(parentPath)) throw new Error(`"${project}" is a workspace itself; add one to the project it belongs to`);
+    if (!(await stat(join(parentPath, '.git')).catch(() => null))?.isDirectory()) {
+      throw new Error(`"${project}" is not a git repository at its root, so it cannot be cloned into a workspace`);
+    }
+    const label = String(name || '').trim().replace(/\s+/g, ' ');
+    if (!label || label.length > 40) throw new Error('a workspace needs a name of 1 to 40 characters');
+    const slug = workspaceSlug(label);
+    if (!slug) throw new Error('a workspace name needs a letter or a digit in it');
+    const wanted = String(branch || '').trim();
+    if (wanted) {
+      const ok = await git(parentPath, ['check-ref-format', '--branch', wanted]);
+      if (!ok.ok || wanted.startsWith('-')) throw new Error(`"${wanted}" is not a branch name git accepts`);
+    }
+
+    const siblings = [];
+    for (const entry of await listProjectDirs()) {
+      const ws = await readWorkspace(entry.path);
+      if (ws?.parent === project) siblings.push(ws);
+    }
+    if (siblings.length + 1 >= MAX_WORKSPACES) {
+      throw new Error(`"${project}" already has ${MAX_WORKSPACES} workspaces, the most a repository can have — remove one first`);
+    }
+    const target = assertSafeName(workspaceDirName(project, slug));
+    const path = hasRegistry() ? newProjectPathFor(target) : join(PROJECTS_ROOT, target);
+    if (await stat(path).catch(() => null)) throw new Error(`"${project}" already has a workspace called ${label}`);
+    await mkdir(dirname(path), { recursive: true });
+
+    const steps = [];
+    const timeout = 900_000;
+    const clone = await git(dirname(path), ['clone', '--no-checkout', parentPath, basename(path)], { timeout });
+    if (!clone.ok) {
+      await rm(path, { recursive: true, force: true }).catch(() => {});
+      throw new Error(`clone failed: ${clone.err.slice(0, 400)}`);
+    }
+    steps.push({ step: 'clone', ok: true, from: project });
+
+    // The project's real remote, so the workspace pushes where the project does
+    // and is not a clone of a folder on this machine.
+    const remote = await git(parentPath, ['remote', 'get-url', 'origin']);
+    if (remote.ok && remote.out) {
+      await git(path, ['remote', 'set-url', 'origin', remote.out]);
+      const token = await getGithubToken();
+      const fetched = await git(path, ['fetch', '--prune', 'origin'], {
+        timeout, env: token ? { GH_TOKEN: token, GITHUB_TOKEN: token } : {},
+      });
+      steps.push(fetched.ok ? { step: 'fetch', ok: true } : { step: 'fetch', ok: false, error: fetched.err.slice(0, 300) });
+      await git(path, ['remote', 'set-head', 'origin', '--auto']);
+    }
+
+    // On the branch asked for: the remote's when there is one, else a new one from
+    // the default branch. With none asked for, the default branch.
+    const head = await git(path, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
+    const base = head.ok && head.out ? head.out : 'HEAD';
+    let checkout;
+    if (!wanted) checkout = await git(path, ['checkout', '-q', ...(base === 'HEAD' ? [] : ['-B', base.replace(/^origin\//, ''), base])]);
+    else if ((await git(path, ['rev-parse', '--verify', '-q', `refs/remotes/origin/${wanted}`])).ok) {
+      checkout = await git(path, ['checkout', '-q', '-B', wanted, '--track', `origin/${wanted}`]);
+    } else {
+      checkout = await git(path, ['checkout', '-q', '-b', wanted, base]);
+    }
+    if (!checkout.ok) {
+      await rm(path, { recursive: true, force: true }).catch(() => {});
+      throw new Error(`checkout failed: ${checkout.err.slice(0, 400)}`);
+    }
+    const on = await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']);
+    steps.push({ step: 'checkout', ok: true, branch: on.out });
+    if ((await stat(join(path, '.gitmodules')).catch(() => null))) {
+      const subs = await git(path, ['submodule', 'update', '--init', '--recursive'], { timeout });
+      steps.push(subs.ok ? { step: 'submodules', ok: true } : { step: 'submodules', ok: false, error: subs.err.slice(0, 300) });
+    }
+
+    const workspace = { parent: project, name: label, branch: wanted || null };
+    await writeWorkspace(path, workspace);
+    const reg = await registerProject(target);
+    if (reg) steps.push(reg);
+    steps.push(slotStep(await ensureSlots(path)));
+    audit('workspace', { project, workspace: target, branch: on.out });
+    return { name: target, path, sessions: [], workspace, steps };
   }
 
   /**

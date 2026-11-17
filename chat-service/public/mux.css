@@ -53,6 +53,9 @@ body.mux {
   text-align: left; cursor: pointer;
 }
 .mux-pname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A workspace: another clone of the project above it, with slots of its own. */
+.mux-workspace { margin-left: 12px; border-left: 1px solid var(--border); }
+.mux-workspace .mux-pname::before { content: '⎇ '; color: var(--text-dim); }
 .mux-caret { width: 12px; color: var(--text-dim); font-size: 11px; }
 .mux-count {
   min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; text-align: center; color: #111;

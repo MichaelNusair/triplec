@@ -636,6 +636,65 @@ console.log('mux, arriving from a notification');
   w.close();
 }
 
+console.log('workspaces: another full clone of a project, with its own slots');
+{
+  const manager = new SessionManager();
+  const base = await makeProject('ninja');
+  const made = await manager.createWorkspace({ project: 'ninja', name: 'Feature A', branch: 'feat/a' });
+  const wsPath = join(root, 'ninja--feature-a');
+  check('a workspace is a clone beside the project, named after it', made.name === 'ninja--feature-a' && made.path === wsPath
+    && await exists(join(wsPath, '.git', 'HEAD')), JSON.stringify(made));
+  check('…its own clone, not a worktree of the project', (await stat(join(wsPath, '.git'))).isDirectory());
+  check("…pointed at the project's remote, not at the project's folder",
+    (await git(wsPath, 'remote', 'get-url', 'origin')) === (await git(base, 'remote', 'get-url', 'origin')));
+  check('…on the branch asked for', (await git(wsPath, 'rev-parse', '--abbrev-ref', 'HEAD')) === 'feat/a');
+  const slotStep = made.steps.find((x) => x.step === 'slots');
+  check('…with ten slots of its own', slotStep?.ok && slotStep.created === 10, JSON.stringify(made.steps));
+  check("…which branch from the workspace's branch",
+    (await git(slots.slotPath(wsPath, 4), 'rev-parse', 'HEAD')) === (await git(wsPath, 'rev-parse', 'feat/a')));
+  check('the project itself is untouched', (await git(base, 'rev-parse', '--abbrev-ref', 'HEAD')) === 'main'
+    && !(await git(base, 'branch', '--list', 'feat/a')));
+
+  // What the orchestrator builds on feat/a reaches a slot when it is next prepared.
+  await writeFile(join(wsPath, 'plan.md'), 'the plan\n');
+  await git(wsPath, 'add', '-A');
+  await git(wsPath, 'commit', '-q', '-m', 'plan');
+  const prepared = await manager.prepareSlot('ninja--feature-a', 4);
+  check("a free slot is fast-forwarded to the workspace's branch", prepared.refreshed && prepared.base === 'feat/a'
+    && await exists(join(slots.slotPath(wsPath, 4), 'plan.md')), JSON.stringify(prepared));
+
+  const listed = await manager.listProjects();
+  const ws = listed.find((x) => x.name === 'ninja--feature-a');
+  check('the project list says which project a workspace belongs to',
+    ws?.workspace?.parent === 'ninja' && ws.workspace.name === 'Feature A' && ws.workspace.branch === 'feat/a'
+      && !listed.find((x) => x.name === 'ninja').workspace, JSON.stringify(ws));
+  check('its slots are an ordinary project\'s', (await manager.slots('ninja--feature-a')).slots.length === 10);
+
+  const plain = await manager.createWorkspace({ project: 'ninja', name: 'Feature C' });
+  check('a workspace with no branch is on the default one',
+    (await git(plain.path, 'rev-parse', '--abbrev-ref', 'HEAD')) === 'main' && plain.workspace.branch === null);
+
+  const refusal = async (args) => {
+    try {
+      await manager.createWorkspace(args);
+      return null;
+    } catch (err) {
+      return err.message;
+    }
+  };
+  check('a second workspace of the same name is refused', /already has a workspace/.test(await refusal({ project: 'ninja', name: 'feature a' })));
+  check('a workspace of a workspace is refused', /is a workspace itself/.test(await refusal({ project: 'ninja--feature-a', name: 'X' })));
+  check('a branch git would not accept is refused', /not a branch name/.test(await refusal({ project: 'ninja', name: 'Y', branch: 'a..b' })));
+  check('an option dressed as a branch is refused', /not a branch name/.test(await refusal({ project: 'ninja', name: 'Z', branch: '-f' })));
+  check('a project name that is a path is refused', Boolean(await refusal({ project: '../etc', name: 'W' })));
+  check('a name with nothing to name a folder by is refused', /letter or a digit/.test(await refusal({ project: 'ninja', name: '!!!' })));
+  await manager.createWorkspace({ project: 'ninja', name: 'D' });
+  await manager.createWorkspace({ project: 'ninja', name: 'E' });
+  check('five to a repository, the project included', /already has 5 workspaces/.test(await refusal({ project: 'ninja', name: 'F' })),
+    String(await refusal({ project: 'ninja', name: 'F' })));
+  check('and nothing is left behind by a refusal', !(await exists(join(root, 'ninja--f'))));
+}
+
 console.log('mux: two windows, 1-3 on one screen and 4-6 on the other');
 {
   const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
@@ -720,6 +779,20 @@ console.log('mux: two windows, 1-3 on one screen and 4-6 on the other');
   await new Promise((r) => setTimeout(r, 50));
   check('a window with no view of its own starts at pane 1', one.mux.state.first === 0
     && [...one.doc.querySelectorAll('.mux-pane-label')].map((el) => el.textContent.split(' ')[0]).sort().join() === '1,2,3');
+
+  // Workspaces sit under their project, by their own names.
+  one.mux.state.projects.splice(0, Infinity,
+    { name: 'zeta', path: '/workspace/projects/zeta', sessions: [] },
+    { name: 'demo--feature-a', path: `${dir}--feature-a`, sessions: [], workspace: { parent: 'demo', name: 'Feature A', branch: 'feat/a' } },
+    { name: 'demo', path: dir, sessions: [] });
+  one.mux.renderSidebar();
+  const groups = [...one.doc.querySelectorAll('.mux-project')];
+  check('a workspace is listed right after its project, by its own name',
+    groups.map((g) => g.dataset.project).join() === 'zeta,demo,demo--feature-a'
+      && groups[2].classList.contains('mux-workspace') && groups[2].querySelector('.mux-pname').textContent === 'Feature A',
+    groups.map((g) => g.dataset.project).join());
+  check('and is named as its project and itself', one.mux.projectTitle('demo--feature-a') === 'demo · Feature A'
+    && one.mux.projectTitle('demo') === 'demo');
   one.w.close();
 }
 

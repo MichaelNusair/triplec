@@ -390,7 +390,7 @@
 
   function labelFor(cwd) {
     const pane = state.panes.find((p) => p.cwd === cwd);
-    if (pane?.project) return `${pane.project} · ${slotLabel(pane.slot)}`;
+    if (pane?.project) return `${projectTitle(pane.project)} · ${slotLabel(pane.slot)}`;
     const m = /\/([^/]+)\/\.claude\/worktrees\/([^/]+)$/.exec(cwd || '');
     return m ? `${m[1]} · ${m[2]}` : String(cwd || '').split('/').pop();
   }
@@ -402,6 +402,29 @@
   // --- the sidebar ----------------------------------------------------------
   function projectByName(name) {
     return state.projects.find((p) => p.name === name) || null;
+  }
+
+  /** A project as people say it: a workspace is "mono · Feature A", not mono--feature-a. */
+  function projectTitle(name) {
+    const ws = projectByName(name)?.workspace;
+    return ws ? `${ws.parent} · ${ws.name}` : name;
+  }
+
+  /**
+   * The projects in sidebar order: each with its workspaces right after it. A
+   * workspace whose project is gone is listed on its own.
+   */
+  function sidebarOrder() {
+    const names = new Set(state.projects.map((p) => p.name));
+    const nested = (p) => p.workspace && names.has(p.workspace.parent);
+    const out = [];
+    for (const project of state.projects) {
+      if (nested(project)) continue;
+      out.push(project);
+      out.push(...state.projects.filter((w) => nested(w) && w.workspace.parent === project.name)
+        .sort((a, b) => a.workspace.name.localeCompare(b.workspace.name)));
+    }
+    return out;
   }
 
   /** When a slot was last reset (its Claude exited), from /api/slots; 0 if never. */
@@ -472,11 +495,13 @@
     }
     const filter = state.filter.toLowerCase();
     body.innerHTML = '';
-    for (const project of state.projects) {
-      if (filter && !project.name.toLowerCase().includes(filter)) continue;
+    for (const project of sidebarOrder()) {
+      const ws = project.workspace;
+      if (filter && !`${project.name} ${ws?.name || ''}`.toLowerCase().includes(filter)) continue;
       const open = state.expanded.has(project.name);
       const group = document.createElement('section');
       group.className = 'mux-project';
+      if (ws) group.classList.add('mux-workspace');
       group.dataset.project = project.name;
 
       const head = document.createElement('div');
@@ -490,7 +515,8 @@
       toggle.innerHTML = `<span class="mux-caret">${open ? '▾' : '▸'}</span><span class="mux-pname"></span>`
         + (waiting ? `<span class="mux-count attention">${waiting}</span>` : '')
         + (working ? `<span class="mux-count working">${working}</span>` : '');
-      $('.mux-pname', toggle).textContent = project.name;
+      $('.mux-pname', toggle).textContent = ws ? ws.name : project.name;
+      if (ws) toggle.title = `${ws.parent}'s workspace "${ws.name}" — its own clone${ws.branch ? `, on ${ws.branch}` : ''}, with its own slots`;
       toggle.addEventListener('click', () => {
         if (state.expanded.has(project.name)) state.expanded.delete(project.name);
         else {
@@ -1045,7 +1071,7 @@
       const dot = pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle';
       tab.innerHTML = `<span class="mux-dot ${dot}"></span><span class="mux-tab-text"></span>`;
       const where = isBrowser(pane) ? 'Browser' : pane.project
-        ? `${pane.project} · ${pane.slot ? `slot ${pane.slot}` : 'main'}${kindMark(pane.kind)}`
+        ? `${projectTitle(pane.project)} · ${pane.slot ? `slot ${pane.slot}` : 'main'}${kindMark(pane.kind)}`
         : 'empty';
       $('.mux-tab-text', tab).textContent = `${index + 1} · ${where}`;
       tab.title = pane.title || where;
@@ -1077,7 +1103,7 @@
     const dot = $('.mux-dot', el);
     dot.className = `mux-dot ${pane.attention ? 'attention' : pane.busy ? 'working' : pane.trouble ? 'trouble' : pane.cwd ? 'live' : 'idle'}`;
     $('.mux-pane-label', el).textContent = isBrowser(pane) ? `${index + 1} · Browser` : pane.project
-      ? `${index + 1} · ${pane.project} · ${slotLabel(pane.slot)}${pane.kind === 'chat' ? '' : ` ·${kindMark(pane.kind)}`}`
+      ? `${index + 1} · ${projectTitle(pane.project)} · ${slotLabel(pane.slot)}${pane.kind === 'chat' ? '' : ` ·${kindMark(pane.kind)}`}`
       : `${index + 1}`;
     const untitled = { terminal: 'Claude in a terminal', shell: 'Shell', chat: 'New chat', browser: 'Chrome on the box' }[pane.kind];
     $('.mux-pane-title', el).textContent = pane.title || (pane.cwd ? untitled : '');
@@ -1361,7 +1387,7 @@
   async function openProjectSheet(project) {
     closeSide();
     sheetProject = project;
-    $('#mux-project-title').textContent = project.name;
+    $('#mux-project-title').textContent = projectTitle(project.name);
     $('#mux-project-body').textContent = 'Checking the repository…';
     const btn = $('#mux-project-remove');
     btn.classList.add('hidden');
@@ -1422,8 +1448,25 @@
       + 'autocapitalize="none" autocorrect="off" spellcheck="false" required>'
       + '<button type="submit">Clone in</button></form>'
       + '<p class="hint" id="mux-add-repo-status">Clones it into this project, beside what is already here.</p>';
+    const ws = sheetProject?.workspace;
+    if (ws) {
+      body += `<p class="hint">A workspace of ${escapeHtml(ws.parent)}: its own clone${
+        ws.branch ? ` on ${escapeHtml(ws.branch)}` : ''}, with its own slots. Deleting it leaves ${escapeHtml(ws.parent)} as it is.</p>`;
+    } else {
+      const have = state.projects.filter((p) => p.workspace?.parent === sheetProject?.name).length;
+      body += '<h3 class="repo-heading">New workspace</h3>'
+        + '<form id="mux-form-workspace" class="inline-form mux-workspace-form">'
+        + '<input id="mux-input-workspace" type="text" placeholder="Feature A" maxlength="40" autocomplete="off" required>'
+        + '<input id="mux-input-workspace-branch" type="text" placeholder="branch (optional)" autocomplete="off" '
+        + 'autocapitalize="none" autocorrect="off" spellcheck="false">'
+        + '<button type="submit">Create</button></form>'
+        + `<p class="hint" id="mux-workspace-status">Another full clone of this repository, with its own main checkout and ${
+          ''}ten slots — one per orchestrated task. Its slots branch from the branch you give, or the default one. ${
+          ''}${have + 1} of 5 in use.</p>`;
+    }
     $('#mux-project-body').innerHTML = body;
     $('#mux-form-add-repo').addEventListener('submit', addRepoToProject);
+    $('#mux-form-workspace')?.addEventListener('submit', createWorkspace);
     const btn = $('#mux-project-remove');
     btn.textContent = 'Push & delete from this machine';
     btn.onclick = () => removeProject(false);
@@ -1453,6 +1496,39 @@
       if (sheetProject?.name === project.name) await openProjectSheet(project);
     } catch (err) {
       input.disabled = false;
+      status.textContent = err.message;
+    }
+  }
+
+  async function createWorkspace(e) {
+    e.preventDefault();
+    const project = sheetProject;
+    const input = $('#mux-input-workspace');
+    const branchInput = $('#mux-input-workspace-branch');
+    const status = $('#mux-workspace-status');
+    const name = input.value.trim();
+    const branch = branchInput.value.trim();
+    if (!project || !name) return;
+    input.disabled = true;
+    branchInput.disabled = true;
+    status.textContent = `Cloning ${project.name} for "${name}" and making its slots… this can take a few minutes.`;
+    try {
+      const res = await api('/api/projects/add-workspace', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project: project.name, name, branch }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'could not make the workspace');
+      const failed = (data.project.steps || []).filter((s) => !s.ok).map((s) => `${s.step}: ${s.error}`);
+      toast(`Workspace "${name}" is ready${failed.length ? ` — but ${failed.join('; ')}` : ''}.`, failed.length ? 8000 : 4000);
+      state.expanded.add(data.project.name);
+      save();
+      closeProjectSheet();
+      await loadProjects();
+    } catch (err) {
+      input.disabled = false;
+      branchInput.disabled = false;
       status.textContent = err.message;
     }
   }
@@ -1876,7 +1952,7 @@
     state, openIn, closePane, focusPane, showPanes, swapPanes, syncFromStorage, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
     newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen, arrive, arrivalFrom,
     readOpens, writeOpens, openBrowser,
-    openAddSheet, cloneRepo, createProject, openProjectSheet, removeProject,
+    openAddSheet, cloneRepo, createProject, openProjectSheet, removeProject, createWorkspace, projectTitle,
     // The name the first tests knew it by: a new chat, in a free slot.
     newChatInFreeSlot: (name) => newInFreeSlot(name, 'chat'),
   };

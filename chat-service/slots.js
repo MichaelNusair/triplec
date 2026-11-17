@@ -28,6 +28,7 @@ import { appendFile, mkdir, readFile, readdir, readlink, stat, writeFile } from 
 import { dirname, isAbsolute, join, resolve } from 'path';
 import { promisify } from 'util';
 import { MAX_SLOTS, hasRegistry, projectFor, slotConfigFor } from './projects.js';
+import { readWorkspace } from './workspaces.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -108,6 +109,12 @@ export async function canHaveSlots(projectPath) {
  * there is one, else whatever the project's own checkout is on.
  */
 async function baseRef(projectPath) {
+  // A workspace made for a branch: its slots branch from that branch, and refresh
+  // to it, so what an agent in slot 3 builds starts from what the task has so far.
+  const workspace = await readWorkspace(projectPath);
+  if (workspace?.branch && (await git(projectPath, ['rev-parse', '--verify', '-q', `refs/heads/${workspace.branch}`])).ok) {
+    return workspace.branch;
+  }
   const head = await git(projectPath, ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD']);
   if (head.ok && head.out) return head.out;
   for (const candidate of ['origin/main', 'origin/master']) {
