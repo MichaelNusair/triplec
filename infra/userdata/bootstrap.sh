@@ -943,7 +943,7 @@ chown -R "$USER_NAME:$USER_NAME" "$DATA_MNT/claude"
 # ---------------------------------------------------------------------------
 # Routing, and why it is shaped this way:
 #
-#   = /          a redirect to /chat/, so the bare domain still opens the chat
+#   = /          a redirect to /chat/mux, so the bare domain opens the Mux
 #   /chat/       the chat app: its shell and its own static assets, prefix
 #                stripped by proxy_pass
 #   /login /api/ /ws   the chat service's endpoints

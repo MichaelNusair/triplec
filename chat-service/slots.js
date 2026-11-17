@@ -1,5 +1,6 @@
 /**
- * Worktree slots: eight standing checkouts per project, one conversation each.
+ * Worktree slots: standing checkouts per project (`mux.slots`, ten by default), one
+ * agent each.
  *
  * Every project used to be one working tree shared by every session in it, and
  * AGENTS.md spends a section on what that costs — `git add -A` sweeping up another
@@ -15,9 +16,9 @@
  * conversation in `.claude/worktrees/*`, so a slot's chats show up in the phone's
  * list, labelled with the slot, with nothing else changed.
  *
- * The mux surface (/chat/mux) is the reason there are eight of them: it is the
- * desktop view with several conversations side by side, and eight agents in one
- * checkout is the collision above times eight.
+ * The mux surface (/chat/mux) is the reason there are several of them: it is the
+ * desktop view with several agents side by side, and ten agents in one checkout is
+ * the collision above times ten.
  *
  * Nothing here ever discards work. A slot is created if missing, and refreshed —
  * fast-forwarded to the default branch — only when it is clean and holds no commit
@@ -130,7 +131,7 @@ async function baseRef(projectPath) {
  * `.git/info/exclude` rather than the project's .gitignore: this is a fact about
  * this machine, not about the repository, and editing .gitignore would leave every
  * project with an uncommitted change the moment it was cloned. Without it the main
- * checkout shows `.claude/` as untracked, and a `git add -A` there records eight
+ * checkout shows `.claude/` as untracked, and a `git add -A` there records every slot's
  * nested checkouts — the worst thing a sweep can pick up.
  */
 async function excludeSlots(projectPath) {
@@ -179,8 +180,8 @@ export async function ensureSlot(projectPath, n, { base = null, postCreate = tru
 
 const POST_CREATE_TIMEOUT_MS = Number(process.env.TRIPLEC_POST_CREATE_TIMEOUT_MS || 30 * 60 * 1000);
 const OUTPUT_TAIL = 4000;
-// One chain per project, so a project created with eight slots installs its
-// dependencies eight times in a row rather than eight times at once.
+// One chain per project, so a project created with ten slots installs its
+// dependencies ten times in a row rather than ten times at once.
 const queues = new Map();
 const runs = new Map();
 
