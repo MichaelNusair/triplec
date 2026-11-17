@@ -33,7 +33,11 @@
   <div class="list-body">
     <!-- Findings first, and only when there are any. Everything below is an
          inventory; this is the part that says whether it matters. -->
-    <div id="findings"></div>
+    <div id="findings">
+      <!-- Until the first overview arrives. renderFindings empties #findings, so the
+           first successful poll takes this away with nothing else to remember. -->
+      <div class="box-loader" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+    </div>
 
     <div class="section-label">Host</div>
     <div id="host" class="cards"></div>

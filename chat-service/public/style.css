@@ -396,6 +396,24 @@ html, body {
 .typing span:nth-child(3) { animation-delay: .36s; }
 @keyframes blink { 0%, 60%, 100% { opacity: .25 } 30% { opacity: 1 } }
 
+/* The box page's first load: five dots in five colours, swelling and shrinking in
+   turn, so an empty page reads as on its way rather than broken. */
+.box-loader { display: flex; justify-content: center; align-items: center; gap: 10px; padding: 36px 0 28px; }
+.box-loader span {
+  width: 16px; height: 16px; border-radius: 50%;
+  animation: box-loader-scale 1.2s ease-in-out infinite both;
+}
+.box-loader span:nth-child(1) { background: #d97757; }
+.box-loader span:nth-child(2) { background: #e8b44c; animation-delay: .12s; }
+.box-loader span:nth-child(3) { background: #6cc38a; animation-delay: .24s; }
+.box-loader span:nth-child(4) { background: #5aa4e6; animation-delay: .36s; }
+.box-loader span:nth-child(5) { background: #b07ce8; animation-delay: .48s; }
+@keyframes box-loader-scale {
+  0%, 70%, 100% { transform: scale(.5); opacity: .6; }
+  35% { transform: scale(1.35); opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) { .box-loader span { animation: none; } }
+
 /* --- composer --- */
 .composer {
   flex: 0 0 auto;
