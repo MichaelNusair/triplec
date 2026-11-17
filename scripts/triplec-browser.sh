@@ -63,9 +63,26 @@ mkdir -p "$RUN" "$PROFILE"
 chmod 0700 "$RUN"
 export XAUTHORITY="$RUN/Xauthority"
 export DISPLAY="$DISP"
-rm -f "$XAUTHORITY" "$RUN/vnc.sock"
+rm -f "$XAUTHORITY" "$XAUTHORITY.tmp" "$RUN/vnc.sock"
 : >"$XAUTHORITY"
-xauth -q -f "$XAUTHORITY" add "$DISP" . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+# The cookie is written for any host (FamilyWild, the ffff), not this one by name.
+# xauth keys an entry to the hostname, and a cloud VM's can change after boot (GCE
+# goes from the short name to the FQDN): every Chrome started after that is refused
+# by the X server, "Authorization required", and the pane stays blank.
+: >"$XAUTHORITY.tmp"
+xauth -q -f "$XAUTHORITY.tmp" add "$DISP" . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+xauth -q -f "$XAUTHORITY.tmp" nlist | sed 's/^..../ffff/' | xauth -q -f "$XAUTHORITY" nmerge -
+rm -f "$XAUTHORITY.tmp"
+[ -s "$XAUTHORITY" ] || { echo "triplec-browser: could not write $XAUTHORITY" >&2; exit 1; }
+
+# Chrome's profile lock names host and pid. One left by a run that did not exit
+# cleanly, or from before the hostname changed, makes Chrome refuse the profile as
+# "in use on another computer". This service is the profile's only user, so a lock
+# whose pid is not running here is stale.
+lock="$(readlink "$PROFILE/SingletonLock" 2>/dev/null || true)"
+if [ -n "$lock" ] && ! kill -0 "${lock##*-}" 2>/dev/null; then
+  rm -f "$PROFILE/SingletonLock" "$PROFILE/SingletonSocket" "$PROFILE/SingletonCookie"
+fi
 
 # A display left locked by a previous run that died hard: Xvnc refuses to start on it.
 num="${DISP#:}"
