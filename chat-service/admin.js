@@ -182,6 +182,9 @@ const defaultDeps = {
   build: () => buildInfo(),
   memory: () => ({ total: os.totalmem(), free: os.freemem() }),
   load: () => os.loadavg(),
+  // What a load average is measured against. 3 is a quarter of a 12-core box and
+  // more than all of a 2-core one, so the number means nothing without this.
+  cpus: () => os.availableParallelism?.() ?? os.cpus().length,
   uptime: () => os.uptime(),
   now: () => Date.now(),
 };
@@ -636,6 +639,7 @@ export function createAdmin({ manager, deps: overrides = {} } = {}) {
         hostname: os.hostname(),
         uptimeSeconds: Math.round(deps.uptime()),
         load: deps.load().map((n) => Math.round(n * 100) / 100),
+        cpus: deps.cpus(),
         memory,
         disk,
         build,

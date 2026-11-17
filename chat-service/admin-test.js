@@ -276,6 +276,7 @@ function makeDeps(state) {
     }),
     memory: () => state.mem,
     load: () => [0.42, 0.31, 0.25],
+    cpus: () => 2,
     uptime: () => 30 * 3600,
     now: () => 1_700_000_000_000,
   };
@@ -785,6 +786,11 @@ const $ = (sel) => w.document.querySelector(sel);
     $('#host').textContent);
   check('the volume too', $('#host').textContent.includes('38 GB of 95 GB'), $('#host').textContent);
   check('a hot meter reads hot', $('#host').innerHTML.includes('class="hot"'));
+  // A bare load average says nothing until you know how many cores share it.
+  const loadCard = $('#host .card.load');
+  check('the load is measured against the cores', loadCard?.textContent.includes('/ 2 cores'), loadCard?.textContent);
+  check('as a share of them', loadCard?.textContent.includes('21% busy'), loadCard?.textContent);
+  check('and a light load is green', loadCard?.classList.contains('calm'));
 
   const updates = $('#updates');
   check('the updates section is shown', !updates.classList.contains('hidden') && !$('#updates-label').classList.contains('hidden'));
@@ -1036,6 +1042,26 @@ console.log('\nThe page asks before forcing anything:');
     .map((h) => h.querySelector('.group-btn')?.textContent).join('|') === 'Stop all 5',
     $('#surface-broker').querySelector('.group-btn')?.textContent);
   payload.surfaces.broker.forEach((s, i) => { s.project = projects[i]; });
+  await w.__adminForTest.refresh();
+
+  // The load's colour is its share of the cores: amber from 70%, red once work is
+  // waiting for a CPU. And a server too old to send the core count still gets a card.
+  const realLoad = payload.host.load;
+  payload.host.load = [1.5, 1, 1];
+  await w.__adminForTest.refresh();
+  check('a load at 75% of the cores is amber', $('#host .card.load')?.classList.contains('busy'),
+    $('#host .card.load')?.className);
+  payload.host.load = [3.6, 2, 1];
+  await w.__adminForTest.refresh();
+  check('past every core it is red', $('#host .card.load')?.classList.contains('over')
+    && $('#host .card.load').textContent.includes('180% busy'), $('#host .card.load')?.textContent);
+  check('and the meter stops at full', $('#host .card.load .meter span')?.style.width === '100%');
+  delete payload.host.cpus;
+  await w.__adminForTest.refresh();
+  check('without a core count it is the bare number', !$('#host .card.load')
+    && $('#host').textContent.includes('3.6'), $('#host').textContent);
+  payload.host.cpus = 2;
+  payload.host.load = realLoad;
   await w.__adminForTest.refresh();
 
   posts.length = 0;

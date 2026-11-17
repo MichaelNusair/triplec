@@ -360,17 +360,48 @@ function renderHost(host) {
       <div class="meter"><span style="width:${Math.min(diskPct, 100)}%" class="${diskPct >= 85 ? 'hot' : ''}"></span></div>
       <div class="card-note">${host.disk ? `${mb(host.disk.usedKb)} of ${mb(host.disk.totalKb)}` : 'unknown'}</div>
     </div>
-    <div class="card">
-      <div class="card-label">Load</div>
-      <div class="card-value">${host.load[0]}</div>
-      <div class="card-note">1m · 5m ${host.load[1]} · 15m ${host.load[2]}</div>
-    </div>
+    ${loadCard(host.load, host.cpus)}
     <div class="card">
       <div class="card-label">Uptime</div>
       <div class="card-value">${duration(host.uptimeSeconds)}</div>
       <div class="card-note">${escapeHtml(host.hostname)}</div>
     </div>
     ${buildCard(host.build)}`;
+}
+
+/**
+ * The load average, against the cores it is shared between — a bare 3 says
+ * nothing until you know whether the box has 2 cores or 32. The meter is full when
+ * every core is busy; past that, work is waiting for a CPU. Green while there is
+ * room, amber from 70% of the cores, red from all of them.
+ *
+ * An older server sends no `cpus`; then it is the bare number, as it always was.
+ */
+function loadLevel(perCore) {
+  if (perCore >= 1) return 'over';
+  if (perCore >= 0.7) return 'busy';
+  return 'calm';
+}
+function loadCard(load, cpus) {
+  const [now, five, fifteen] = load;
+  const later = `5m ${five} · 15m ${fifteen}`;
+  if (!cpus) {
+    return `
+    <div class="card">
+      <div class="card-label">Load</div>
+      <div class="card-value">${now}</div>
+      <div class="card-note">1m · ${later}</div>
+    </div>`;
+  }
+  const pct = Math.round((now / cpus) * 100);
+  const level = loadLevel(now / cpus);
+  return `
+    <div class="card load ${level}">
+      <div class="card-label">Load</div>
+      <div class="card-value">${now}<span class="card-of"> / ${cpus} cores</span></div>
+      <div class="meter"><span style="width:${Math.min(pct, 100)}%" class="${level}"></span></div>
+      <div class="card-note">${pct}% busy · ${later}</div>
+    </div>`;
 }
 
 /**

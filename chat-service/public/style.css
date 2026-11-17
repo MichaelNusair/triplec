@@ -677,6 +677,14 @@ html, body {
 .meter { height: 4px; margin-bottom: 6px; border-radius: 999px; background: var(--bg-input); overflow: hidden; }
 .meter span { display: block; height: 100%; background: var(--accent-dim); }
 .meter span.hot { background: var(--error); }
+/* Load, by how much of the box's cores it takes (loadCard in admin.js). */
+.meter span.calm { background: #4c9a6a; }
+.meter span.busy { background: #e8b44c; }
+.meter span.over { background: var(--error); }
+.card.load.calm .card-value { color: #6cc38a; }
+.card.load.busy .card-value { color: #e8b44c; }
+.card.load.over .card-value { color: var(--error); }
+.card-of { font-size: 13px; font-weight: 400; color: var(--text-dim); }
 
 /* One line per unit — five of them, and the whole question is which dot is off. */
 .units { margin: 0 12px; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
