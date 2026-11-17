@@ -1,7 +1,7 @@
 {
   "name": "triplec",
   "version": "3.0.0",
-  "description": "TripleC \u2014 Claude Code on a machine of its own: a chat app and web IDE that a session outlives the device it started on. Self-host it, or have it managed.",
+  "description": "TripleC \u2014 Claude Code on a machine of its own: every project and its worktree slots on one screen, the real CLI in terminals that outlive the browser, a Chrome Claude can drive, and VS Code. Self-host it, or have it managed.",
   "type": "module",
   "license": "MIT",
   "homepage": "https://triplec.host",
