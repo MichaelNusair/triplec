@@ -383,10 +383,12 @@ done
 mkdir -p "$STAGE/scripts" "$STAGE/docs" "$STAGE/deploy/host"
 cp "$SOURCE/scripts/cc-session.sh" "$STAGE/scripts/"
 [ "$F_BROWSER" = true ] && cp "$SOURCE/scripts/triplec-browser.sh" "$STAGE/scripts/"
-# The updater, and the settings module it shares with config.mjs (which imports
-# it, so uninstall.sh needs it here too). Staged whatever autoUpdate.mode says:
+# The updater, and the settings modules it shares with config.mjs (which imports
+# them, so uninstall.sh needs them here too: auto-update-config.mjs, and
+# mux-config.mjs for the Mux's limits). Staged whatever autoUpdate.mode says:
 # `triplec-update run --now` is the upgrade command in every mode.
-cp "$SOURCE/scripts/triplec-update.mjs" "$SOURCE/scripts/auto-update-config.mjs" "$SOURCE/scripts/box-config.mjs" "$STAGE/scripts/"
+cp "$SOURCE/scripts/triplec-update.mjs" "$SOURCE/scripts/auto-update-config.mjs" "$SOURCE/scripts/box-config.mjs" \
+  "$SOURCE/scripts/mux-config.mjs" "$STAGE/scripts/"
 mkdir -p "$STAGE/bin"
 cat >"$STAGE/bin/triplec-update" <<UPD
 #!/bin/sh

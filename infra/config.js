@@ -19,6 +19,7 @@ import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../scripts/auto-update-config.mjs';
 import { AWS_FILE, layer, readStore } from '../scripts/box-config.mjs';
+import { MUX_DEFAULTS, muxErrors } from '../scripts/mux-config.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = join(__dirname, '..');
@@ -222,6 +223,19 @@ const DEFAULTS = {
    * like autoUpdate, and the box page can change it (it applies it to itself).
    */
   browser: { enabled: true },
+
+  /**
+   * How much of the Mux this deployment offers: worktree slots per project
+   * (`slot-1` … `slot-N`), panes shared between the windows that show the Mux, and
+   * workspaces — full clones of one repository on a branch of their own, counting
+   * the original. Ceilings, not quotas: a slot is made on first use and a workspace
+   * only when asked for. Lowering one hides what is above it and deletes nothing.
+   *
+   * Ranges and the one definition are in scripts/mux-config.mjs, shared with a host
+   * install. It reaches the box in the payload, like `browser`, and the box applies
+   * it to itself, so the box page can change it with no stack deploy.
+   */
+  mux: { ...MUX_DEFAULTS },
 
   /**
    * The machine full deploys are driven from — `./deploy-remote.sh` reads this.
@@ -486,6 +500,7 @@ export function resolveConfig(fromFile, { env = process.env, quiet = false, repo
     deployFrom: { ...DEFAULTS.deployFrom, ...(fromFile.deployFrom || {}) },
     security: { ...DEFAULTS.security, ...(fromFile.security || {}) },
     browser: { ...DEFAULTS.browser, ...(fromFile.browser || {}) },
+    mux: { ...DEFAULTS.mux, ...(fromFile.mux || {}) },
     // Validated on the file's own value below, so an unknown key in it is caught
     // rather than merged over and forgotten.
     autoUpdate: fromFile.autoUpdate,
@@ -597,6 +612,11 @@ export function resolveConfig(fromFile, { env = process.env, quiet = false, repo
   if (typeof config.browser.enabled !== 'boolean') {
     fail(`browser.enabled must be true or false. Got ${JSON.stringify(config.browser.enabled)}.`);
   }
+
+  // --- How much of the Mux --------------------------------------------------
+  // Whole numbers in a range, checked on the file's own value so a misspelt key is
+  // an error rather than a limit that silently stays at its default.
+  for (const [key, message] of muxErrors(fromFile.mux)) fail(`${key} ${message}.`);
 
   // --- What this deployment is called --------------------------------------
   // The pattern is the whole safety story for this value. It travels through a sed

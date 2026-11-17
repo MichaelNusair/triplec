@@ -173,6 +173,24 @@ test('features.browser is on unless the config turns it off', () => {
   assert.equal(resolve({ mode: 'host', features: { browser: false } }, ctx).features.browser, false);
   assert.ok(env({ mode: 'host' }).TRIPLEC_FEATURES.split(',').includes('browser'));
 });
+test('mux.slots, panes and workspaces are whole numbers in range, and reach the chat service', () => {
+  ok(withChange('mux', { slots: 32, panes: 16, workspaces: 20 }));
+  ok({ ...withChange('mux', { slots: 1, panes: 1, workspaces: 1 }), projects: [] });
+  rejects(withChange('mux', { slots: 33 }), 'mux.slots', /1 to 32/);
+  rejects(withChange('mux', { panes: 0 }), 'mux.panes', /1 to 16/);
+  rejects(withChange('mux', { workspaces: 2.5 }), 'mux.workspaces');
+  rejects(withChange('mux', { slot: 4 }), 'mux.slot', /unknown key/);
+  const e = env(withChange('mux', { slots: 4, panes: 12, workspaces: 2 }));
+  assert.deepEqual([e.TRIPLEC_MUX_SLOTS, e.TRIPLEC_MUX_PANES, e.TRIPLEC_MUX_WORKSPACES], ['4', '12', '2']);
+});
+test("a project's slots.count defaults to mux.slots and may not exceed it", () => {
+  const withProject = (mux, slots) => ({ ...example, mux, projects: [{ name: 'a', path: '/a', ...(slots ? { slots } : {}) }] });
+  assert.equal(resolve(withProject({ slots: 4 }), ctx).projects[0].slots.count, 4);
+  assert.equal(resolve(withProject({ slots: 20 }, { count: 3 }), ctx).projects[0].slots.count, 3);
+  ok(withProject({ slots: 20 }, { count: 20 }));
+  rejects(withProject({ slots: 4 }, { count: 5 }), 'projects[0].slots.count', /1 to 4/);
+  rejects(withProject(undefined, { count: 11 }), 'projects[0].slots.count', /1 to 10/);
+});
 test('browser.fps is 10 to 60, and reaches the chat service', () => {
   ok(withChange('browser.fps', 60));
   rejects(withChange('browser.fps', 90), 'browser.fps');
@@ -221,6 +239,9 @@ test('env: the default contract, exactly', () => {
     ['TRIPLEC_FEATURES', 'push,mux,admin,browser'],
     ['TRIPLEC_BROWSER_SCALE', '1'],
     ['TRIPLEC_BROWSER_FPS', '30'],
+    ['TRIPLEC_MUX_SLOTS', '10'],
+    ['TRIPLEC_MUX_PANES', '8'],
+    ['TRIPLEC_MUX_WORKSPACES', '5'],
     ['CLAUDE_AUTH_MODE', 'login'],
     ['DEFAULT_PERMISSION_MODE', 'manual'],
     ['DEFAULT_EFFORT', 'high'],

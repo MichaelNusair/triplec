@@ -103,6 +103,10 @@ export const AWS_BOX_KEYS = {
   // Not a UserData placeholder: bootstrap.sh reads the file's value from the
   // payload's deployment/config.json, so this only carries the page's change to it.
   'browser.enabled': 'BROWSER_ENABLED',
+  // Read from the payload the same way; see bootstrap.sh.
+  'mux.slots': 'MUX_SLOTS',
+  'mux.panes': 'MUX_PANES',
+  'mux.workspaces': 'MUX_WORKSPACES',
 };
 
 export function scopeOf(platform, p) {

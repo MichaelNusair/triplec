@@ -878,6 +878,54 @@ console.log('chat, deep link');
   w.close();
 }
 
+console.log('the deployment decides how much of the Mux there is');
+{
+  const { DEFAULTS, BOUNDS, readLimits, applyLimits } = await import('./limits.js');
+  const shared = await import('../scripts/mux-config.mjs');
+  check('the service and the configs agree on the defaults', JSON.stringify(DEFAULTS) === JSON.stringify(shared.MUX_DEFAULTS));
+  check('…and on the ranges', JSON.stringify(BOUNDS) === JSON.stringify(shared.MUX_LIMITS));
+  const quiet = () => {};
+  const read = (env) => readLimits(env, quiet);
+  check('no setting is the defaults: ten slots, eight panes, five workspaces',
+    JSON.stringify(read({})) === JSON.stringify({ slots: 10, panes: 8, workspaces: 5 }));
+  check('each is taken from its own variable',
+    JSON.stringify(read({ TRIPLEC_MUX_SLOTS: '20', TRIPLEC_MUX_PANES: '12', TRIPLEC_MUX_WORKSPACES: '2' }))
+      === JSON.stringify({ slots: 20, panes: 12, workspaces: 2 }));
+  const logged = [];
+  const bad = readLimits({ TRIPLEC_MUX_SLOTS: '99', TRIPLEC_MUX_PANES: 'lots', TRIPLEC_MUX_WORKSPACES: '0' }, (m) => logged.push(m));
+  check('a value out of range falls back to the default rather than stopping the service',
+    JSON.stringify(bad) === JSON.stringify(DEFAULTS));
+  check('…and says so in the journal', logged.length === 3 && /TRIPLEC_MUX_SLOTS/.test(logged[0]), logged.join(' | '));
+  const page = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
+  check('the Mux page has the slot the server fills in', /<meta name="limits" content="">/.test(page));
+  check('…and the server fills it', /content="slots=4 panes=3 workspaces=2"/.test(applyLimits(page, { slots: 4, panes: 3, workspaces: 2 })));
+  const server = readFileSync(join(here, 'server.js'), 'utf8');
+  check('server.js runs every HTML shell through applyLimits', /applyLimits\(applyDeploymentName\(/.test(server));
+  const boot = readFileSync(join(here, '..', 'infra', 'userdata', 'bootstrap.sh'), 'utf8');
+  check('bootstrap.sh hands all three to the chat service',
+    ['SLOTS', 'PANES', 'WORKSPACES'].every((k) => boot.includes(`Environment=TRIPLEC_MUX_${k}=$MUX_${k}`)));
+  check("…from the payload's config", ['slots', 'panes', 'workspaces'].every((k) => boot.includes(`.mux.${k} // empty`)));
+
+  const html = applyLimits(page, { slots: 4, panes: 4, workspaces: 2 });
+  const js = readFileSync(join(here, 'public', 'mux.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/mux' });
+  const w = dom.window;
+  w.fetch = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ projects: [], sessions: [] }) });
+  w.Notification = undefined;
+  const errors = [];
+  w.addEventListener('error', (e) => errors.push(e.message));
+  w.localStorage.setItem('triplec-mux', JSON.stringify({ layout: 8 }));
+  w.eval(js);
+  await new Promise((r) => setTimeout(r, 100));
+  const mux = w.__muxForTest;
+  check('a Mux of four panes boots', errors.length === 0 && Boolean(mux), errors.join('; '));
+  check('…and has four panes, not eight', mux?.state.panes.length === 4, mux?.state.panes.length);
+  check('…a saved layout of eight it cannot show falls back to two', mux?.state.layout === 2, mux?.state.layout);
+  const layouts = [...w.document.querySelectorAll('[data-layout]')].map((b) => b.dataset.layout).join(',');
+  check('…and offers only the layouts that fit', layouts === '1,2,3,4', layouts);
+  w.close();
+}
+
 await rm(root, { recursive: true, force: true });
 await rm(remotes, { recursive: true, force: true });
 

@@ -12,9 +12,11 @@
  */
 import { readFile, stat, writeFile } from 'fs/promises';
 import { join } from 'path';
+import { LIMITS } from './limits.js';
 
-// The project's own clone included: five tasks, ten agents each.
-export const MAX_WORKSPACES = 5;
+// The project's own clone included: five tasks, ten agents each, by default.
+/** Clones per repository, counting the original: the deployment's `mux.workspaces`. */
+export const MAX_WORKSPACES = LIMITS.workspaces;
 const NOTE = 'triplec-workspace.json';
 
 /** A display name as a directory name's tail: "Feature A" is feature-a. */

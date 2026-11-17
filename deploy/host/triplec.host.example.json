@@ -29,5 +29,6 @@
   "maxLiveSessions": 8,
   "pwa": { "name": "" },
   "browser": { "account": "", "scale": 1, "fps": 30 },
+  "mux": { "slots": 10, "panes": 8, "workspaces": 5 },
   "autoUpdate": { "mode": "off", "soakHours": 24, "window": "", "idleMinutes": 30, "checkMinutes": 60 }
 }

@@ -8,8 +8,8 @@
  * to remember to do and then clean up after.
  *
  * A slot makes that the default instead of a discipline. `<project>/.claude/
- * worktrees/slot-1` … `slot-8` are ordinary linked worktrees, each on a branch of
- * the same name, created when a project arrives (clone or new) and on first use for
+ * worktrees/slot-1` … `slot-N` (N is the deployment's `mux.slots`, ten by default)
+ * are ordinary linked worktrees, each on a branch of the same name, created when a project arrives (clone or new) and on first use for
  * one that predates this. The path is the one Claude Code's own EnterWorktree uses,
  * which is not a coincidence: `projectPlaces` in session-manager.js already finds a
  * conversation in `.claude/worktrees/*`, so a slot's chats show up in the phone's

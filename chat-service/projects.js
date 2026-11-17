@@ -25,8 +25,10 @@ import { readFileSync } from 'fs';
 import { readdir, readFile, rename, writeFile } from 'fs/promises';
 import { dirname, isAbsolute, join, normalize } from 'path';
 import { PROJECTS_ROOT } from './host.js';
+import { LIMITS } from './limits.js';
 
-export const MAX_SLOTS = 10;
+/** Slots per project: the deployment's `mux.slots`, ten unless it says otherwise. */
+export const MAX_SLOTS = LIMITS.slots;
 
 /**
  * Validate a project name. The character class is the whole defence for the

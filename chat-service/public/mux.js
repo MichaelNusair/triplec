@@ -50,7 +50,24 @@
   window.cmoHost = { name: 'mux' };
 
   const STORE_KEY = 'triplec-mux';
-  const LAYOUTS = { 1: [1, 1], 2: [2, 1], 3: [3, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2] };
+  // How much of the Mux this deployment offers — its `mux` setting, which server.js
+  // writes into <meta name="limits"> as "slots=10 panes=8 workspaces=5". A page
+  // served without it (an old server, a test) gets those defaults.
+  const LIMITS = (() => {
+    const out = { slots: 10, panes: 8, workspaces: 5 };
+    const raw = document.querySelector('meta[name="limits"]')?.content || '';
+    for (const [, key, n] of raw.matchAll(/(slots|panes|workspaces)=(\d+)/g)) {
+      if (Number(n) >= 1) out[key] = Number(n);
+    }
+    return out;
+  })();
+  const PANES = LIMITS.panes;
+  // A window cannot show more panes than the deployment has, so a layout bigger
+  // than that is not offered.
+  const LAYOUTS = Object.fromEntries(
+    Object.entries({ 1: [1, 1], 2: [2, 1], 3: [3, 1], 4: [2, 2], 6: [3, 2], 8: [4, 2], 12: [4, 3], 16: [4, 4] })
+      .filter(([n]) => Number(n) <= PANES),
+  );
   const KINDS = ['chat', 'terminal', 'shell'];
   // Both are the terminal page; a shell is the same page asking for `bash` instead.
   const TERM_KINDS = ['terminal', 'shell'];
@@ -169,7 +186,7 @@
     } catch {
       mine = null;
     }
-    state.layout = LAYOUTS[mine?.layout] ? Number(mine.layout) : LAYOUTS[saved?.layout] ? Number(saved.layout) : 2;
+    state.layout = LAYOUTS[mine?.layout] ? Number(mine.layout) : LAYOUTS[saved?.layout] ? Number(saved.layout) : LAYOUTS[2] ? 2 : 1;
     state.first = firstFor(Number(mine?.first) || 0);
     state.expanded = new Set(Array.isArray(saved?.expanded) ? saved.expanded : []);
     state.alerts = Boolean(saved?.alerts) && 'Notification' in window && Notification.permission === 'granted';
@@ -213,7 +230,6 @@
     renderSidebar();
   }
 
-  const PANES = 8;
   const paneCount = () => LAYOUTS[state.layout][0] * LAYOUTS[state.layout][1];
   // Where a window's panes can start for the layout: whole pages of it, 1-3 and 4-6
   // for three across. A layout of six or eight has only the one.
@@ -1014,6 +1030,11 @@
     grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
     grid.style.gridTemplateRows = `repeat(${rows}, minmax(0, 1fr))`;
     for (const button of document.querySelectorAll('[data-layout]')) {
+    // Only the layouts this deployment has panes for.
+    if (!LAYOUTS[button.dataset.layout]) {
+      button.remove();
+      continue;
+    }
       button.classList.toggle('active', Number(button.dataset.layout) === state.layout);
     }
     renderPages();
@@ -1461,8 +1482,8 @@
         + 'autocapitalize="none" autocorrect="off" spellcheck="false">'
         + '<button type="submit">Create</button></form>'
         + `<p class="hint" id="mux-workspace-status">Another full clone of this repository, with its own main checkout and ${
-          ''}ten slots — one per orchestrated task. Its slots branch from the branch you give, or the default one. ${
-          ''}${have + 1} of 5 in use.</p>`;
+          ''}${LIMITS.slots} slots — one per orchestrated task. Its slots branch from the branch you give, or the default one. ${
+          ''}${have + 1} of ${LIMITS.workspaces} in use.</p>`;
     }
     $('#mux-project-body').innerHTML = body;
     $('#mux-form-add-repo').addEventListener('submit', addRepoToProject);
@@ -1856,7 +1877,7 @@
     save();
   });
 
-  // Alt+1…8 focuses a pane, from anywhere on this page. Inside a frame the chat or
+  // Alt+1…9 focuses a pane, from anywhere on this page. Inside a frame the chat or
   // the terminal has the keyboard, which is where it should be while typing.
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !projectSheet.classList.contains('hidden')) {
@@ -1876,7 +1897,7 @@
     // Alt+Shift+N swaps the focused pane with pane N; e.key is the digit's shifted
     // character then, so read the key itself.
     if (e.shiftKey) {
-      const d = /^Digit([1-8])$/.exec(e.code || '');
+      const d = /^Digit([1-9])$/.exec(e.code || '');
       if (d) {
         e.preventDefault();
         swapPanes(state.focus, Number(d[1]) - 1);

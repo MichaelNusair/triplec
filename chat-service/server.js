@@ -51,6 +51,7 @@ import { startTurnWatcher } from './turn-watcher.js';
 import { createAdmin } from './admin.js';
 import { PASTE_LIMIT, RUN_LIMIT, runInTerminal, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
 import { ensureSlot, slotOf } from './slots.js';
+import { applyLimits } from './limits.js';
 import { browserStatus, novncFile, openInBrowser, resizeBrowser, serveBrowser } from './browser.js';
 import { serveVideo, videoAvailable } from './browser-video.js';
 import {
@@ -221,11 +222,11 @@ async function serveStatic(req, res, pathname) {
       const build = await buildInfo();
       data = Buffer.from(
         applyBuildStamp(
-          applyDeploymentName(
+          applyLimits(applyDeploymentName(
             data
               .toString()
               .replace(/(src|href)="(\/chat\/[A-Za-z0-9._-]+\.(?:js|css))"/g, `$1="$2?v=${v}"`),
-          ),
+          )),
           build.id,
         ),
       );

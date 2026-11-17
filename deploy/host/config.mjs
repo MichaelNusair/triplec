@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 // checkout and from installDir alike, because install.sh stages scripts/ there.
 import { AUTO_UPDATE_DEFAULTS, validateAutoUpdate, resolveAutoUpdate } from '../../scripts/auto-update-config.mjs';
 import { HOST_FILE_NAME, layer, readStore } from '../../scripts/box-config.mjs';
+import { MUX_DEFAULTS, MUX_LIMITS, muxErrors } from '../../scripts/mux-config.mjs';
 
 export const FEATURES = ['editor', 'voice', 'polish', 'push', 'mux', 'admin', 'retire', 'browser'];
 export const AUTH_MODES = ['login', 'bedrock', 'vertex', 'apiKey'];
@@ -82,9 +83,14 @@ export const DEFAULTS = {
   browser: { account: '', scale: 1, fps: 30 },
   // Whether this install updates itself, and how. See docs/UPDATES.md.
   autoUpdate: AUTO_UPDATE_DEFAULTS,
+  // How much of the Mux: slots per project, panes, and workspaces (clones of one
+  // repository, counting the original). Shared with the AWS config; see
+  // scripts/mux-config.mjs. A project's own slots.count may be lower than slots.
+  mux: MUX_DEFAULTS,
 };
 
-const PROJECT_DEFAULTS = { name: '', path: '', slots: { count: 10, postCreate: '' } };
+// slots.count defaults to mux.slots; see resolve().
+const PROJECT_DEFAULTS = { name: '', path: '', slots: { count: MUX_DEFAULTS.slots, postCreate: '' } };
 
 // Key names that only ever hold a secret. Rejected with a message that says where
 // the secret goes instead, because "unknown key" alone reads like a typo to fix.
@@ -181,8 +187,9 @@ export function validate(raw) {
           for (const key of Object.keys(p.slots)) {
             if (!(key in PROJECT_DEFAULTS.slots)) err(`${at}.slots.${key}`, 'unknown key');
           }
-          if (p.slots.count !== undefined && !isInt(p.slots.count, 1, 10)) {
-            err(`${at}.slots.count`, 'must be an integer from 1 to 10');
+          const most = isInt(raw.mux?.slots, ...MUX_LIMITS.slots) ? raw.mux.slots : MUX_DEFAULTS.slots;
+          if (p.slots.count !== undefined && !isInt(p.slots.count, 1, most)) {
+            err(`${at}.slots.count`, `must be an integer from 1 to ${most} (mux.slots)`);
           }
           if (p.slots.postCreate !== undefined && typeof p.slots.postCreate !== 'string') {
             err(`${at}.slots.postCreate`, 'must be a string (a command, or empty)');
@@ -291,6 +298,7 @@ export function validate(raw) {
   }
   if (!isInt(c.maxLiveSessions, 1, 64)) err('maxLiveSessions', 'must be an integer from 1 to 64');
   errors.push(...validateAutoUpdate(raw.autoUpdate));
+  for (const [key, message] of muxErrors(raw.mux)) err(key, message);
   if (!isObject(c.browser) || typeof c.browser.account !== 'string'
     || (c.browser.account !== '' && !/^[^\s@,]+@[^\s@,]+$/.test(c.browser.account))) {
     err('browser.account', 'must be an email address, or empty');
@@ -371,7 +379,7 @@ export function resolve(raw, ctx = {}) {
   c.projects = c.projects.map((p) => ({
     name: p.name,
     path: ex(p.path),
-    slots: { ...PROJECT_DEFAULTS.slots, ...(p.slots || {}) },
+    slots: { ...PROJECT_DEFAULTS.slots, count: c.mux.slots, ...(p.slots || {}) },
   }));
   if (c.claude.permissionMode === 'default') c.claude.permissionMode = 'manual';
   c.autoUpdate = resolveAutoUpdate(raw.autoUpdate);
@@ -400,6 +408,11 @@ export function envPairs(c) {
   if (c.features.browser) {
     pairs.push(['TRIPLEC_BROWSER_SCALE', String(c.browser.scale)], ['TRIPLEC_BROWSER_FPS', String(c.browser.fps)]);
   }
+  pairs.push(
+    ['TRIPLEC_MUX_SLOTS', String(c.mux.slots)],
+    ['TRIPLEC_MUX_PANES', String(c.mux.panes)],
+    ['TRIPLEC_MUX_WORKSPACES', String(c.mux.workspaces)],
+  );
   pairs.push(['CLAUDE_AUTH_MODE', c.claude.authMode]);
   if (c.claude.defaultModel) pairs.push(['ANTHROPIC_MODEL', c.claude.defaultModel]);
   pairs.push(

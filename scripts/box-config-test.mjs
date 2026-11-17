@@ -116,6 +116,11 @@ console.log('what bootstrap.sh is handed');
       === "BROWSER_ENABLED='false'");
   check('B8: as a boolean only', /browser.enabled: must be a boolean/.test(
     (() => { try { withChanges(resolved, emptyStore(), { 'browser.enabled': 'no' }, { platform: 'aws' }); return ''; } catch (e) { return e.message; } })()));
+  check('B8: the Mux limits are in the config, at their defaults', JSON.stringify(resolved.mux) === '{"slots":10,"panes":8,"workspaces":5}');
+  check('B8: and the box page changes them as box keys, no stack deploy',
+    ['mux.slots', 'mux.panes', 'mux.workspaces'].every((p) => scopeOf('aws', p) === 'box')
+    && shellAssignments(resolved, withChanges(resolved, emptyStore(), { 'mux.slots': 16, 'mux.panes': 12 }, { platform: 'aws' }))
+      === "MUX_SLOTS='16'\nMUX_PANES='12'");
 }
 
 console.log('saving, with each platform\'s validation');
@@ -151,6 +156,13 @@ console.log('saving, with each platform\'s validation');
     msg = e.message;
   }
   check('B10: autoUpdate is checked by the same rules as the file', /checkMinutes/.test(msg), msg);
+  msg = '';
+  try {
+    await save(d, { 'mux.slots': 64 });
+  } catch (e) {
+    msg = e.message;
+  }
+  check('B10: a Mux limit out of range is refused by the config\'s own rule', /mux.slots must be a whole number from 1 to 32/.test(msg), msg);
 
   // The deploy reads the store too (infra/config.js loadConfig).
   const shell = execFileSync('node', [path.join(HERE, '..', 'infra', 'print-config.js')], {

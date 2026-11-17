@@ -158,6 +158,15 @@
   ],
   "browser": { "enabled": true },
 
+  "$comment_mux": [
+    "How much of the Mux this deployment offers: worktree slots per project (1-32),",
+    "panes shared between the windows that show the Mux (1-16), and workspaces, which",
+    "are full clones of one repository counting the original (1-20). Ceilings, not",
+    "quotas: lowering one hides what is above it and deletes nothing. Applied by the",
+    "box itself, so an app-only deploy or the box page changes it."
+  ],
+  "mux": { "slots": 10, "panes": 8, "workspaces": 5 },
+
   "$comment_git": "Author on commits Claude makes in the workspace.",
   "gitUserName": "Your Name",
   "gitUserEmail": "you@example.com",

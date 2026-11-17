@@ -52,9 +52,23 @@ if [ -f /opt/claude-web/deployment/config.json ] && command -v jq >/dev/null &&
   BROWSER_ENABLED=false
 fi
 
+# How much of the Mux (mux.slots, mux.panes, mux.workspaces in the config; defaults
+# and ranges in scripts/mux-config.mjs). From the payload's config like the browser's
+# switch, so a change is an app-only deploy, and the box page's change to them follows
+# below. infra/config.js has already refused anything but a whole number in range;
+# this keeps only digits anyway, because each lands in a unit file. Empty means the
+# chat service's own default.
+MUX_SLOTS="" MUX_PANES="" MUX_WORKSPACES=""
+if [ -f /opt/claude-web/deployment/config.json ] && command -v jq >/dev/null; then
+  MUX_SLOTS="$(jq -r '.mux.slots // empty' /opt/claude-web/deployment/config.json 2>/dev/null || true)"
+  MUX_PANES="$(jq -r '.mux.panes // empty' /opt/claude-web/deployment/config.json 2>/dev/null || true)"
+  MUX_WORKSPACES="$(jq -r '.mux.workspaces // empty' /opt/claude-web/deployment/config.json 2>/dev/null || true)"
+fi
+
 # The box page's settings (/chat/admin), over the values above for the keys the box
 # applies to itself: the model, permission mode, effort, git identity, the app's
-# name, who may sign in and whether the Browser pane is on. scripts/box-config.mjs keeps them on /workspace, where a
+# name, who may sign in, whether the Browser pane is on and how much of the Mux there
+# is. scripts/box-config.mjs keeps them on /workspace, where a
 # deploy does not overwrite them, and prints them as quoted assignments; it refuses
 # to save a value with a quote, $, \, |, ;, & or < > in it, and leaves one out here
 # if it finds one anyway. Each applies only while the config file still says what it
@@ -67,6 +81,9 @@ if [ -f /opt/claude-web/scripts/box-config.mjs ] && [ -f /opt/claude-web/deploym
     eval "$BOX_SETTINGS"
   fi
 fi
+case "$MUX_SLOTS" in *[!0-9]*) MUX_SLOTS="" ;; esac
+case "$MUX_PANES" in *[!0-9]*) MUX_PANES="" ;; esac
+case "$MUX_WORKSPACES" in *[!0-9]*) MUX_WORKSPACES="" ;; esac
 
 USER_NAME="coder"
 DATA_MNT="/workspace"
@@ -1588,6 +1605,11 @@ Environment=CLAUDE_CODE_USE_BEDROCK=1
 Environment=AWS_REGION=$REGION
 Environment=ANTHROPIC_MODEL=$DEFAULT_MODEL
 Environment=GITHUB_SECRET_ARN=$GITHUB_SECRET_ARN
+# How much of the Mux: slots per project, panes, clones per repository (mux.* in the
+# config). Empty is the service's default; see chat-service/limits.js.
+Environment=TRIPLEC_MUX_SLOTS=$MUX_SLOTS
+Environment=TRIPLEC_MUX_PANES=$MUX_PANES
+Environment=TRIPLEC_MUX_WORKSPACES=$MUX_WORKSPACES
 WorkingDirectory=/opt/claude-web/chat-service
 ExecStart=/usr/bin/node server.js
 Restart=always
