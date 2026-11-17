@@ -268,10 +268,24 @@ function chat(base, cookie) {
   return { ws, messages, next, opened: once(ws, 'open'), send: (m) => ws.send(JSON.stringify(m)) };
 }
 
+// A record still being written is skipped, not a crash: the fake CLI writes its own
+// record when it starts, which on a loaded machine can be well after `attached`.
 const claudeRuns = async () => {
   const runs = [];
-  for (const f of await readdir(log)) runs.push(JSON.parse(await readFile(join(log, f), 'utf8')));
+  for (const f of await readdir(log)) {
+    try { runs.push(JSON.parse(await readFile(join(log, f), 'utf8'))); } catch { /* half-written */ }
+  }
   return runs;
+};
+// Poll for something the service or the fake CLI does asynchronously, rather than
+// sleeping a fixed time that a busy machine overruns. Returns the last value seen.
+const eventually = async (get, ms = 15000) => {
+  const end = Date.now() + ms;
+  for (;;) {
+    const v = await get();
+    if (v || Date.now() > end) return v;
+    await new Promise((r) => setTimeout(r, 50));
+  }
 };
 const clearRuns = async () => {
   for (const f of await readdir(log)) await rm(join(log, f));
@@ -505,8 +519,7 @@ try {
     c.send({ type: 'start', cwd: slot1 });
     const attached = await c.next((m) => m.type === 'attached');
     check('D1: a chat in host mode starts in the configured prompting mode', attached && attached.permissionMode === 'manual', JSON.stringify(attached));
-    await new Promise((r) => setTimeout(r, 300));
-    const run = (await claudeRuns()).find((x) => x.args.includes(attached?.sessionId));
+    const run = await eventually(async () => (await claudeRuns()).find((x) => x.args.includes(attached?.sessionId)));
     check('B1: login mode sets no provider variable', run && run.bedrock === null && run.vertex === null && run.apiKey === null, JSON.stringify(run));
     check('B2: and passes no --model, and no ANTHROPIC_MODEL', run && !run.args.includes('--model') && run.model === null, run?.args.join(' '));
     check('A3: the CLI runs with the developer\'s own HOME', run && run.home === home, run?.home);
@@ -547,7 +560,7 @@ try {
     check('D1: a multiple-choice question is answered "ask in plain text", not shown as approve/deny',
       Boolean(refused) && c.messages.filter((m) => m.type === 'permission_request').length === before);
 
-    await new Promise((r) => setTimeout(r, 200));
+    await eventually(() => auditLines(server.stdout()).filter((e) => e.event === 'permission_decision').length >= 2);
     const events = auditLines(server.stdout());
     const kinds = new Set(events.map((e) => e.event));
     check('C5: sign-ins are audited, failures included', kinds.has('signin'));
@@ -641,11 +654,10 @@ try {
     await c.opened;
     c.send({ type: 'start', cwd: repo });
     const named0 = await c.next((m) => m.type === 'attached');
-    await new Promise((r) => setTimeout(r, 300));
     // By session id: a CLI from the previous server may still be booting, and writes
     // its record late.
+    const run = await eventually(async () => (await claudeRuns()).find((x) => x.args.includes(named0?.sessionId)));
     const runs = await claudeRuns();
-    const run = runs.find((x) => x.args.includes(named0?.sessionId));
     check('B2: setting defaultModel overrides the CLI default', run && run.args.join(' ').includes('--model claude-sonnet-5') && run.model === 'claude-sonnet-5', JSON.stringify(runs.map((x) => [x.cwd, x.args.join(' ')])));
     c.ws.close();
     await stopServer(named);
@@ -666,7 +678,7 @@ try {
     check('C4: a forged identity header from a socket that is not tailscaled\'s is rejected', forged.status === 401, String(forged.status));
     const pw = await login(strict.base);
     check('C4: without allowPassword there is no password door', pw.res.status === 400);
-    await new Promise((r) => setTimeout(r, 100));
+    await eventually(() => auditLines(strict.stdout()).some((e) => e.event === 'signin_failure'));
     check('C5: a rejected identity header is audited', auditLines(strict.stdout()).some((e) => e.event === 'signin_failure' && e.method === 'trusted-header'));
     await stopServer(strict);
 

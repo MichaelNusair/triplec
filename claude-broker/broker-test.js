@@ -208,6 +208,23 @@ const argvs = () =>
     ? fs.readFileSync(ARGVFILE, 'utf8').trim().split('\n').filter(Boolean)
     : [];
 const lastPid = () => pids().at(-1);
+/**
+ * The pid of the CLI started for a connection made after `before` processes had
+ * been started. Waits for it rather than sleeping a fixed time: on a loaded box a
+ * fixed sleep returns the previous section's pid, already dead.
+ */
+const nextPid = async (before, ms = 15000) => {
+  for (const end = Date.now() + ms; pids().length <= before && Date.now() < end; ) await sleep(50);
+  return pids()[before];
+};
+/** Polls `cond` until it holds or `ms` passes; returns whether it held. */
+const eventually = async (cond, ms = 15000) => {
+  for (const end = Date.now() + ms; !cond(); ) {
+    if (Date.now() > end) return false;
+    await sleep(50);
+  }
+  return true;
+};
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -453,9 +470,9 @@ async function checkUnattendedReaping() {
   // A real conversation, left behind: spoken to, so detaching parks it rather
   // than stopping it, and its turn is finished, so nothing is in flight. Then it
   // chatters, which is the whole of the bug.
+  const parkedBefore = starts();
   const parked = await connect({ resume: null, cwd: freshCwd(), socket });
-  await sleep(400);
-  const parkedPid = lastPid();
+  const parkedPid = await nextPid(parkedBefore);
   say(parked, 'a-real-first-message');
   await sleep(200);
   // Asked for before the turn is ended, because asking IS a message: a `chatter`
@@ -471,24 +488,24 @@ async function checkUnattendedReaping() {
   // A turn still running is work. The old code protected it only by accident —
   // a working conversation is a writing one — and writing is exactly what this
   // stopped trusting, so the guard is now explicit and is worth a check.
+  const workingBefore = starts();
   const working = await connect({ resume: null, cwd: freshCwd(), socket });
-  await sleep(400);
-  const workingPid = lastPid();
+  const workingPid = await nextPid(workingBefore);
   say(working, 'a-question-with-no-end-turn');
   await sleep(200);
   working.sock.destroy();
 
   // And attention keeps a conversation: a page that is still attached holds one
   // open however long the CLI has nothing to say.
+  const heldBefore = starts();
   const held = await connect({ resume: null, cwd: freshCwd(), socket });
-  await sleep(400);
-  const heldPid = lastPid();
+  const heldPid = await nextPid(heldBefore);
   say(held, 'a-real-first-message');
   await sleep(200);
   say(held, 'end-turn');
 
   await sleep(IDLE + 1500);
-  ok(!alive(parkedPid), 'a parked conversation is stopped once nobody has attended it');
+  ok(await eventually(() => !alive(parkedPid)), 'a parked conversation is stopped once nobody has attended it');
   ok(log.includes('unattended'), 'and the log says so in the terms of the decision');
   ok(alive(workingPid), 'a turn in flight is never reaped, whatever the clocks say');
   ok(alive(heldPid), 'and an attached page holds its conversation open indefinitely');
@@ -616,6 +633,18 @@ async function main() {
    */
   const startsBeforeStatus = starts();
   const mineNow = async () => ((await status()).sessions || []).find((s) => s.cwd === TMP);
+  // The state once it has become what `pred` expects, or the last one seen after
+  // `ms`. Every change checked below is a transition away from the state before it,
+  // so polling for it cannot pass early; a fixed sleep failed on a loaded box.
+  // Checks that nothing changed keep their sleep: there is nothing to wait for.
+  const settle = async (pred, ms = 10000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const now = await mineNow();
+      if (pred(now) || Date.now() > end) return now;
+      await sleep(50);
+    }
+  };
 
   const answered = await status();
   const mine = (answered.sessions || []).find((s) => s.cwd === TMP);
@@ -647,14 +676,12 @@ async function main() {
   ok(controlled?.spokeMs === null, 'nor are they mistaken for somebody typing');
 
   say(a, 'a-real-question');
-  await sleep(400);
-  const asked = await mineNow();
+  const asked = await settle((x) => x?.working === true);
   ok(asked?.working === true, 'a user message does — which is what "working" is supposed to mean');
   ok(typeof asked?.spokeMs === 'number', 'and the time since it is reported, so a stale flag can be caught');
 
   say(a, 'end-turn');
-  await sleep(400);
-  const after = await mineNow();
+  const after = await settle((x) => x?.working === false);
   ok(after?.working === false, 'and it is not working once the turn has ended');
   ok(after?.clients === 1, 'asking three times did not attach the reader as a page');
   ok(typeof after?.spokeMs === 'number', 'the last message is still remembered after the answer');
@@ -679,15 +706,13 @@ async function main() {
   await sleep(200);
   ok((await mineNow())?.working === false, 'half a message is not yet a turn');
   send(a, message.slice(14));
-  await sleep(300);
-  ok((await mineNow())?.working === true, 'and the rest of it makes one, across the seam');
+  ok((await settle((x) => x?.working === true))?.working === true, 'and the rest of it makes one, across the seam');
 
   // A `result` arriving a byte at a time is invisible to any single chunk, and the
   // symptom of missing it is a badge stuck on "working" until the next turn ends —
   // which is precisely when nobody would think to look at this code.
   say(a, 'end-turn-slowly');
-  await sleep(900);
-  const dribbled = await mineNow();
+  const dribbled = await settle((x) => x?.working === false);
   ok(dribbled?.working === false, 'a result split across chunks still ends the turn');
 
   /*
@@ -717,14 +742,12 @@ async function main() {
   // prodded, because that clock is what picks the conversation someone is in.
   const spokeBefore = (await mineNow())?.spokeMs;
   fs.writeFileSync(trigger, 'assistant');
-  await sleep(400);
-  const peerDriven = await mineNow();
+  const peerDriven = await settle((x) => x?.working === true);
   ok(peerDriven?.working === true, 'the model producing is a turn, even with nothing written to stdin');
   ok(peerDriven?.spokeMs >= spokeBefore, 'a peer session prodding it is traffic, not somebody speaking');
 
   fs.writeFileSync(trigger, 'result');
-  await sleep(400);
-  ok((await mineNow())?.working === false, 'and that turn ends the same way every other one does');
+  ok((await settle((x) => x?.working === false))?.working === false, 'and that turn ends the same way every other one does');
   fs.rmSync(trigger, { force: true });
 
   section('It can say when Claude is waiting for YOU, which "working" cannot:');
@@ -744,30 +767,26 @@ async function main() {
   })}\n`);
 
   say(a, 'ask-permission');
-  await sleep(400);
-  const prompted = await mineNow();
+  const prompted = await settle((x) => x?.awaiting === 'permission');
   ok(prompted?.working === true, 'a conversation stopped at a permission prompt is still working');
   ok(prompted?.awaiting === 'permission', 'and now says what it is working on is an answer from you');
   ok(prompted?.awaitingName === 'Bash', 'named by the tool it is asking about, never by its input');
   ok(typeof prompted?.awaitingMs === 'number', 'with how long it has been sitting there, so a stuck one can be found');
 
   answer('P1');
-  await sleep(300);
-  const clicked = await mineNow();
+  const clicked = await settle((x) => x?.awaiting === null);
   ok(clicked?.awaiting === null, 'clicking an answer clears the wait');
   ok(clicked?.working === true, 'and leaves the turn as in flight as it was — the tool now runs');
 
   // The question worth telling from a prompt: this one is a decision, not a click, and
   // the CLI marks it as such rather than leaving it to be guessed from the tool name.
   say(a, 'ask-question');
-  await sleep(400);
-  const asking = await mineNow();
+  const asking = await settle((x) => x?.awaiting === 'question');
   ok(asking?.awaiting === 'question', 'a question is reported as a question, not as a permission prompt');
   ok(asking?.awaitingName === 'AskUserQuestion', 'and names the tool that asked it');
 
   say(a, 'end-turn');
-  await sleep(400);
-  const abandoned = await mineNow();
+  const abandoned = await settle((x) => x?.working === false);
   ok(abandoned?.working === false, 'a turn that gives up on its question ends like any other');
   ok(abandoned?.awaiting === null, 'and takes the question with it, rather than asking forever');
 
@@ -779,35 +798,29 @@ async function main() {
    * AskUserQuestion, which is the badge admitting it does not know what it is showing.
    */
   say(a, 'ask-unflagged');
-  await sleep(400);
-  ok((await mineNow())?.awaiting === 'question',
+  ok((await settle((x) => x?.awaiting === 'question'))?.awaiting === 'question',
     'a question that forgot to say it needs a person is still a question');
   answer('Q2');
-  await sleep(300);
-  ok((await mineNow())?.awaiting === null, 'and is answered like any other');
+  ok((await settle((x) => x?.awaiting === null))?.awaiting === null, 'and is answered like any other');
 
   // A prompt dribbled out a byte at a time is split inside its own name, so nothing
   // that looks at one chunk can see it. The symptom of missing it is the badge this
   // whole section exists to fix, silently back to saying "working".
   say(a, 'ask-slowly');
-  await sleep(900);
-  ok((await mineNow())?.awaiting === 'permission', 'a prompt split across chunks is still seen');
+  ok((await settle((x) => x?.awaiting === 'permission'))?.awaiting === 'permission', 'a prompt split across chunks is still seen');
 
   // The other way a question ends: the client gives up on it. Written as the extension
   // writes it, with the id at the top level rather than nested under a response.
   send(a, `${JSON.stringify({ type: 'control_cancel_request', request_id: 'P2' })}\n`);
-  await sleep(300);
-  ok((await mineNow())?.awaiting === null, 'and a cancelled one stops being waited for');
+  ok((await settle((x) => x?.awaiting === null))?.awaiting === null, 'and a cancelled one stops being waited for');
 
   // The backstop, for a question the CLI abandons without saying so — a dialog it
   // times out on, a request whose client went away. Neither writes anything up the
   // stdin this daemon holds, so the model's next word has to be what settles it.
   say(a, 'ask-permission');
-  await sleep(400);
-  ok((await mineNow())?.awaiting === 'permission', 'a fresh prompt is waiting again');
+  ok((await settle((x) => x?.awaiting === 'permission'))?.awaiting === 'permission', 'a fresh prompt is waiting again');
   say(a, 'move-on');
-  await sleep(400);
-  const movedOn = await mineNow();
+  const movedOn = await settle((x) => x?.awaiting === null);
   ok(movedOn?.awaiting === null, 'the model producing again ends the wait, whoever settled it');
   ok(movedOn?.working === true, 'and that is a turn in flight, not your turn');
 
@@ -829,9 +842,9 @@ async function main() {
   // and re-keying a second session onto `TMP|S1` would displace the conversation
   // the section above is still using.
   const ALT = fs.mkdtempSync(path.join(os.tmpdir(), 'broker-test-alt-'));
+  const probeBefore = starts();
   const probe = await connect({ resume: null, cwd: ALT });
-  await sleep(500);
-  const probePid = lastPid();
+  const probePid = await nextPid(probeBefore);
   ok(probe.hello?.ok === true && alive(probePid), 'the probe runs while its page is open');
   // The frames the panel really does send such a process — and the reason this
   // reaping stopped working when "spoken to" meant "written to". Nine probes were
@@ -845,9 +858,9 @@ async function main() {
   await sleep(800);
   ok(!alive(probePid), 'and is stopped when that page goes away, control frames and all');
 
+  const spokenBefore = starts();
   const spoken = await connect({ resume: null, cwd: ALT });
-  await sleep(500);
-  const spokenPid = lastPid();
+  const spokenPid = await nextPid(spokenBefore);
   say(spoken, 'a-real-first-message');
   await sleep(400);
   spoken.sock.destroy();
