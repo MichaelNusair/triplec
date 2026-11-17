@@ -101,10 +101,14 @@ trap cleanup EXIT INT TERM
 # -rfbport -1: no TCP listener. -SecurityTypes None is for the socket only, which is
 # 0600 and this account's. -SendPrimary=0: only an explicit copy reaches the viewer's
 # clipboard, not every stretch of text that happens to be selected. -FrameRate 60:
-# its default is 60 too, said here so nobody lowers it by accident.
+# its default is 60 too, said here so nobody lowers it by accident. -UseBlacklist=0:
+# every client on a unix socket is the same "host" to Xvnc, and each one that leaves
+# before the handshake ends — the status probe, a phone dropping off — is a failed
+# login to it; five of those and it refuses the socket to everyone, for longer each
+# time, which is the pane going dead. The 0600 socket is the gate, not that count.
 Xvnc "$DISP" -geometry "$SIZE" -depth 24 -auth "$XAUTHORITY" -nolisten tcp \
   -rfbport -1 -rfbunixpath "$RUN/vnc.sock" -rfbunixmode 0600 -SecurityTypes None \
-  -AlwaysShared -FrameRate 60 -SendPrimary=0 -desktop "TripleC browser" \
+  -AlwaysShared -FrameRate 60 -SendPrimary=0 -UseBlacklist=0 -desktop "TripleC browser" \
   >>"$RUN/xvnc.log" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 50); do
