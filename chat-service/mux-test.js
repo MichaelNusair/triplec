@@ -636,6 +636,93 @@ console.log('mux, arriving from a notification');
   w.close();
 }
 
+console.log('mux: two windows, 1-3 on one screen and 4-6 on the other');
+{
+  const html = readFileSync(join(here, 'public', 'mux.html'), 'utf8');
+  const js = readFileSync(join(here, 'public', 'mux.js'), 'utf8');
+  const dir = '/workspace/projects/demo';
+  const cwd = (n) => `${dir}/.claude/worktrees/slot-${n}`;
+  const term = (n) => ({ kind: 'terminal', project: 'demo', slot: n, cwd: cwd(n), sessionId: null, title: '' });
+  const boot = (session) => {
+    const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'https://claude.example.com/chat/mux' });
+    const w = dom.window;
+    const reply = (body) => Promise.resolve({ ok: true, status: 200, json: async () => body });
+    w.fetch = (url) => {
+      const u = String(url);
+      if (u.startsWith('/api/projects')) return reply({ projects: [{ name: 'demo', path: dir, sessions: [] }] });
+      if (u.startsWith('/api/slots')) return reply({ project: 'demo', enabled: true, main: { n: 0, cwd: dir, created: true, sessions: [] }, slots: [] });
+      return reply({ sessions: [] });
+    };
+    w.Notification = undefined;
+    w.HTMLIFrameElement.prototype.focus = () => {};
+    w.localStorage.setItem('triplec-mux', JSON.stringify({ layout: 3, panes: [1, 2, 3, 4, 5, 6].map(term) }));
+    if (session) w.sessionStorage.setItem('triplec-mux', JSON.stringify(session));
+    const errors = [];
+    w.addEventListener('error', (e) => errors.push(e.message));
+    w.eval(js);
+    return { w, mux: w.__muxForTest, doc: w.document, errors };
+  };
+
+  const two = boot({ layout: 3, first: 3, focus: 3 });
+  await new Promise((r) => setTimeout(r, 50));
+  const { w, mux, doc } = two;
+  const labels = () => [...doc.querySelectorAll('.mux-pane')].sort((a, b) => a.style.order - b.style.order)
+    .map((el) => el.querySelector('.mux-pane-label').textContent.split(' ')[0]);
+  check('the second window boots without an error', two.errors.length === 0, two.errors.join('; '));
+  check('a window can show panes 4 to 6', labels().join() === '4,5,6' && doc.querySelectorAll('.mux-pane iframe').length === 3,
+    labels().join());
+  check('their frames are slots 4 to 6', [...doc.querySelectorAll('.mux-pane iframe')]
+    .map((f) => new URL(f.src).searchParams.get('slot')).sort().join() === '4,5,6');
+  const pages = [...doc.querySelectorAll('#mux-pages button')];
+  check('three across offers 1–3 and 4–6, with 4–6 picked', !doc.querySelector('#mux-pages').hidden
+    && pages.map((b) => b.textContent).join() === '1–3,4–6' && pages[1].classList.contains('active'));
+  check('the focus is a pane on screen', mux.state.focus === 3);
+
+  // The other window, showing 1-3, closes pane 2 and saves: 4-6 are not its to write.
+  const stored = JSON.parse(w.localStorage.getItem('triplec-mux'));
+  stored.panes[1] = { kind: 'chat', project: null, slot: null, cwd: null, sessionId: null, title: '' };
+  w.localStorage.setItem('triplec-mux', JSON.stringify(stored));
+  mux.closePane(4);
+  const after = JSON.parse(w.localStorage.getItem('triplec-mux'));
+  check('a window writes the panes it shows and leaves what another wrote',
+    after.panes[4].cwd === null && after.panes[1].cwd === null && after.panes[0].cwd === cwd(1),
+    JSON.stringify(after.panes.map((p) => p?.cwd)));
+  after.panes[5] = { kind: 'shell', project: 'demo', slot: 9, cwd: cwd(9) };
+  check("and remembers its own view, not the other window's",
+    JSON.parse(w.sessionStorage.getItem('triplec-mux')).first === 3);
+
+  // What the other window saved arrives as a storage event.
+  mux.syncFromStorage(JSON.stringify(after));
+  check("a pane on screen follows the other window's change", mux.state.panes[5].kind === 'shell'
+    && new URL(mux.state.panes[5].frame.src).searchParams.get('kind') === 'shell');
+
+  // Swapping, one for one, across the windows.
+  const keepFrame = mux.state.panes[3].frame;
+  mux.swapPanes(3, 0);
+  const swapped = JSON.parse(w.localStorage.getItem('triplec-mux'));
+  check('a swap moves pane 1 here and pane 4 there', mux.state.panes[3].cwd === cwd(1) && mux.state.panes[0].cwd === cwd(4)
+    && swapped.panes[0].cwd === cwd(4) && swapped.panes[3].cwd === cwd(1), JSON.stringify(swapped.panes.map((p) => p.cwd)));
+  check('with a new frame for what landed here', mux.state.panes[3].frame && mux.state.panes[3].frame !== keepFrame
+    && new URL(mux.state.panes[3].frame.src).searchParams.get('slot') === '1');
+  check('and the focus on it', mux.state.focus === 3);
+  mux.swapPanes(3, 4);
+  check('a swap with an empty pane moves it there', mux.state.panes[3].cwd === null && mux.state.panes[4].cwd === cwd(1));
+
+  // Six across has one page: the window goes back to the first.
+  mux.showPanes(6, 3);
+  check('six panes start at pane 1', mux.state.first === 0 && labels().join() === '1,2,3,4,5,6'
+    && doc.querySelector('#mux-pages').hidden);
+  mux.showPanes(3, 3);
+  check('back to three, the window can show 4 to 6 again', labels().join() === '4,5,6');
+  w.close();
+
+  const one = boot(null);
+  await new Promise((r) => setTimeout(r, 50));
+  check('a window with no view of its own starts at pane 1', one.mux.state.first === 0
+    && [...one.doc.querySelectorAll('.mux-pane-label')].map((el) => el.textContent.split(' ')[0]).sort().join() === '1,2,3');
+  one.w.close();
+}
+
 console.log('chat, embedded');
 {
   const html = readFileSync(join(here, 'public', 'index.html'), 'utf8');

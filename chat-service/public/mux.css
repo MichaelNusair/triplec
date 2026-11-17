@@ -33,6 +33,7 @@ body.mux {
   background: var(--bg-input); color: var(--text-dim); font: inherit; font-size: 12px; cursor: pointer;
 }
 .mux-layouts button.active { color: var(--text); border-color: var(--accent); }
+.mux-pages[hidden] { display: none; }
 
 .mux-filter-row { display: flex; align-items: center; gap: 6px; margin: 0 8px 8px 14px; }
 .mux-filter-row .mux-add { flex: 0 0 auto; width: 30px; height: 30px; font-size: 18px; }

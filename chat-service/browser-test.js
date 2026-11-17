@@ -354,9 +354,9 @@ console.log('the mux');
   const pane = mux.state.panes[0];
   check('it opens the browser in the first empty pane', pane.kind === 'browser'
     && pane.frame?.getAttribute('src') === '/chat/browser?embed=1', pane.frame?.getAttribute('src'));
-  check('…labelled as the browser, with only the phone link and close',
+  check('…labelled as the browser, with only the phone link, swap and close',
     /Browser/.test(pane.el.querySelector('.mux-pane-label').textContent)
-      && [...pane.el.querySelectorAll('.mux-pane-btn')].filter((b) => !b.hidden).map((b) => b.dataset.act).join() === 'phone,close');
+      && [...pane.el.querySelectorAll('.mux-pane-btn')].filter((b) => !b.hidden).map((b) => b.dataset.act).join() === 'phone,swap,close');
   check('…and a frame allowed the clipboard, for copy and paste', /clipboard-read/.test(pane.frame.allow));
   mux.focusPane(1);
   mux.openBrowser();

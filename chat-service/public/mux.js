@@ -78,7 +78,8 @@
     expanded: new Set(),
     filter: '',
     layout: 2,
-    focus: 0,
+    first: 0,                  // index of the first pane on screen: 3 shows panes 4-6
+    focus: 0,                  // an index into panes, like first, not into those on screen
     panes: [],                 // see emptyPane
     alerts: false,
     newKind: 'terminal',       // what a + opens
@@ -109,21 +110,50 @@
   // --- persistence ----------------------------------------------------------
   // This laptop's layout, and only that. Which conversations exist is the box's to
   // say; this remembers which of them were on screen where.
-  function save() {
+  //
+  // One laptop can have the mux open in two windows, one per monitor: panes 1-3 on
+  // one and 4-6 on the other. The eight panes are shared between them (localStorage,
+  // kept in step by the storage event); how many are on screen and from which one on
+  // belong to the window (sessionStorage, which a reload keeps). A window writes
+  // only the panes it shows, plus any it was asked to change, so neither undoes the
+  // other's.
+  const paneRecord = (p) => ({
+    kind: p.kind, project: p.project, slot: p.slot, cwd: p.cwd, sessionId: p.sessionId, title: p.title,
+  });
+  function save(touched = []) {
+    const own = new Set([...visibleRange(), ...touched]);
     try {
+      const stored = JSON.parse(localStorage.getItem(STORE_KEY) || 'null');
+      const theirs = Array.isArray(stored?.panes) ? stored.panes : [];
       localStorage.setItem(STORE_KEY, JSON.stringify({
         layout: state.layout,
         focus: state.focus,
         expanded: [...state.expanded],
         alerts: state.alerts,
         newKind: state.newKind,
-        panes: state.panes.map((p) => ({
-          kind: p.kind, project: p.project, slot: p.slot, cwd: p.cwd, sessionId: p.sessionId, title: p.title,
-        })),
+        panes: state.panes.map((p, i) => (own.has(i) || !theirs[i] ? paneRecord(p) : theirs[i])),
       }));
     } catch {
       /* private mode: the layout is lost on reload, the conversations are not */
     }
+    try {
+      sessionStorage.setItem(STORE_KEY, JSON.stringify({ layout: state.layout, first: state.first, focus: state.focus }));
+    } catch {
+      /* this window's view falls back to the laptop's */
+    }
+  }
+
+  /** A pane as saved, made whole: the browser, a slot, or empty. */
+  function paneFrom(s) {
+    const pane = emptyPane();
+    if (s?.kind === 'browser') Object.assign(pane, { kind: 'browser', cwd: BROWSER_CWD });
+    else if (s?.cwd && s?.project) Object.assign(pane, {
+      // A layout saved before terminals existed has chats in it, and says nothing.
+      kind: KINDS.includes(s.kind) ? s.kind : 'chat',
+      project: s.project, slot: Number.isInteger(s.slot) ? s.slot : null,
+      cwd: s.cwd, sessionId: s.sessionId || null, title: s.title || '',
+    });
+    return pane;
   }
 
   function load() {
@@ -133,28 +163,77 @@
     } catch {
       saved = null;
     }
-    state.layout = LAYOUTS[saved?.layout] ? Number(saved.layout) : 2;
+    let mine = null;
+    try {
+      mine = JSON.parse(sessionStorage.getItem(STORE_KEY) || 'null');
+    } catch {
+      mine = null;
+    }
+    state.layout = LAYOUTS[mine?.layout] ? Number(mine.layout) : LAYOUTS[saved?.layout] ? Number(saved.layout) : 2;
+    state.first = firstFor(Number(mine?.first) || 0);
     state.expanded = new Set(Array.isArray(saved?.expanded) ? saved.expanded : []);
     state.alerts = Boolean(saved?.alerts) && 'Notification' in window && Notification.permission === 'granted';
     state.newKind = KINDS.includes(saved?.newKind) ? saved.newKind : 'terminal';
     const panes = Array.isArray(saved?.panes) ? saved.panes : [];
     state.panes = [];
-    for (let i = 0; i < 8; i++) {
-      const pane = emptyPane();
-      const s = panes[i];
-      if (s?.kind === 'browser') Object.assign(pane, { kind: 'browser', cwd: BROWSER_CWD });
-      else if (s?.cwd && s?.project) Object.assign(pane, {
-        // A layout saved before terminals existed has chats in it, and says nothing.
-        kind: KINDS.includes(s.kind) ? s.kind : 'chat',
-        project: s.project, slot: Number.isInteger(s.slot) ? s.slot : null,
-        cwd: s.cwd, sessionId: s.sessionId || null, title: s.title || '',
-      });
-      state.panes.push(pane);
-    }
-    state.focus = Math.min(Number(saved?.focus) || 0, paneCount() - 1);
+    for (let i = 0; i < PANES; i++) state.panes.push(paneFrom(panes[i]));
+    const focus = Number(mine ? mine.focus : saved?.focus) || 0;
+    state.focus = Math.max(state.first, Math.min(focus, state.first + paneCount() - 1));
   }
 
+  /**
+   * Another window of the mux saved: take what it put in the panes. A pane on screen
+   * here that now holds something else gets a new frame; one that holds the same
+   * thing keeps its frame, and only learns the title.
+   */
+  function syncFromStorage(raw) {
+    let saved;
+    try {
+      saved = JSON.parse(raw || 'null');
+    } catch {
+      return;
+    }
+    if (!Array.isArray(saved?.panes)) return;
+    let changed = false;
+    for (let i = 0; i < PANES; i++) {
+      const pane = state.panes[i];
+      const next = paneFrom(saved.panes[i]);
+      const same = next.kind === pane.kind && next.cwd === pane.cwd
+        && (next.kind !== 'chat' || next.sessionId === pane.sessionId);
+      if (same) {
+        if (next.title && next.title !== pane.title) pane.title = next.title;
+        continue;
+      }
+      pane.el?.remove();
+      state.panes[i] = next;
+      changed = true;
+    }
+    if (!changed) return;
+    renderGrid();
+    renderSidebar();
+  }
+
+  const PANES = 8;
   const paneCount = () => LAYOUTS[state.layout][0] * LAYOUTS[state.layout][1];
+  // Where a window's panes can start for the layout: whole pages of it, 1-3 and 4-6
+  // for three across. A layout of six or eight has only the one.
+  const pageStarts = () => {
+    const starts = [];
+    for (let s = 0; s + paneCount() <= PANES; s += paneCount()) starts.push(s);
+    return starts;
+  };
+  const firstFor = (wanted) => {
+    const starts = pageStarts();
+    return starts.includes(wanted) ? wanted
+      : starts.filter((s) => s <= wanted).pop() ?? 0;
+  };
+  const visibleRange = () => Array.from({ length: paneCount() }, (_, i) => state.first + i);
+  const onScreen = (index) => index >= state.first && index < state.first + paneCount();
+  /** The index, in panes, of the first on screen that matches; -1 when none does. */
+  const shownIndex = (match) => {
+    const i = visiblePanes().findIndex(match);
+    return i < 0 ? -1 : state.first + i;
+  };
 
   // --- the network ----------------------------------------------------------
   async function api(url, options) {
@@ -281,8 +360,8 @@
         });
         n.onclick = () => {
           window.focus();
-          const index = state.panes.findIndex((p) => p.cwd === cwd);
-          if (index >= 0 && index < paneCount()) focusPane(index);
+          const index = shownIndex((p) => p.cwd === cwd);
+          if (index >= 0) focusPane(index);
           n.close();
         };
       } catch {
@@ -461,15 +540,17 @@
     row.dataset.cwd = place.cwd;
     const dot = dotFor(place);
     row.classList.add(`is-${dot}`);
-    const onScreen = visiblePanes().findIndex((p) => p.cwd === place.cwd);
-    if (onScreen >= 0) row.classList.add('on-screen');
+    const shown = shownIndex((p) => p.cwd === place.cwd);
+    if (shown >= 0) row.classList.add('on-screen');
 
     // The project's own checkout is for looking at, as in the editor: work happens in
     // the slots. What is already running there can be opened, and a terminal can be
     // started there for read-only work; no new chat starts.
     const viewOnly = place.n === 0 && Boolean(slotsOn(project.name));
     const latest = latestSession(project.name, place.cwd);
-    const pane = visiblePanes().find((p) => p.cwd === place.cwd);
+    // In a pane here or in the other window's: either way it has a number.
+    const inPane = state.panes.findIndex((p) => p.cwd === place.cwd);
+    const pane = state.panes[inPane];
     const title = pane?.title
       || (place.terminal ? 'Claude in a terminal' : '')
       || latest?.title
@@ -497,13 +578,13 @@
         <span class="mux-slot-facts"></span>
       </span>`;
     $('.mux-slot-name', main).textContent = slotLabel(place.n) + (viewOnly ? ' · read-only work' : '')
-      + (onScreen >= 0 ? ` · pane ${onScreen + 1}` : '');
+      + (inPane >= 0 ? ` · pane ${inPane + 1}` : '');
     $('.mux-slot-title', main).textContent = title;
     $('.mux-slot-facts', main).textContent = facts.join(' · ');
     main.addEventListener('click', () => {
       closeSide();
-      if (onScreen >= 0) {
-        focusPane(onScreen);
+      if (shown >= 0) {
+        focusPane(shown);
         return;
       }
       if (place.terminal) openIn(state.focus, { kind: 'terminal', project: project.name, slot: place.n, cwd: place.cwd });
@@ -750,12 +831,12 @@
    * first empty pane, otherwise the focused one.
    */
   function openBrowser() {
-    const shown = visiblePanes().findIndex(isBrowser);
+    const shown = shownIndex(isBrowser);
     if (shown >= 0) {
       focusPane(shown);
       return;
     }
-    const empty = visiblePanes().findIndex((p) => !p.cwd);
+    const empty = shownIndex((p) => !p.cwd);
     const index = empty >= 0 ? empty : state.focus;
     const pane = state.panes[index];
     if (pane.frame) {
@@ -779,16 +860,16 @@
     if (pane.busy) toast(`${pane.title || labelFor(pane.cwd)} keeps working — it's in the sidebar, and on the phone.`);
     state.panes[index] = emptyPane();
     pane.el?.remove();
-    save();
+    save([index]);
     renderGrid();
     renderSidebar();
   }
 
   // --- the grid -------------------------------------------------------------
-  const visiblePanes = () => state.panes.slice(0, paneCount());
+  const visiblePanes = () => state.panes.slice(state.first, state.first + paneCount());
 
   function focusPane(index, { input = true } = {}) {
-    state.focus = Math.max(0, Math.min(index, paneCount() - 1));
+    state.focus = Math.max(state.first, Math.min(index, state.first + paneCount() - 1));
     const pane = state.panes[state.focus];
     if (pane.cwd) unflag(pane.cwd);
     pane.attention = false;
@@ -820,6 +901,7 @@
         <button type="button" class="mux-pane-btn" data-act="run" title="Run your own command line in this slot's terminal — an environment variable, claude --resume <id>">❯…</button>
         <button type="button" class="mux-pane-btn" data-act="font" title="The terminal's font and size, in this browser">Aa</button>
         <button type="button" class="mux-pane-btn" data-act="phone" title="Copy a link that opens this on the phone">⇱</button>
+        <button type="button" class="mux-pane-btn" data-act="swap" title="Swap with another pane, one for one — here or in your other window (Alt+Shift+number)">⇄</button>
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
       </header>
       <p class="mux-pane-note hidden"></p>
@@ -832,6 +914,10 @@
     el.querySelector('[data-act="close"]').addEventListener('click', (e) => {
       e.stopPropagation();
       closePane(state.panes.indexOf(pane));
+    });
+    el.querySelector('[data-act="swap"]').addEventListener('click', (e) => {
+      e.stopPropagation();
+      askSwap(pane);
     });
     el.querySelector('[data-act="kind"]').addEventListener('click', () => {
       if (pane.project) switchKind(pane);
@@ -904,6 +990,7 @@
     for (const button of document.querySelectorAll('[data-layout]')) {
       button.classList.toggle('active', Number(button.dataset.layout) === state.layout);
     }
+    renderPages();
     for (const button of document.querySelectorAll('[data-kind]')) {
       button.classList.toggle('active', button.dataset.kind === state.newKind);
       button.setAttribute('aria-pressed', String(button.dataset.kind === state.newKind));
@@ -912,7 +999,8 @@
     // Frames are moved, never rebuilt: rebuilding one reloads what is in it, which
     // for a chat costs a transcript replay and a half-typed message.
     const keep = new Set();
-    visiblePanes().forEach((pane, index) => {
+    visiblePanes().forEach((pane, at) => {
+      const index = state.first + at;
       if (!pane.el) buildPane(pane, index);
       keep.add(pane.el);
       const body = $('.mux-pane-body', pane.el);
@@ -934,7 +1022,7 @@
         pane.frame = null;
         body.replaceChildren(placeholder(index));
       }
-      pane.el.style.order = String(index);
+      pane.el.style.order = String(at);
       if (pane.el.parentNode !== grid) grid.appendChild(pane.el);
       paintPane(pane);
     });
@@ -946,7 +1034,8 @@
   function renderTabs() {
     const bar = $('#mux-tabs');
     if (!bar) return;
-    const tabs = visiblePanes().map((pane, index) => {
+    const tabs = visiblePanes().map((pane, at) => {
+      const index = state.first + at;
       const tab = document.createElement('button');
       tab.type = 'button';
       tab.className = 'mux-tab';
@@ -964,7 +1053,7 @@
       return tab;
     });
     bar.replaceChildren(...tabs);
-    if (phone()) bar.children[state.focus]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
+    if (phone()) bar.children[state.focus - state.first]?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
   }
 
   // --- the drawer, on a phone ------------------------------------------------
@@ -1002,10 +1091,12 @@
     $('[data-act="run"]', el).hidden = !pane.cwd || pane.kind === 'shell';
     $('[data-act="attach"]', el).hidden = !pane.cwd || pane.kind === 'chat';
     $('[data-act="font"]', el).hidden = !pane.cwd || pane.kind === 'chat';
+    // An empty pane swaps too: that is how something moves into it.
+    $('[data-act="swap"]', el).hidden = false;
     // The browser has no slot to switch, start in or run a command in: it keeps the
     // link for another device and the close.
     if (isBrowser(pane)) {
-      for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !['phone', 'close'].includes(b.dataset.act);
+      for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !['phone', 'swap', 'close'].includes(b.dataset.act);
     }
     const kind = $('[data-act="kind"]', el);
     kind.textContent = { terminal: 'Chat', shell: 'Claude', chat: 'Terminal' }[pane.kind];
@@ -1516,15 +1607,15 @@
     const place = slot === null ? null : placesOf(project).find((p) => p.n === slot) || null;
     const where = place ? `${project} · ${slotLabel(place.n)}` : project;
     if (place) {
-      const onScreen = visiblePanes().findIndex((p) => p.cwd === place.cwd);
-      if (onScreen >= 0) {
+      const shown = shownIndex((p) => p.cwd === place.cwd);
+      if (shown >= 0) {
         closeSide();
-        focusPane(onScreen, { input: !phone() });
+        focusPane(shown, { input: !phone() });
         return;
       }
       if (place.terminal) {
         closeSide();
-        const empty = visiblePanes().findIndex((p) => !p.cwd);
+        const empty = shownIndex((p) => !p.cwd);
         openIn(empty >= 0 ? empty : state.focus, { kind: 'terminal', project, slot: place.n, cwd: place.cwd });
         return;
       }
@@ -1562,20 +1653,90 @@
 
   for (const button of document.querySelectorAll('[data-layout]')) {
     button.addEventListener('click', () => {
-      const before = paneCount();
-      state.layout = Number(button.dataset.layout);
-      // Panes that fall off the screen keep their place in the layout, so going
-      // back to more panes brings them back. What was in them never stopped.
-      const hidden = state.panes.slice(paneCount(), before).filter((p) => p.cwd).length;
-      if (hidden) toast(`${hidden} pane${hidden === 1 ? '' : 's'} off screen — still running, and back when you choose more panes.`);
-      for (const pane of state.panes.slice(paneCount())) pane.el?.remove();
-      for (const pane of state.panes.slice(paneCount())) { pane.el = null; pane.frame = null; }
-      if (state.focus >= paneCount()) state.focus = 0;
-      save();
-      renderGrid();
-      renderSidebar();
+      showPanes(Number(button.dataset.layout), state.first);
     });
   }
+
+  /**
+   * Put a layout on screen, from a pane on: 3 and 3 shows panes 4-6. Panes that fall
+   * off the screen keep their place in the layout, so going back brings them back.
+   * What was in them never stopped.
+   */
+  function showPanes(layout, first) {
+    const before = new Set(visibleRange());
+    state.layout = layout;
+    state.first = firstFor(first);
+    const now = new Set(visibleRange());
+    const hidden = [...before].filter((i) => !now.has(i) && state.panes[i].cwd).length;
+    if (hidden) toast(`${hidden} pane${hidden === 1 ? '' : 's'} off screen — still running, and back when you show them again.`);
+    for (const [i, pane] of state.panes.entries()) {
+      if (now.has(i)) continue;
+      pane.el?.remove();
+      pane.el = null;
+      pane.frame = null;
+    }
+    if (!now.has(state.focus)) state.focus = state.first;
+    save();
+    renderGrid();
+    renderSidebar();
+  }
+
+  /** Which panes this window shows, for a layout with more than one page of them. */
+  function renderPages() {
+    const box = $('#mux-pages');
+    if (!box) return;
+    const starts = pageStarts();
+    box.hidden = starts.length < 2;
+    box.replaceChildren(...starts.map((s) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      const last = s + paneCount();
+      button.textContent = paneCount() === 1 ? String(s + 1) : `${s + 1}–${last}`;
+      button.title = `Show panes ${s + 1} to ${last} in this window — another window can show the rest`;
+      button.classList.toggle('active', s === state.first);
+      button.setAttribute('aria-pressed', String(s === state.first));
+      button.addEventListener('click', () => showPanes(state.layout, s));
+      return button;
+    }));
+  }
+
+  /**
+   * Swap what two panes show, one for one: pane 2's terminal to pane 5 and pane 5's
+   * to pane 2. Either can be in the other window, which follows. Nothing stops.
+   */
+  function swapPanes(a, b) {
+    if (a === b || a < 0 || b < 0 || a >= PANES || b >= PANES) return;
+    const [pa, pb] = [state.panes[a], state.panes[b]];
+    for (const pane of [pa, pb]) {
+      // A frame cannot move between windows, and moving it within one reloads it
+      // anyway, so each pane gets a fresh one where it lands.
+      pane.el?.remove();
+      pane.el = null;
+      pane.frame = null;
+    }
+    state.panes[a] = pb;
+    state.panes[b] = pa;
+    save([a, b]);
+    renderGrid();
+    renderSidebar();
+    if (onScreen(b)) focusPane(b);
+  }
+
+  function askSwap(pane) {
+    const from = state.panes.indexOf(pane);
+    const answer = window.prompt(`Swap pane ${from + 1} with which pane (1–${PANES})?`, '');
+    if (answer === null) return;
+    const to = Number(answer.trim()) - 1;
+    if (!Number.isInteger(to) || to < 0 || to >= PANES) {
+      toast(`There is no pane ${answer.trim()} — the panes are 1 to ${PANES}.`);
+      return;
+    }
+    swapPanes(from, to);
+  }
+
+  window.addEventListener('storage', (e) => {
+    if (e.key === STORE_KEY) syncFromStorage(e.newValue);
+  });
 
   for (const button of document.querySelectorAll('[data-kind]')) {
     button.addEventListener('click', () => {
@@ -1636,9 +1797,19 @@
     }
     if (!e.altKey || e.ctrlKey || e.metaKey) return;
     const n = Number(e.key);
+    // Alt+Shift+N swaps the focused pane with pane N; e.key is the digit's shifted
+    // character then, so read the key itself.
+    if (e.shiftKey) {
+      const d = /^Digit([1-8])$/.exec(e.code || '');
+      if (d) {
+        e.preventDefault();
+        swapPanes(state.focus, Number(d[1]) - 1);
+      }
+      return;
+    }
     if (n >= 1 && n <= paneCount()) {
       e.preventDefault();
-      focusPane(n - 1);
+      focusPane(state.first + n - 1);
     }
   });
 
@@ -1702,7 +1873,7 @@
 
   // For mux-test.js, which drives this in jsdom without a server behind it.
   window.__muxForTest = {
-    state, openIn, closePane, focusPane, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
+    state, openIn, closePane, focusPane, showPanes, swapPanes, syncFromStorage, flag, renderGrid, renderSidebar, frameSrc, startIn, paneCount,
     newInFreeSlot, switchKind, pollTerminals, openSide, closeSide, listen, arrive, arrivalFrom,
     readOpens, writeOpens, openBrowser,
     openAddSheet, cloneRepo, createProject, openProjectSheet, removeProject,

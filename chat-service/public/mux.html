@@ -48,6 +48,10 @@
     <button type="button" data-layout="8" title="Four by two">8</button>
   </div>
 
+  <!-- Which panes this window shows, when the layout has more than one page: one
+       window per monitor, 1–3 on one and 4–6 on the other. -->
+  <div class="mux-layouts mux-pages" id="mux-pages" role="group" aria-label="Panes in this window" hidden></div>
+
   <!-- What a + opens. A chat is the phone's chat app in a pane; a terminal is the
        real Claude Code CLI, in the tmux session `cc` keeps for that slot. Each
        pane's header switches between the two for its own slot. A shell is a bare
