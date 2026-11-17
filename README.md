@@ -1,14 +1,16 @@
 # TripleC
 
-**Claude, Code, Cloud.** Claude Code as a chat app you can install on your phone,
-running on a machine of its own. Send a message, Claude works on your repo, you
-get an answer. The full VS Code editor is still there at `/editor/` when you're at
-a desk and want files, diffs, and a terminal.
+**Claude, Code, Cloud.** Claude Code on a machine of its own, run from a browser
+on any device. Open it and you get the **Mux**: every project down the side, ten
+worktree slots in each by default, and up to eight agents side by side, each one the real
+`claude` CLI in a terminal that lives on the server. Beside them are a real Chrome
+on the box that you and Claude both drive, a plain shell in any slot, and the full
+VS Code editor when you want files and diffs.
 
-Your sessions live on the server, not in a terminal on a laptop, so the
-conversation you start at a desk is the one you pick up on a phone — mid-task,
-with context intact, and still running while both are shut. The cloud is the third
-C, and the part this project adds; everything above it is Anthropic's CLI, running
+None of it lives in the device you are looking from. A session runs in tmux on the
+box, so the run you start at a desk is the one you pick up on a phone, mid-task,
+and it carries on while both are shut. The cloud is the third C, and the part this
+project adds. Everything inside the terminals is Anthropic's CLI, running
 unmodified.
 
 ```bash
@@ -19,38 +21,51 @@ $EDITOR triplec.config.json     # domainName + hostedZoneName
 ./deploy.sh
 ```
 
-**Two ways to run it, and the same MIT-licensed commit either way.** Self-hosting
-is free and always will be — nothing is held back from this repository, there is
-no licence key, and you pay AWS rather than us. Or we run it for you on a hostname
-of yours: see [docs/MANAGED.md](docs/MANAGED.md), which is also where the awkward
-questions are answered, including the fact that the managed service costs $0 today
-because we have not started charging for it.
+**Two ways to run it, from the same MIT-licensed commit.** Self-hosting is free and
+always will be. Nothing is held back from this repository, there is no licence key,
+and you pay AWS rather than us. Or we run it for you on a hostname of yours: see
+[docs/MANAGED.md](docs/MANAGED.md), which also answers the awkward questions,
+including why the managed service costs $0 today (we have not started charging).
 
 You need an AWS account, a Route53 hosted zone, and Bedrock model access. Full
 walkthrough in [docs/DEPLOY.md](docs/DEPLOY.md).
 
 **Already have a Linux VM?** Host mode installs TripleC onto an existing Ubuntu
-24.04 machine as its developer — no AWS, your own `claude /login`, your
-repositories and hooks where they already are, reached through the VM's own HTTPS
-proxy or a tailnet. See [docs/HOST.md](docs/HOST.md).
+24.04 machine as its developer: no AWS, your own `claude /login`, and your
+repositories and hooks staying where they are. You reach it through the VM's own
+HTTPS proxy or a tailnet. See [docs/HOST.md](docs/HOST.md).
 
 > **Read [docs/SECURITY.md](docs/SECURITY.md) before you expose this.** It
-> deploys a web page that runs shell commands on a machine you own — that's the
-> product, not a side effect. Anyone who logs in has a shell. Deploy it as a
+> deploys a web page that runs shell commands on a machine you own. That is the
+> product, not a side effect: anyone who logs in has a shell. Deploy it as a
 > personal workspace, not a shared service.
 
-## Why it's built this way
+## What is in it
 
-The first version served VS Code in the browser with the official Anthropic
-extension. That works well on a laptop and is genuinely painful on a phone — which
-is the device you actually want this on. So the primary interface is a
-purpose-built chat, and the editor is the secondary surface.
-
-The chat isn't a reimplementation of Claude's brain; it's a thin UI over the real
-`claude` CLI. Each conversation is **one long-lived process** driven over
-`--input-format stream-json`, which is what makes it behave like a messaging app
-rather than a series of one-shot commands: context, working directory, and session
-id all persist, and a follow-up message costs no startup.
+- **[The Mux](#the-mux-every-agent-on-one-screen)** (`/chat/mux`, where the app
+  opens). Projects, slots and panes. A pane can be Claude Code in a terminal, a bare
+  shell, or a command line of your own. On a laptop the panes sit side by side, and
+  on a phone you see one at a time, with two rows of terminal keys.
+- **[Workspaces](#workspaces-a-second-clone-for-a-second-task)**: up to five full
+  clones of one repository by default, each on its own branch with its own slots,
+  for running separate tasks in parallel.
+- **[The Browser pane](#the-browser-pane-a-real-chrome-on-the-box)**: Google Chrome
+  running on the box, streamed to the page as video. You browse in it, and a Claude
+  on the box drives the same window over DevTools.
+- **[The editor](#the-editor-on-a-phone)** (`/editor/`): code-server with the
+  official Claude Code extension, laid out for a phone. Its panel follows you
+  between devices through a broker, rather than forking.
+- **[Voice](#voice)**: hear what Claude last said in any pane, talk it over out loud
+  with something that cannot act, and dictate in the editor. English runs on the
+  box, and Hebrew has voices too.
+- **[Notifications](#notifications)**: your phone buzzes when a session you are not
+  watching finishes, and the tap takes you to it.
+- **[The box page](#the-box-page-what-is-running-and-every-setting)**
+  (`/chat/admin`): every conversation and service on the instance, what is wrong
+  with them in words, and every setting of the deployment, editable in place.
+- **[Updates](#keeping-itself-up-to-date)**: the Claude Code CLI updates itself
+  daily, and the deployment can follow this repository on its own, as cautiously as
+  you configure it.
 
 ```
 your-domain.com
@@ -60,426 +75,454 @@ your-domain.com
   │
   EC2 t4g.large (Graviton, arm64) — reachable only from the ALB
   ├── nginx :8080
-  │     ├── /          → chat service (:9997)
-  │     ├── /chat/     → chat assets
-  │     ├── /editor/   → code-server (:9999)
-  │     ├── /p/<name>/ → code-server, one installable app per project
-  │     └── /          → code-server, for its own absolute asset URLs
+  │     ├── /           → redirects to /chat/mux
+  │     ├── /chat/      → chat service (:9997): the Mux, terminal, browser and box
+  │     │                 pages, and the deprecated chat
+  │     ├── /editor/    → code-server (:9999)
+  │     └── /p/<name>/  → code-server, one installable app per project
   │
-  ├── claude-chat service
-  │     ├── authenticates every request itself  ← the security boundary
-  │     ├── one `claude` process per conversation, kept alive
-  │     ├── stream-json → a small event vocabulary for the UI
-  │     └── /api/transcribe → whisper.cpp, on-box, no API key
+  ├── claude-chat service  ← authenticates every request itself: the security boundary
+  │     ├── /ws/term          → a slot's tmux session (Claude, or a shell)
+  │     ├── /ws/browser(-video) → the box's Chrome: VNC for input, H.264 for the picture
+  │     ├── /api/transcribe   → whisper.cpp on the box, no API key
+  │     └── projects, slots, workspaces, push, read aloud, the box page
+  │
+  ├── tmux  ← every terminal session; outlives every browser and every deploy
+  │
+  ├── triplec-browser service ── Chrome for Testing on Xvnc, DevTools on 127.0.0.1:9222
   │
   ├── code-server + official anthropic.claude-code extension
   │     ├── its Claude launched via claude-broker/wrapper
   │     └── GitHub Pull Requests extension, signed in with the gh token
   │
   ├── claude-broker service
-  │     ├── one `claude` per conversation, outliving every browser page
+  │     ├── one `claude` per editor conversation, outliving every browser page
   │     └── replays the stream to a device that joins mid-turn
   │
+  ├── timers: the Claude Code CLI daily, triplec-update when you turn it on
+  │
   └── /workspace  ← persistent EBS, survives instance replacement
-        ├── projects/   one directory per repo
-        ├── claude/     ~/.claude — session history lives here
-        └── code-server-{data,ext}/
+        ├── projects/   one directory per repo, its worktree slots inside
+        ├── claude/     ~/.claude: session history lives here
+        └── code-server-{data,ext}/, triplec-browser/profile
 
-  Bedrock via instance role — no model keys in the browser
+  Bedrock via instance role: no model keys in the browser
 ```
 
-## The chat
+## Why it's built this way
 
-- **Conversation list** — every past session across every project, newest first,
-  titled by its opening message. Tap to resume; the transcript is replayed and
-  Claude still has its context.
-- **Tool calls** as collapsible cards (`📖 Read src/main.c`) — tap for arguments
-  and full output. Failures auto-expand.
-- **Live streaming** text, with a typing indicator while Claude works.
-- **Stop button** while a turn is running.
-- **Several projects at once, one tab each** — the projects you are working on sit
-  in a tab strip above the thread, each with a dot for what it is doing: working,
-  idle, or reconnecting. A tab is a project, not a chat, so the strip stays readable
-  on a box with seventeen of them; the line under the tabs says which of that
-  project's conversations the window is showing, and tapping it lists the others.
-  Switching either way takes the composer and the draft with it, while the projects
-  behind carry on streaming; when one of them finishes, it buzzes and names the
-  project so you know which chip to tap. Three stay connected at a time and the rest
-  wait as tabs, which is what keeps six open projects from costing a phone six live
-  threads — tapping one rejoins it exactly as another device would. Neither closing
-  a tab nor switching conversations stops anything: it goes on running on the box,
-  it just is not being watched.
-- **A notification when a session you are not watching finishes** — the editor
-  panel, or anything under tmux: the runs you start and walk away from. Your phone
-  buzzes with the project and the first line or so of the answer; tapping it just
-  dismisses it. One notification per conversation, replaced rather than stacked when
-  that conversation answers again, and nothing for anything older than ten minutes.
-  Chats inside this app are deliberately excluded — they already announce themselves
-  on screen. Off until you turn it on in Settings, which asks the OS once and sends
-  a test notification so you find out immediately rather than hours later.
-- **Drafts survive the app going away** — a half-typed or half-dictated message is
-  saved as you write it and restored with the conversation, because a phone browser
-  reloads a backgrounded tab whenever it likes and a paragraph of dictation exists
-  nowhere else.
-- **Reconnect-safe** — the server keeps the process alive when your phone locks or
-  the network drops. Reattaching resumes the same conversation mid-task, including
-  work started from another device.
-- **One-tap new project** — creates the directory, a git repo, and optionally a
-  GitHub remote.
-- **Clone an existing GitHub repo** — paste `owner/repo`, or tap one from the list
-  of repositories the workspace token can see.
-- **Retire a project** — commits, pushes every branch and tag, checks with the
-  remote that it really landed, then deletes the folder from the instance. It
-  refuses if anything would be lost (no remote, a stash, a push that failed) and
-  says which; overriding is a separate, deliberate tap. Chat history is kept.
+Claude Code is already a very good interface, and it's a terminal program. The
+part missing from it is a machine that stays on, so this project gives it one and
+stays out of the way. A pane in the Mux is the CLI's own TUI in a tmux session, and
+`cc my-project/slot-3` from any terminal joins the very same session. Nothing about
+Claude is reimplemented: what you run on a laptop is what runs here.
+
+The project did not start there. It began as VS Code in the browser with the
+official extension, which works at a desk and is painful on a phone. It then grew
+a purpose-built chat over `claude --input-format stream-json`. Both are still
+served. The editor is the place for files and diffs, and the chat is deprecated in
+favour of the Mux, because a real terminal turned out to work better than either
+once a phone had the keys for it. The rest of the work went into the part a laptop
+cannot give you: sessions that outlive the browser, and a way to see and steer many
+of them at once.
+
+## The Mux: every agent on one screen
+
+`/chat/mux` is a cmux-style view, and it is where the app opens: the bare domain
+and the installed app's icon both land there.
+
+**Down the side:** every project, each with up to **ten worktree slots** (see
+[How many](#how-many-slots-panes-and-workspaces)), and a
+light on each one. It is orange while the slot works, and a blue ring means it
+finished while nobody was looking (the tab title counts those, and desktop alerts
+are one switch away). A filter narrows the list. The **+** beside it adds a project:
+clone `owner/repo`, pick from the repositories the token can see, or create a new
+one with an optional GitHub remote. The **⋯** on a project opens its sheet: what it
+holds, cloning another repository into it, making a workspace, and **push & delete**.
+
+**In the middle:** one to eight panes (by default). A pane is one of:
+
+- **a terminal**, the default, running the real Claude Code CLI in the permanent
+  tmux session `cc` keeps for that slot. Every device that opens the slot attaches
+  to the same session.
+- **a shell** (`$` on a slot row, or **$ Shell** in a pane's header): a plain
+  `bash -l` in a tmux session of its own beside the slot's Claude, so you can run
+  the tests while it works. **Claude** in the header switches back.
+- **your own command line** (**❯…**): restarts the slot's terminal with a line you
+  give it, such as an environment variable or `claude --resume <id>`, without
+  resetting the slot. The line is split into arguments with quotes honoured and
+  nothing expanded.
+
+Each pane's header also has **📎** to attach any file (an image, a PDF) to what you
+are typing, **Aa** for the terminal font and size, **🔊** for [what Claude last said
+there](#voice), **⇱** to copy a link that opens the pane full-screen on a phone, and
+**⇄** to swap it with any other pane (Alt+Shift+number). Closing a pane stops
+nothing.
+
+The terminal behaves like one: the wheel and a finger scroll Claude Code, a
+drag-copy lands on your real clipboard (OSC 52), Ctrl-C copies when something is
+selected, URLs are links even when tmux wrapped them, a pasted or dropped image is
+uploaded and its path typed in, and Hebrew and Arabic read the right way round.
+
+**Two screens, two windows.** Open the Mux in a second window and each shows its
+own page of the panes, 1–3 on one and 4–6 on the other (or 1–4 and 5–8 four
+across). The two follow each other's changes instead of undoing them, and ⇄ swaps
+a pane across them.
+
+### Slots
+
+Each slot is its own checkout: `<project>/.claude/worktrees/slot-1` … `slot-10`, on
+branches of the same names. So ten agents on one project never edit the same
+working tree. Every project you clone or create here gets them, and older ones get
+each slot the first time you use it. Press **+** next to a project for a pane in a
+free, clean slot. Starting one brings the slot up to date with the default branch
+first, fast-forward only, and only if nothing in it would be lost. Otherwise it
+starts from what is there, and the pane says so.
+
+When Claude exits in a slot (`/exit`), the slot resets: it is refreshed the same
+cautious way, and the sidebar stops showing the title of the conversation that
+ended. Exiting a shell ends only the shell. A project's own checkout is shown above
+its slots and can take a terminal for read-only work. Feature work belongs in a
+slot, since everything else shares that tree.
+
+### Workspaces: a second clone for a second task
+
+Slots are for many agents on one line of work. A **workspace** is for a second
+line of work: a full clone of the repository, on a branch of its own, with ten
+slots of its own. Use one for "mono on master with its ten slots, and Feature A on
+`feat/a` with ten more", up to five per repository counting the original. Make one
+from the project's ⋯ sheet: it clones from the project's own checkout, points
+`origin` at the real remote, and checks out the branch (the remote's if it exists,
+or a new one from the default branch). Its slots branch from, and refresh to, the
+workspace's branch, so a slot agent starts from what the task has so far. In the
+sidebar it is nested under its project. Underneath, it is an ordinary project
+(`<project>--<slug>`), so terminals, `cc`, notifications and the auth checks work
+on it unchanged.
+
+### How many slots, panes and workspaces
+
+Ten slots per project, eight panes and five workspaces per repository are defaults,
+not fixed limits. Each deployment sets its own in the config, and can change them
+from the box page without a stack deploy:
+
+```json
+"mux": { "slots": 10, "panes": 8, "workspaces": 5 }
+```
+
+`slots` can be 1–32, `panes` 1–16 (twelve and sixteen add four-by-three and
+four-by-four layouts), and `workspaces` 1–20. They are ceilings, not quotas: a slot
+is made the first time it is used, and a workspace only when you ask for one.
+Lowering a number hides what is above it and deletes nothing. A slot past the new
+count keeps its worktree, its branch and its work, and comes back when the number
+goes up again. What a box can actually run at once is a question of memory: each
+Claude holds a few hundred megabytes, and a `t4g.large` has 8 GB.
+
+### On a phone
+
+The Mux shows one pane at a time: the projects and slots are a drawer behind ☰, and
+a tab per pane runs along the top. In a terminal, tap one of Claude Code's numbered
+choices ("1. Yes", "2. No") to pick it. Two rows of keys run along the bottom:
+
+- **Row one:** Esc, Enter, the arrows, 1–4, Shift-Tab, 📎, and Copy, which shows the
+  screen as selectable text.
+- **Row two:** Ctrl and Alt, which hold for the next key so you can type any chord.
+  It also has one-tap keys for what Claude Code and a shell use most (^X^S to send
+  now, a newline that does not send, Esc Esc, ^O ^R ^T ^G ^D ^U ^W ^K ^A ^E ^L,
+  ^B^B for tmux, Home/End/PgUp/PgDn/Del), and the symbols a phone keyboard hides a
+  page deep.
+
+There is also a line of ordinary text input, with the phone's autocorrect and
+dictation, that is typed into the terminal and then Enter.
+
+Nothing on the laptop or the phone owns any of it. Shut the laptop mid-task and the
+task finishes. Open the phone and every pane is there, in the slot you left it.
 
 ## Sessions that outlive the browser, and follow you between devices
 
-Start something on your phone, arrive home, open the same project on your laptop,
-and keep watching the same run — in the official Claude Code panel, with its diffs
-and tool cards.
+A terminal session is the simplest case: it is a tmux session on the box, the same
+one on every device you attach from, and it depends on nothing else. tmux runs as
+its own service, so a deploy of the app does not end it. From any terminal on the
+box:
 
-The panel could not do that on its own. It runs `claude` as a child of the
-extension host, and code-server creates one extension host *per browser page* —
-then tears it down within **five seconds** of the last WebSocket closing. So the
-panel did not hand off between devices; it *forked*. The second device started its
-own `claude`, resumed the same session from the transcript on disk, and the first
-one carried on running, untouched. Both then appended to the same file and
-diverged. What you saw was your laptop showing the conversation sitting idle while
-your phone was still working, and the two telling different stories a minute later.
+```bash
+cc                      # list live sessions and projects
+cc my-project           # start, or rejoin, a permanent session
+cc my-project/slot-3    # the same, in one of its worktree slots
+cc my-project --kill    # end it
+```
+
+The editor's Claude panel needed more work. It runs `claude` as a child of the
+extension host, and code-server creates one extension host *per browser page*, then
+tears it down within **five seconds** of the last WebSocket closing. So the panel
+did not hand off between devices; it *forked*. The second device started its own
+`claude` and resumed the same session from the transcript on disk, while the first
+one carried on running, untouched. Both then appended to the same file and diverged.
 
 That is fixed outside the extension, because nothing can fix it inside one
 extension host. The panel's `claude` is launched through a small wrapper
 (`claudeCode.claudeProcessWrapper`, a supported setting) that hands its stdio to
 **claude-broker**, a service that owns one real process per conversation. Every
-page attaches to that one process; a page that joins mid-turn is replayed the
+page attaches to that one process, and a page that joins mid-turn is replayed the
 stream so far and catches up.
 
 - closing the editor, the browser, or your laptop changes nothing
 - **opening the project on a second device joins the same live run**, mid-turn,
   rather than starting a second Claude
-- it survives a reload, a dropped connection and a code-server restart — the
-  broker is its own systemd service, so restarting the editor cannot take your
+- it survives a reload, a dropped connection and a code-server restart: the broker
+  is its own systemd service, so restarting the editor cannot take your
   conversation down with it
-- if the broker is ever down, the wrapper just runs the real binary: you get the
-  old single-device behaviour instead of an editor that will not start
+- if the broker is ever down, the wrapper just runs the real binary, so you get
+  single-device behaviour instead of an editor that will not start
 
-A terminal-only route is still there, and it depends on nothing at all — no
-broker, no extension. It is the same tmux session on every device you attach from:
+Set `claudeMobile.claudeSurface` to `tmux` to make the editor's Claude button open
+the slot's tmux session instead of the panel.
 
-```bash
-cc                      # list live sessions and projects
-cc my-project           # start, or rejoin, a permanent session
-cc my-project/slot-3    # the same, in one of its worktree slots (see the mux, below)
-cc my-project --kill    # end it
-```
+## The Browser pane: a real Chrome on the box
 
-Verified on a live box: two clients attached at once, one session, one `claude`
-process, and the session still running after both detached. Set
-`claudeMobile.claudeSurface` to `tmux` to make the Claude button open that instead
-of the panel.
+**Browser**, at the top of the Mux, opens `/chat/browser`: a full Google Chrome
+running on the box, on a virtual screen, shown in the page. Its tabs, address bar,
+extensions and profile are the box's. So the laptop, the phone and any Claude on
+the box see and drive the same browser: sign in to something once and an agent can
+use it, or watch an agent work through a page you are both looking at.
 
-## Several agents at once, on a big screen: the mux
+- **The picture is video.** ffmpeg encodes the screen as H.264 and the page decodes
+  it with WebCodecs, at 30 frames a second (or 60 with `browser.fps`) and a few
+  megabits. VNC carries the keys, the pointer and the clipboard. A browser without
+  WebCodecs falls back to VNC's own picture.
+- **It fits whoever is looking.** The screen is resized to the viewer, so a phone
+  gets a phone-shaped browser with a keyboard, and a Mac's ⌘ is sent as Ctrl.
+  Pasting carries your clipboard across, and a copy in the browser comes back to it.
+- **Claude drives it over DevTools** on `127.0.0.1:9222`:
+  `claude mcp add chrome -- npx chrome-devtools-mcp@latest --browser-url=http://127.0.0.1:9222`.
+- It is Chrome for Testing's current Stable, refreshed by every install, with its
+  profile on the workspace volume. It is on by default. `"browser": {"enabled":
+  false}` removes the service. It runs at a lower CPU priority than terminals and
+  the editor, and a hidden page closes its video stream, so a background tab costs
+  nothing.
 
-`/chat/mux` (the **Mux** tab in the chat list) is a cmux-style desktop
-view. Down the side: every project, each with eight **worktree slots**, and a light
-on each one — orange while it works, a blue ring when it finished and nobody was
-looking (the tab title counts those, and desktop alerts are one switch away). In the
-middle: one to eight panes side by side.
-
-A pane is either a **chat** or a **terminal**. The sidebar's **New: Chat | Terminal**
-switch decides what a **+** opens, and each pane's header has a button that switches
-it between its slot's chat and its slot's terminal. A terminal pane is the real
-Claude Code CLI — the same TUI as `claude` on a laptop — in the permanent tmux
-session `cc` keeps for that slot, so `cc my-project/slot-3` from any other terminal
-joins the very same session. Scroll with the wheel or a finger; the pane's ⇱ button
-copies a link that opens it as a full-screen terminal on a phone, with Esc, Tab and
-arrow keys along the bottom.
-
-Each slot is its own checkout — `<project>/.claude/worktrees/slot-1` … `slot-8`, on
-branches of the same names — so eight agents on one project never edit the same
-working tree. Every project you clone or create here gets them; older ones get each
-slot the first time you use it. Press **+** next to a project for a chat in a free,
-clean slot. A new chat brings its slot up to date with the default branch first,
-but only if nothing in it would be lost; otherwise it starts from what is there,
-and the pane says so.
-
-Nothing on the laptop owns any of it. A chat pane is the ordinary chat in a frame,
-run by the same service as the phone; a terminal pane is a tmux session, run by
-the box's tmux service. Shut the laptop mid-task and the task finishes. Pick it up
-on the phone from the chat list — labelled with its slot — or, for a terminal, from
-the link or with `cc`. Closing a pane or the tab stops nothing.
-
-On a phone the mux is one pane at a time: the projects and slots are a drawer behind
-☰, and a tab per pane runs along the top. In a terminal, tap one of Claude Code's
-numbered choices ("1. Yes", "2. No") to pick it; the bar along the bottom has Esc,
-Enter, the arrows, 1–3 and Shift-Tab, and a line of ordinary text input — with the
-phone's autocorrect and dictation — that is typed into the terminal and then Enter.
-
-## What is running on the box
-
-`/chat/admin` — reachable from the **Box** tab at the bottom of the chat — is a task
-manager for the instance. It exists because every hard-won fact in this README was
-found the same way: an SSM shell, `ps` and `journalctl`. None of it was visible from
-the app itself.
-
-- **Every conversation on every surface** — the chat's, the editor panel's through
-  the broker, and each tmux session — with the project it is in, how long it has been
-  idle, and how much memory it is holding.
-- **The services the deployment is made of**, live, with memory for the box and disk
-  for the workspace volume.
-- **What is wrong, in words.** An editor panel that has forked. Processes the panel
-  started and never spoke to (ten of those were once holding 2 GB of 7.8 GB). A tmux
-  server in a cgroup the next deploy will kill. Each one says what it costs, and the
-  ones with a safe fix have a button.
-- **Stopping one thing.** Anything that might be mid-turn refuses the first tap and
-  says what you would lose; confirming is a deliberate answer to that question rather
-  than a default. Killing a whole service is not offered — that is `systemctl`'s job,
-  over SSM, where you can see the output.
-
-It is a screen inside the chat service rather than a second app, so there is one
-login, one authentication implementation, and nothing new exposed to the internet.
+Details and settings are in [docs/HOST.md](docs/HOST.md) and
+[docs/DEPLOY.md](docs/DEPLOY.md).
 
 ## Voice
 
-Tap the mic, talk, tap to stop. The transcript is inserted **at your cursor** with
-sensible spacing, so you can dictate into the middle of a half-typed message, move
-the caret, and dictate again.
+**Hear what Claude last said.** The 🔊 on any Mux pane, and the status button in
+the editor, open a sheet with the last message there, **rendered rather than shown
+as source**: bold, headings, bullets, tables and fenced code come out as themselves.
+Tables scroll sideways as a unit, and Hebrew and Arabic are laid out right to left.
+**Read aloud** reads it in a neural voice, with a **speed** stepper from half speed
+to three times that applies to the message being read and keeps the voice's pitch.
+While the sheet is open it follows the conversation and reads out a newly arrived
+message by itself. The sheet's reach is bounded, because a phone that starts
+talking on its own after you have put it down is worse than one that stays quiet.
 
-Transcription runs **on the instance** (`whisper.cpp`, `base.en`): no API key, no
-quota request, nothing per request, and audio never leaves the box. Measured on 2
-vCPUs, ~4s for 11s of audio.
+Over the message sit **‹ Previous**, **● LIVE** and **Next ›**, which work like the
+scrubber on a live stream. LIVE is lit by default: each new message replaces the one
+on screen and the one being read. Previous steps back and reads an earlier message,
+and from then on the sheet is *paused*. It stays on that message, and messages that
+arrive meanwhile are kept but neither shown nor read until Next steps forward to
+them. LIVE, pressed while lit, pauses right where it is. Closing the sheet ends a
+pause.
 
-**Then it gets punctuated.** Raw speech-to-text is the one place this used to feel
-worse than a consumer app: no punctuation, no capitals, and every product name
-mangled — "compared to ChatGPT and Gemini apps" arrives as "compared to Georgia PT
-and Germany apps". Neither engine can do better on its own, because sentence
-boundaries and proper nouns need the whole utterance and both of them work in
-fragments: the browser's recognizer emits no punctuation at all, and whisper sees
-one pause-delimited phrase at a time so that text keeps up with the speaker.
+Voices come from Azure AI Speech (its free tier by default, which refuses rather
+than charges when its monthly allowance runs out) or Amazon Polly. Hebrew is spoken
+in a native Hebrew voice, and a Hebrew word in an English sentence is still said.
+Code blocks are offered one by one rather than read as noise.
 
-So when you stop talking, the finished text gets one pass through Claude Haiku on
-Bedrock — punctuation, capitals, the names it plainly misheard, filler removed —
-and nothing else. It never answers or acts on what you dictated, and it never
-rewrites your words. The raw transcript is in the composer first and stays there
-if the pass fails, times out, or comes back looking like a reply rather than an
-edit; a send that lands mid-pass waits a moment for it. Costs a second or two and
-a few tokens per dictation; the switch is in Settings, and it covers the editor
-overlay too, where it runs after the text is already on your clipboard.
+**Talk it over.** Beside Read aloud, **Talk it over** opens a spoken conversation
+*about that message*: "wait, go back to the part about the timeout", asked out loud
+while walking. It goes over WebRTC straight from the browser to OpenAI's or Azure
+OpenAI's realtime API, so the audio never touches the box. It is deliberately a dead
+end. It gets the message and the question that produced it and nothing else, has no
+tools, cannot reach Claude, and says so on screen. A voice channel with no
+transcript is the last place a command should be issued from.
 
-A long dictation used to end without warning: a phone being talked into is a phone
-nobody is touching, so the display sleeps on its idle timer, and the speech
-recognizer goes with it. The screen that was showing "recording" is the thing that
-turned off, so there was nothing to notice. Now:
+**Dictation** is in the editor's floating bar (and in the deprecated chat). Tap the
+mic, talk, tap to stop, and the transcript is inserted at your cursor. English is
+transcribed **on the instance** with `whisper.cpp` (`base.en`): no API key, nothing
+per request, and audio never leaves the box (about 4s for 11s of audio on 2 vCPUs).
+Hebrew goes to Azure Speech's free tier. When you stop talking, the finished text
+gets one pass through Claude Haiku on Bedrock for punctuation, capitals and plainly
+misheard names. It never answers, acts on or rewrites what you said, and the raw
+transcript stays if the pass fails. The switch for it is in Settings. In a Mux
+terminal on a phone, the compose line takes the phone's own dictation.
 
-- the app **holds the screen awake** for as long as it is open — see below;
-- the status bar above the composer counts the seconds, so a stalled recognizer is
-  visible at a glance rather than inferred from silence;
-- and any stop you did not ask for **beeps, buzzes, and leaves a banner** that is
-  still there when you look at the phone again. The words already dictated stay in
-  the box, and Resume carries on from where it stopped.
+A long dictation used to end without warning, because a phone being talked into is
+a phone nobody is touching, and the display sleeps on its idle timer, taking the
+recognizer with it. So the app **holds the screen awake** while it is open and in
+front (on by default, switch in Settings). It re-requests the wake lock on every
+return to the foreground and every 30s, because the browser releases it on every
+hide and the OS revokes it without saying so. The status bar counts the seconds of
+a dictation, and any stop you did not ask for **beeps, buzzes and leaves a banner**,
+with the words kept and Resume to carry on. A small ⟳ beside the mic resets
+dictation completely, with Undo for a few seconds.
 
-Where a wake lock is not available the status bar says so outright rather than
-promising a screen that will sleep anyway.
+Two details worth knowing. The browser converts audio to 16 kHz mono WAV before
+uploading, because browsers record Opus, the bundled decoder does not read it, and
+Amazon Linux 2023 has no ffmpeg package. And for other languages on the box, swap
+`WHISPER_MODEL` to a multilingual build (`ggml-base.bin`) in
+`/etc/claude-voice.env`. Azure OpenAI Whisper is an optional override. See
+[docs/DEPLOY.md](docs/DEPLOY.md).
 
-**And there is a reset, next to the mic.** Everything above deliberately *keeps*
-state when dictation stops — the transcript, where it was written, a phrase still
-being transcribed, an interruption waiting to be resumed — because that is nearly
-always text you want back. When a piece of it outlives the dictation it belonged
-to, it turns up under the next one, and emptying the composer by hand does not help:
-none of what puts it back is in the composer. The small ⟳ beside the mic is the way
-out of that. It releases the microphone, dismantles the recognizer, forgets the
-transcript and the saved draft, and discards anything already in flight — a phrase
-mid-upload, a cleanup pass, a microphone granted after you gave up on the prompt —
-so the next dictation starts from nothing. The text it clears is offered back as
-Undo for a few seconds, because the button is one tap from the mic and what is in
-the box is often several minutes of speech.
+## Notifications
 
-The editor overlay's Dictate sheet has the same control, for the same reason and
-with the same Undo — **Reset**, beside *Restart mic*. The two are deliberately
-different: Restart gives a recognizer that has stopped hearing you another go and
-keeps every word; Reset is for when the words themselves are the problem. Out there
-it also clears the draft the sheet recovers from, which is what makes dictation
-survive the workbench reloading itself, and is therefore the other thing that can
-hand you a paragraph you thought you had got rid of.
+When a session you are not watching finishes a turn (a Mux terminal, the editor
+panel, anything under tmux), your phone buzzes with the project and the first line
+or so of the answer. It says "waiting for sub-agents" rather than "finished" when a
+turn hands off, and that Claude is waiting for you when it is asking a question.
+Each device chooses what a tap opens: the project's editor window, or the Mux on
+that very slot, which joins the session already running there rather than starting
+a second Claude. There is one notification per conversation, replaced rather than
+stacked, and nothing for anything older than ten minutes.
 
-## Keeping the screen awake
-
-The phone's display sleeps on its idle timer, and this app is used in long
-stretches where nobody is touching the screen: dictating a paragraph, watching a
-task run for two minutes, reading a long answer. When the display sleeps the page
-is hidden, and hiding the page suspends the recognizer and freezes the WebSocket —
-so the idle timer is not a cosmetic annoyance, it ends whatever was in flight.
-
-So the **Screen Wake Lock** is held for as long as the app is open and in front,
-not only while dictating. It is on by default, the switch is in Settings, and one
-switch covers both the chat and the editor — they are one origin behind nginx, so
-they share the setting. Three properties of the API shape the implementation:
-
-- it needs a **visible** document; requesting while hidden is rejected;
-- the browser **releases it on every hide and never re-acquires it**, so every
-  return to the foreground has to re-request;
-- the OS **revokes it whenever it likes** (battery saver, low battery) with no
-  event to say you may have it back, so the only way to notice is to keep asking.
-
-Hence one `syncWakeLock()` that reconciles held-against-wanted, called from every
-event that can change either, plus a 30s timer for the revocation case. Turning the
-setting off still lets dictation hold the screen: "off" means *don't burn my battery
-while I read*, not *cut me off mid-sentence*.
-
-What no web page can do is keep the display on once you leave the app or press the
-power button — that is the OS's decision and the page is not consulted. Nor is there
-a workaround from inside a browser with no wake lock API at all (iOS before 16.4);
-there, raise the screen timeout in the OS settings. That residue is why the
-"announce every stop we did not ask for" behaviour above still exists rather than
-being replaced by the wake lock.
-
-Two more details worth knowing:
-
-- **The browser converts audio to 16 kHz mono WAV before uploading.** Browsers
-  record webm/**opus**, and the bundled decoder (miniaudio) handles WAV/MP3/FLAC/
-  Vorbis but *not* Opus — and Amazon Linux 2023 has no ffmpeg package. The browser
-  already has an Opus decoder, so it does the conversion via WebAudio. 16 kHz mono
-  is also exactly what Whisper wants, so uploads shrink.
-- **`base.en` is English-only.** For other languages, swap `WHISPER_MODEL` to a
-  multilingual build (`ggml-base.bin`) in `/etc/claude-voice.env`.
-
-Azure OpenAI Whisper is supported as an optional override, falling back to local
-if Azure errors. See [docs/DEPLOY.md](docs/DEPLOY.md).
+They are off until you turn them on, from the Mux sidebar, the editor's status
+sheet or Settings. Turning them on asks the OS once and sends a test notification,
+so you find out immediately rather than hours later.
 
 ## The editor on a phone
 
 `/editor/` is real code-server, with the activity bar, status bar and tabs stripped
-so Claude gets the whole screen. A small bar of buttons — dictate, switch project,
-terminal, fix the layout — floats over it; long-press any of them to move the bar
-to the other edge.
+so Claude gets the whole screen, and dark on every device. A small bar of buttons
+floats over it: dictate, switch project, terminal, fix the layout, and the status
+button described under [Voice](#voice). Long-press any of them to move the bar to
+the other edge. The GitHub Pull Requests extension is installed and signed in with
+the workspace's GitHub token.
 
-Claude opens **in the editor area**, full width, rather than in a side bar — on a
-phone those are narrow strips that wrap text to a letter per line. It is the
+Claude opens **in the editor area**, full width, rather than in a side bar, which
+on a phone is a narrow strip that wraps text to a letter per line. It is the
 official extension's panel, sharing one conversation across your devices through
-the broker described above. A terminal session is one setting away
-(`claudeMobile.claudeSurface: tmux`).
+the broker described above.
 
 The status button answers **is Claude working, and what did it last say** without
-waiting out the panel's own history load — a phone that has just come back from
-sleep otherwise shows an empty transcript for several seconds. One tap gives a
-line; tapping that opens the whole of the last message, with **Read aloud** for
-when it is longer than a phone screen, and a **speed** stepper beside it — minus,
-the rate, plus, from half speed to three times, which changes the message being
-read as well as the next one and keeps the voice's pitch where it is. (The chat
-app has the same range in Settings.) While that sheet is open it re-asks every
-five seconds and reads a newly arrived message out by itself, so watching a turn
-finish costs nothing at all — bounded by the sheet, because a phone that starts
-talking on its own after you have put it down is worse than one that stays quiet.
-It names the conversation it is talking about, since the panel and the chat app can
-be in different ones.
+waiting out the panel's own history load. A phone that has just come back from
+sleep otherwise shows an empty transcript for several seconds. It names the
+conversation it is talking about, since the panel and other surfaces can be in
+different ones.
 
-Over the message sit **‹ Previous**, **● LIVE** and **Next ›**, which work like the
-scrubber on a live stream. LIVE is lit by default, and that is the behaviour above:
-each new message replaces the one on screen and the one being read. Previous steps
-back to an earlier message in the conversation and reads it. From then on the sheet
-is *paused*: it stays on that message and reads it to the end, and messages that
-arrive meanwhile are kept but neither shown nor read. Next steps forward through
-them, and LIVE (or Next past the newest) goes back to following. LIVE is a toggle:
-pressed while lit, it pauses right where it is, on the message showing, and lets the
-read in progress finish. Closing the sheet
-ends a pause, so every fresh open starts live.
+The terminal button opens a second, plain shell in the editor area, and pressing it
+again hands the window back to Claude. It reuses the shell you already had, even
+across a page reload. That shell is **zsh**, with completion, shared history and a
+two-line prompt with the git branch. History lives on the workspace volume, so a
+command typed on a phone can be recalled on a laptop. Your own additions go in
+`~/.zshrc`, which a deploy leaves alone.
 
-The message is **rendered, not shown as source**: bold, headings, bullets, tables,
-links and fenced code come out as themselves, because on a phone that sheet is the whole of
-what you read of an answer and an answer is written to be read. The one-line
-surfaces — the chip and the conversation list — get the markers stripped instead,
-since a heading has nowhere to go on one line. Tables scroll sideways as a unit
-rather than wrapping every cell, because a wrapped table is a wall of words with the
-alignment that made it a table gone. Nothing about a message is ever
-treated as markup: the renderer builds elements and puts model text through
-`textContent`, and a link is only tappable if it points at http(s) or at this
-origin.
-
-That sheet is also where you **ask to be buzzed when a turn ends** — one tap, and it
-sends itself a test notification so you know it works rather than assuming. It is the
-same switch as the one in the chat app's settings and the same subscription behind it;
-turning it on in either place turns it on for this device. Notifications are for the
-sessions out here — this panel, and anything under tmux — which is why the switch is
-here as well.
-
-The terminal button opens a second, plain shell, also in the editor area, and
-pressing it again hands the window back to Claude — with tabs hidden, the two just
-take turns. It reuses the shell you already had rather than opening another,
-including across a page reload. It is for the quick things (`git log`, run a test);
-that shell dies with its tab, which is exactly why Claude does not live in one.
-
-That shell is **zsh** — completion, shared history, and a two-line prompt with the
-git branch, so a long path does not leave you three columns to type in on a phone.
-History lives on the workspace volume rather than in `/home`, so a command typed
-on a phone can be recalled on a laptop, and it survives the instance being
-replaced. Your own additions go in `~/.zshrc`, which a deploy leaves alone.
-
-The layout button is there because of one specific way the editor gets stuck: tap
-a file in the transcript and it opens beside the panel, and with no tabs and no
-status bar there is nothing on screen that closes it again. The panel keeps
-whatever width is left, and reloading brings the file back with it. Three
-escalating ways out, because the first two can't confirm they worked:
+The layout button exists because of one specific way the editor gets stuck. Tap a
+file in the transcript and it opens beside the panel, and with no tabs and no
+status bar there is nothing on screen to close it. Three escalating ways out:
 
 - **Back to Claude** closes the files and diffs the panel opened and gives Claude
-  the whole window. The conversation keeps running; unsaved files are left alone
-  rather than raising a save dialog no phone can answer.
+  the whole window. Unsaved files are left alone rather than raising a save dialog
+  no phone can answer.
 - **Show tabs & bars** puts the chrome back so things can be closed by hand.
-- **Reload** now recovers on its own — the editor closes restored file tabs at
-  startup, so a refresh means what you expect. Set
-  `claudeMobile.closeFilesOnStartup` to `false` if you use this as an IDE at a
-  desk and want your open editors back after a reload.
+- **Reload** recovers on its own: the editor closes restored file tabs at startup.
+  Set `claudeMobile.closeFilesOnStartup` to `false` if you use this as an IDE at a
+  desk and want your open editors back.
 
-A reload of the editor is not free — it restarts the extension host, and the
-Claude conversation lives inside it — and it is not always your decision: the
-workbench reloads itself when the browser restores the page from its back/forward
-cache, which on a phone happens whenever you switch apps and come back. So the
-surface no longer adds loads of its own (tapping the project you are already in
-does nothing, and the startup layout pass only acts when the layout is actually
-wrong), dictated text is saved as you speak it rather than living only in the
-overlay's textarea, and the Layout sheet lists this tab's recent loads and what
-caused each one — which is the only way that symptom is visible from a phone.
+A reload of the editor restarts the extension host, and the workbench reloads
+itself whenever a phone restores the page from its back/forward cache. So the
+surface adds no loads of its own, dictated text is saved as you speak it, and the
+Layout sheet lists this tab's recent loads and what caused each one.
+`…/chat/reset.html` clears the service worker, the caches and the saved workbench
+state for the device. It touches nothing on the server.
 
-Beyond that, `…/chat/reset.html` clears the service worker, the caches and the
-saved workbench state for the device — which is what a black screen or a layout
-that survives everything else actually needs. It touches nothing on the server.
+## The box page: what is running, and every setting
+
+`/chat/admin` (**Box** at the top of the Mux) is a task manager for the instance.
+It exists because every hard-won fact in this README was found the same way: an SSM
+shell, `ps` and `journalctl`. None of it was visible from the app itself.
+
+- **Every conversation on every surface**: each tmux session (badged working or
+  waiting on you), the editor panel's through the broker, and the deprecated chat's.
+  Each shows the project it is in, how long it has been idle, and how much memory
+  it holds.
+- **The services the deployment is made of**, live, with memory for the box and
+  disk for the workspace volume.
+- **What is wrong, in words.** An editor panel that has forked. Processes the panel
+  started and never spoke to (ten of those once held 2 GB of 7.8 GB). A tmux server
+  in a cgroup the next deploy would kill. Each one says what it costs, and the ones
+  with a safe fix have a button.
+- **Stopping one thing.** Anything that might be mid-turn refuses the first tap and
+  says what you would lose. Killing a whole service is not offered: that is
+  `systemctl`'s job.
+- **Settings.** Every key of the deployment's config, grouped, each with an input of
+  its own type, what the file says, and where a change takes effect. A saved value
+  is kept on the box and outlasts deploys until the file's own value changes. Keys
+  the box can apply to itself (model, permission mode, effort, git identity, the
+  login allowlist, the browser) take effect on **Apply**. Apply reinstalls with the
+  new values, checks the login still holds, and puts the old ones back if not. Keys
+  that belong to the AWS stack wait for the next full deploy, which reads them from
+  the box. See [docs/DEPLOY.md](docs/DEPLOY.md).
+
+It is a page inside the chat service rather than a second app, so there is one
+login, one authentication implementation, and nothing new exposed to the internet.
+
+## Keeping itself up to date
+
+A root timer updates the **Claude Code CLI** every day, because the CLI's own
+updater runs as the workspace user and cannot write to the global install.
+
+TripleC itself has no releases: `main` is the release. `triplec-update run --now`
+takes it, and the `autoUpdate` setting lets a box do the same on a timer, as
+cautiously as you choose:
+
+- **Modes:** `off` (the default), `notify` (push when an update is ready), or
+  `install`.
+- **When it acts:** a commit must have **soaked** on the branch for a set time
+  (24 hours by default), an install waits for a time window if you give one, and it
+  waits until no Claude conversation has written anything for 30 minutes.
+- **How it installs:** fast-forward only, after the full test suite has passed in
+  its own clone. It then verifies that the app answers, still refuses a caller with
+  no login, and reports the new build. A failed install is rolled back to the
+  previous commit and not retried.
+
+It is editable from the box page. Read [docs/UPDATES.md](docs/UPDATES.md), including
+what turning `install` on trusts.
+
+## The chat (deprecated)
+
+`/chat/` (**Chats** on the Mux) is the earlier interface: a purpose-built chat over
+one long-lived `claude` process per conversation, with tool calls as collapsible
+cards, a stop button, a tab per project, dictation, drafts that survive the browser
+discarding the tab, and a list of every past session on the box. It still works, and
+everything else on this page works without it. It carries a banner pointing at the
+Mux, and a chat pane in the Mux offers **Switch to terminal**. New work goes into
+the Mux, and project management moved there too.
 
 ## Defaults
 
-Opus 5.5 on Bedrock, `--permission-mode bypassPermissions`, `--effort max`. All
-three are overridable per-chat in the settings sheet, and the deployment-wide
-defaults live in `triplec.config.json`. Changes apply to new chats — an
-existing conversation keeps the flags it started with, because they're process
-arguments.
+Opus 5.5 on Bedrock, `--permission-mode bypassPermissions`, `--effort max`. The
+deployment-wide defaults live in `triplec.config.json` and can be changed from the
+box page. They apply to new sessions: an existing conversation keeps the flags it
+started with, because they're process arguments.
 
 `bypassPermissions` means Claude runs commands in the workspace without asking.
-That's the point of the UX and the main thing to be aware of; set
-`permissionMode` to `acceptEdits` or `plan` if you'd rather have a checkpoint.
+That is the point of the UX and the main thing to be aware of. Set `permissionMode`
+to `acceptEdits` or `plan` if you'd rather have a checkpoint.
 
 ## Security
 
-Authentication is enforced inside the application process that spawns `claude` —
-not in nginx, not in the load balancer alone. Every route and the WebSocket
-upgrade require a session; the server refuses to start without a strong password
-and cookie signing key; failed logins are throttled at two layers.
+Authentication is enforced inside the application process that spawns `claude`,
+not in nginx and not in the load balancer alone. Every route and every WebSocket
+upgrade (the terminals and the browser included) require a session. The server
+refuses to start without a strong password and cookie signing key, and failed logins
+are throttled at two layers. Sign-in is a password, or Google or any OIDC provider
+with an allowlist of identities.
 
 This is stated precisely because earlier versions of this project got it wrong
 twice, in the same shape both times. First the nginx config carried a comment
 describing an `auth_request` gate that had never been written, and the chat API sat
 open to the internet while every document in the repo said otherwise. Then, after
-`oidc` mode arrived, the identity allowlist was enforced correctly in `auth.js` —
-and the editor routes did not go through `auth.js` at all, so any account the
-provider would authenticate reached a full IDE if it also had the editor's
-password. Neither was a bug in the check. Both were a route that did not reach it.
+`oidc` mode arrived, the identity allowlist was enforced correctly in `auth.js`, but
+the editor routes did not go through `auth.js` at all. Neither was a bug in the
+check. Both were a route that did not reach it.
 
 So the claim is checked by machine, from both ends.
 [`chat-service/auth-test.js`](chat-service/auth-test.js) boots the real server and
-asserts the check is right;
+asserts every route and socket refuses an unauthenticated caller.
 [`chat-service/manifest-test.js`](chat-service/manifest-test.js) parses the nginx
-config and asserts no route bypasses it — discovering the routes from the config
+config and asserts no route bypasses it, discovering the routes from the config
 rather than from a list, because a list is what both bugs got past. `deploy.sh`
 refuses to deploy if either fails, and after deploying it curls the live URL and
-aborts if the API answers without a login.
+aborts if the API answers without a login. Self-updates make the same check.
 
 ```bash
 npm run test:auth
@@ -492,57 +535,43 @@ blast radius: [docs/SECURITY.md](docs/SECURITY.md). Found a hole? Please report 
 ## Install as an app
 
 Open the URL, sign in, then **Add to Home Screen** (iOS Safari) or the install icon
-in the address bar (Chrome/Edge/Android). The service worker exists only to receive
-notifications: it caches nothing and intercepts no requests — the app is a live
-WebSocket client, and a stale cached shell would break it rather than help.
+in the address bar (Chrome/Edge/Android). The icon opens the Mux. The service worker
+exists only to receive notifications: it caches nothing and intercepts no requests,
+because the app is a live WebSocket client and a stale cached shell would break it.
 
 **A project can have its own icon, and therefore its own window.** Open the project
-from the project button on the floating bar — it opens at `/p/<name>/` — then that
-same button → **Give &lt;project&gt; its own window**. It lands on the home screen as its
-own app: tapping it opens the editor on that project, in its own task in the app
-switcher, beside whatever else you had open. This is the only way to get a second
-window on Android — Chrome gives an installed web app exactly one, and no API opens
-another — so it is one install per project, once. Same origin, same login, same
-notifications.
+in the editor from the floating bar's project button (it opens at `/p/<name>/`),
+then use that same button → **Give &lt;project&gt; its own window**. It lands on the
+home screen as its own app, in its own task in the app switcher. This is the only
+way to get a second window on Android, where Chrome gives an installed web app
+exactly one.
 
 **The `/p/<name>/` path is the whole trick.** An installed app owns a *path prefix*
-(its scope), and scope matching ignores the query string, so while every project
-opened at `/editor/?folder=<path>` they were all one app as far as Android was
-concerned and only the first would install — the rest were refused as "already
-installed". A project therefore gets a path of its own, which nginx proxies to the
-same code-server `/editor/` does. Both addresses still work; only the per-project one
-can be installed.
+(its scope), and scope matching ignores the query string. While every project
+opened at `/editor/?folder=<path>`, they were all one app as far as Android was
+concerned, and only the first would install. So a project gets a path of its own,
+which nginx proxies to the same code-server. The app itself lives under `/chat/`
+for the same reason, so that its icon does not claim every project's scope too.
 
-**The chat app lives at `/chat/` for the same reason.** It used to be served at the
-root and to claim the whole site as its scope, which meant one chat icon on the home
-screen claimed every project too, and Chrome refused each project install after it as
-"already installed". The bare URL now redirects there, so nothing changes about how
-you open it.
-
-If Chrome still answers **"this app is already installed"**, the likeliest cause is an
-icon added before that move: a phone keeps the scope an app was installed with until
-Chrome refreshes it, so an old chat icon is still claiming the whole site. Remove it
-from the home screen and add it again. **Check this install**, beside the project
-button, asks the phone what it can see rather than guessing: which manifest this page
-links, whether this page is inside that manifest's scope, whether Chrome offered an
-install, and which installed app it thinks this page belongs to. It also prints the
-version of the overlay it is running, because a workbench left open across a deploy
-keeps the script it loaded; reloading the page is the fix for that one.
+If Chrome still answers **"this app is already installed"**, the likeliest cause is
+an icon added back when the app claimed the whole site. Remove it from the home
+screen and add it again. **Check this install**, beside the project button, asks
+the phone what it can see rather than guessing.
 
 ## Cost
 
 Roughly **$75/month** left running: `t4g.large` ~$49, ALB ~$16, 100 GB gp3 ~$8, 40
 GB root ~$3, plus Bedrock token usage. Stopping the instance when idle cuts the
-compute portion; the workspace volume is retained on stack deletion, so projects
-and history survive a stop or a teardown.
+compute portion. The workspace volume is retained on stack deletion, so projects
+and history survive a stop or a teardown. Host mode costs whatever your VM does.
 
 ## The landing page
 
-[`landing/`](landing/) is the static marketing site — the page at
-<https://triplec.host>. It deploys as its own stack (private S3 behind
-CloudFront) with no shared resources and no route to the workspace, so public
-traffic never touches the machine holding your GitHub token. Optional; skip it
-entirely if you're self-hosting for yourself.
+[`landing/`](landing/) is the static marketing site, the page at
+<https://triplec.host>. It deploys as its own stack (private S3 behind CloudFront)
+with no shared resources and no route to the workspace, so public traffic never
+touches the machine holding your GitHub token. It is optional: skip it if you're
+self-hosting for yourself.
 
 ```bash
 ./deploy-landing.sh    # independent of ./deploy.sh
@@ -550,25 +579,24 @@ entirely if you're self-hosting for yourself.
 
 Visitor analytics is optional and off until you give it a key. Set
 `landing.analytics.posthogKey` to a PostHog project key (`phc_…`) and the page
-records sessions in full — replay, autocapture, heatmaps, scroll depth, which
-sections were read, whether the install command was copied. PostHog is proxied
-through the site's own domain, so nothing is lost to a blocker and no third-party
-origin appears in the page's CSP. Leave the key empty and no analytics code runs
-at all. See [docs/DEPLOY.md](docs/DEPLOY.md#analytics-for-the-landing-page).
+records sessions in full: replay, autocapture, heatmaps, scroll depth, which
+sections were read, and whether the install command was copied. PostHog is proxied
+through the site's own domain. Leave the key empty and no analytics code runs at
+all. See [docs/DEPLOY.md](docs/DEPLOY.md#analytics-for-the-landing-page).
 
 ## Working on it
 
 `AGENTS.md` (and `CLAUDE.md`) orient both people and AI agents: repo map, the
-rules that matter, and the gotchas that have burned people. Contributions welcome
-— see [CONTRIBUTING.md](CONTRIBUTING.md).
+rules that matter, and the gotchas that have burned people. Contributions welcome:
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ```bash
-npm test                              # auth + client + project tabs + overlay + dictation
-                                      # + projects + operations surface + broker
-                                      # + the landing page's analytics wiring
+npm test                              # every suite: auth and routing, the Mux, terminals,
+                                      # the browser, voice, push, the broker, the box page,
+                                      # updates, host mode, the landing page's analytics
 cd infra && npx cdk synth --quiet     # stack compiles
 ```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).

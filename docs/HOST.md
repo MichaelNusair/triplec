@@ -31,6 +31,7 @@ first. Anyone past TripleC's login is the developer, on that VM's network.
 | In front | ALB → nginx on :8080 | the VM's own HTTPS proxy → one nginx site on `127.0.0.1:8080`; or Tailscale Serve → the app port |
 | Login | `password` or `oidc` (ALB) | `password`, and/or `trusted-header` (Tailscale identity) |
 | Features | all | flags: `editor voice polish push mux admin retire browser` |
+| How much of the Mux | `mux` in the config: 10 slots, 8 panes, 5 workspaces by default | the same `mux` key; a project's `slots.count` may lower its own slots, not raise them past `mux.slots` |
 
 Nothing on the AWS deployment changes: with `TRIPLEC_MODE` unset every default is
 the one it always had, and `chat-service/host.js` is the only file that knows both.
@@ -62,8 +63,9 @@ over SSH. Hooks run under every permission mode, `bypassPermissions` included:
 verified with a project `PreToolUse` hook that exits 2, which blocked a `Write` in
 `bypassPermissions` and surfaced the hook's own message.
 
-**Slots.** A registered project gets `slots.count` worktrees (up to 10) under
-`.claude/worktrees/slot-N`, each on a branch of that name. `slots.postCreate` is a
+**Slots.** A registered project gets `slots.count` worktrees under
+`.claude/worktrees/slot-N`, each on a branch of that name. Both the default and the
+ceiling are `mux.slots`, ten unless the config says otherwise. `slots.postCreate` is a
 shell command run once in a newly created slot — install dependencies, so the
 repository's commit hooks can run there — in the background and one slot at a time
 per project. Opening a slot waits for it; a failure is shown in the mux pane with

@@ -152,6 +152,7 @@ summary.btn::marker { content: ''; }
 
 .fineprint { margin: 0; font-size: 14px; color: var(--text-faint); max-width: 52ch; }
 .fineprint code { color: var(--text-dim); font-size: 13px; }
+.fineprint.wide { max-width: var(--measure); margin-top: 26px; }
 
 /* ── Phone mockup ─────────────────────────────────────────────────────── */
 .phone-wrap { display: flex; justify-content: center; }
@@ -219,6 +220,22 @@ summary.btn::marker { content: ''; }
 .phone-composer .fake-input { flex: 1; color: var(--text-faint); font-size: 11.5px; }
 .phone-composer .send { color: var(--accent); }
 
+/* The Mux on a phone: one terminal pane, and the key rows under it. */
+.phone-term {
+  margin: 0; padding: 6px 8px 10px; border: 0; border-radius: 0; background: none;
+  font-size: 11px; line-height: 1.5; white-space: pre; overflow: hidden; color: var(--text-dim);
+}
+.phone-term .p { color: var(--accent); }
+.phone-term .b { color: var(--text); }
+.phone-term .g { color: var(--green); }
+.phone-keys { display: flex; gap: 4px; padding: 0 2px; }
+.phone-keys span {
+  flex: 1 1 auto; padding: 6px 2px; text-align: center; white-space: nowrap;
+  background: var(--bg-raised); border: 1px solid var(--border); border-radius: 7px;
+  font-size: 10px; color: var(--text-dim);
+}
+.phone-keys span.on { border-color: var(--accent); color: var(--accent); }
+
 /* ── The mux, drawn ─────────────────────────────────────────────────────
    The desktop view in miniature: a sidebar of slots with their lights, a chat
    pane and a terminal pane. Same materials as the phone, so the two read as one
@@ -232,6 +249,9 @@ summary.btn::marker { content: ''; }
 .mux-mock-side { padding: 6px 4px; border-right: 1px solid var(--border); }
 .mux-mock-project { margin: 4px 6px 6px; font-size: 12.5px; font-weight: 600; }
 .mux-mock-project + .mux-mock-slot, .mux-mock-slot { margin: 0 0 6px; }
+/* A workspace, nested under its project. */
+.mux-mock-project.sub { margin-left: 16px; font-size: 11.5px; color: var(--text-dim); }
+.mux-mock-project em { font-style: normal; font-weight: 400; color: var(--text-faint); font-size: 10.5px; }
 .mux-mock-slot {
   display: flex; align-items: baseline; gap: 7px; padding: 0 6px 0 16px;
   font-size: 10.5px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .03em;
