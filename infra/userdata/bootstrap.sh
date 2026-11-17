@@ -1615,6 +1615,14 @@ SVC
 #
 # The socket is the default one (/tmp/tmux-<uid>/default) so that plain `tmux`
 # in an SSM shell is the same server. That means no PrivateTmp here, ever.
+#
+# Keep the panes out of utmp. tmux records each pane there through libutempter's
+# setgid helper, and logind writes a scheduled shutdown's warnings, as root, onto
+# every tty utmp lists: straight across the full-screen program in the pane, which
+# does not know its screen changed. Root ignores the tty's mode, so `mesg n` (a
+# chmod on the pane's tty, tried 2026-11-16) does not stop it. Hiding the helper
+# from this unit does, and costs nothing else: sudo in a pane still works. A `-`
+# path that does not exist on this distribution is skipped.
 cat > /etc/systemd/system/claude-tmux.service <<SVC
 [Unit]
 Description=Long-lived tmux server for Claude sessions
@@ -1626,6 +1634,7 @@ Type=forking
 User=$USER_NAME
 Environment=HOME=/home/$USER_NAME
 WorkingDirectory=$DATA_MNT/projects
+InaccessiblePaths=-/usr/lib/x86_64-linux-gnu/utempter/utempter -/usr/lib/aarch64-linux-gnu/utempter/utempter -/usr/libexec/utempter/utempter -/usr/lib/utempter/utempter
 ExecStart=/bin/sh -c 'tmux start-server \; set-option -s exit-empty off'
 Restart=always
 RestartSec=2

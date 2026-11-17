@@ -813,6 +813,14 @@ sync_file "$WORK/triplec-chat.service" "$UNIT_DIR/triplec-chat.service" 0644 roo
 # next restart, taking every terminal session along. `exit-empty off` keeps the
 # server up between sessions, so the next `cc` never starts one somewhere else.
 # Default socket, no PrivateTmp, so `tmux ls` over SSH is this same server.
+#
+# Keep the panes out of utmp. tmux records each pane there through libutempter's
+# setgid helper, and logind writes a scheduled shutdown's warnings, as root, onto
+# every tty utmp lists: straight across the full-screen program in the pane, which
+# does not know its screen changed. Root ignores the tty's mode, so `mesg n` (a
+# chmod on the pane's tty, tried 2026-11-16) does not stop it. Hiding the helper
+# from this unit does, and costs nothing else: sudo in a pane still works. A `-`
+# path that does not exist on this distribution is skipped.
 if [ "$F_MUX" = true ]; then
   cat >"$WORK/triplec-tmux.service" <<UNIT
 # Written by TripleC's deploy/host/install.sh; re-run it rather than editing this.
@@ -827,6 +835,7 @@ User=$USER_NAME
 Group=$MY_GROUP
 Environment=HOME=$HOME_DIR
 WorkingDirectory=$HOME_DIR
+InaccessiblePaths=-/usr/lib/x86_64-linux-gnu/utempter/utempter -/usr/lib/aarch64-linux-gnu/utempter/utempter -/usr/libexec/utempter/utempter -/usr/lib/utempter/utempter
 ExecStart=/bin/sh -c 'tmux start-server \\; set-option -s exit-empty off'
 Restart=on-failure
 RestartSec=2

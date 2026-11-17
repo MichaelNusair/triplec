@@ -122,12 +122,16 @@ console.log('cc, naming a slot');
   check('a running slot session is rejoined, not restarted',
     /Rejoining/.test(rejoin.out) && !rejoin.log.includes('new-session'), rejoin.out + rejoin.log);
 
-  // A `wall` broadcast is written onto any tty utmp lists as writable, and tmux
-  // lists its panes; the pane's tty is looked up, exactly, before attaching.
-  const ttyAsk = 'display-message -p -t =claude-demo/slot-3: #{pane_tty}\n';
-  const before = (log) => log.includes(ttyAsk) && log.indexOf(ttyAsk) < log.indexOf('attach-session');
-  check("a new session's pane is closed to broadcasts before it is attached", before(fresh.log), fresh.log);
-  check('…and so is one that is rejoined, which may predate this', before(rejoin.log), rejoin.log);
+  // A scheduled shutdown's warnings are written, as root, onto every tty in utmp,
+  // whatever its mode, so the panes are kept out of utmp: both tmux units hide
+  // libutempter's helper, Debian's and Fedora's paths alike.
+  for (const unitFile of ['../deploy/host/install.sh', '../infra/userdata/bootstrap.sh']) {
+    const text = readFileSync(join(here, unitFile), 'utf8');
+    const line = (text.match(/^InaccessiblePaths=.*$/m) || [''])[0];
+    check(`${unitFile}'s tmux unit keeps panes out of utmp`,
+      line.includes('-/usr/lib/x86_64-linux-gnu/utempter/utempter') && line.includes('-/usr/libexec/utempter/utempter')
+        && text.indexOf(line) < text.indexOf("tmux start-server"), line);
+  }
 
   for (const bad of ['demo/../etc', 'demo/.hidden', 'demo/a/b', '.demo/slot-1', 'demo/']) {
     const res = await runCc([bad]);

@@ -150,15 +150,9 @@ if [ -n "$server_pid" ] && [ -r "/proc/$server_pid/cgroup" ] &&
   printf '      code-server restart will end this session. Check: systemctl status claude-tmux\n' >&2
 fi
 
-# Refuse `wall` on the session's pane, the way `mesg n` does. tmux registers each
-# pane in utmp, so a broadcast — a scheduled `shutdown`'s warnings, most often —
-# is written straight onto the pane's tty, underneath a full-screen program that
-# does not know its screen changed: the text lands across the Claude UI and stays
-# until something redraws. Observed 2026-11-16. Done on every join rather than
-# only at creation so a session that predates this is fixed the next time it is
-# opened; `respawn-pane` keeps the tty, so it holds for the session's life.
-pane_tty="$(tmux display-message -p -t "=$session:" '#{pane_tty}' 2>/dev/null || true)"
-if [ -c "$pane_tty" ]; then chmod g-w,o-w "$pane_tty" 2>/dev/null || true; fi
+# Broadcasts (a scheduled shutdown's warnings) are kept off the pane by the tmux
+# server's unit, which keeps panes out of utmp; see triplec-tmux.service in
+# deploy/host/install.sh. A chmod of the pane's tty here does not: root ignores it.
 
 # Deliberately no `-d`: that would detach other clients. Allowing several means
 # a phone and a laptop can watch the same run at once, which is the point — and
