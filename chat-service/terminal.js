@@ -215,6 +215,11 @@ export async function serveTerminal(ws, query) {
   }
 
   const existed = (await tmuxSessions()).has(target.session);
+  // Claude Code writes links as OSC 8 — a word on screen with the URL out of sight —
+  // and tmux drops the URL for any outer terminal it is not told can take one, which
+  // left a link with nothing behind it. The page's xterm.js takes them. A fixed index
+  // in the array, so setting it at every attach replaces it rather than piling up.
+  await tmux(['set-option', '-s', 'terminal-features[90]', 'xterm-256color:hyperlinks']);
   const cols = clampSize(query.get('cols'), 100);
   const rows = clampSize(query.get('rows'), 30);
   // `-I`: the relay is ours, and nothing in the environment or the working directory

@@ -79,6 +79,19 @@
     // nothing. xterm lets a drag select anyway with Shift, except on a Mac, where
     // it is Option and only with this set. Without it a Mac could not copy at all.
     macOptionClickForcesSelection: true,
+    // An OSC 8 link (a word with its URL hidden, as Claude Code writes them): a click
+    // opens it with no confirm box, and hovering shows the URL it goes to.
+    linkHandler: {
+      activate: (event, url) => {
+        if (!term.hasSelection()) openLink(url);
+      },
+      hover: (event, url) => {
+        if (term.element) term.element.title = url;
+      },
+      leave: () => {
+        if (term.element) term.element.title = '';
+      },
+    },
     theme: {
       background: '#141413',
       foreground: '#f5f4ef',
@@ -444,6 +457,25 @@
   function openLink(url) {
     if (/^https?:\/\//.test(url)) window.open(url, '_blank', 'noopener');
   }
+  // OSC 8 links — a word on screen, its URL out of sight — that row y carries. xterm.js
+  // keeps the URL on the cell but has no public way to read it back, so this reaches
+  // into its link service; if a new xterm moves that, there are simply none to list.
+  function hiddenLinksIn(y) {
+    const urls = [];
+    try {
+      const line = term.buffer.active.getLine(y);
+      const links = term._core?._oscLinkService;
+      if (!line?.getCell || !links) return urls;
+      for (let x = 0; x < line.length; x++) {
+        const id = line.getCell(x)?.extended?.urlId;
+        const url = id ? links.getLinkData(id)?.uri : null;
+        if (url && /^https?:\/\//.test(url) && !urls.includes(url)) urls.push(url);
+      }
+    } catch {
+      /* xterm's insides changed; the visible URLs still work */
+    }
+    return urls;
+  }
   term.registerLinkProvider({
     provideLinks(line, callback) {
       const y = line - 1;
@@ -645,6 +677,7 @@
     const urls = [];
     for (let y = top; y < top + term.rows; y++) {
       for (const l of linksIn(y)) if (l.first.y === y && !urls.includes(l.url)) urls.push(l.url);
+      for (const url of hiddenLinksIn(y)) if (!urls.includes(url)) urls.push(url);
     }
     $('#term-copy-links').replaceChildren(...urls.map((url) => {
       const a = document.createElement('a');

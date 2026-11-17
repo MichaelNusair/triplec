@@ -347,6 +347,8 @@ console.log('the socket, through the server');
   check('…started detached as a login bash in the slot, with `cc`\'s options',
     shellLog.includes(`new-session -d -s shell-demo/slot-5 -c ${slot5} bash -l`)
       && shellLog.includes('set-option -t =shell-demo/slot-5: window-size latest'), shellLog);
+  check('…with tmux told the page can take OSC 8 links, so a hidden URL is not dropped',
+    shellLog.includes('set-option -s terminal-features[90] xterm-256color:hyperlinks'), shellLog);
   check('…and attached by its exact name, with no `cc` in it',
     shell.text.includes(`FAKE-ATTACH:=shell-demo/slot-5 IN:${slot5}`) && !shell.text.includes('FAKE-CC'), JSON.stringify(shell.text.slice(0, 300)));
   check('…in a slot made on first use', await stat(join(slot5, '.git')).then(() => true, () => false));
@@ -573,14 +575,22 @@ console.log('terminal page, on a phone');
     // A URL longer than the pane, broken by the screen and indented under the margin.
     `  See https://example.com/${'a'.repeat(54)}`,
     `  ${'b'.repeat(40)}/end. Then go.`,
+    // An OSC 8 link, as Claude Code writes one: the word on screen, the URL behind it.
+    'Replied in the thread (message).',
   ];
+  const hidden = { row: 12, from: 23, to: 30, id: 7, uri: 'https://chat.example.com/archives/C1/p123' };
   const fake = { focused: 0 };
   w.Terminal = function Terminal() {
     Object.assign(this, {
       cols: 80, rows: 30,
       loadAddon() {}, open() {}, focus() { fake.focused++; }, reset() {}, write() {}, paste(text) { fake.pasted = text; },
       onData() {}, onBinary() {}, onBell() {}, onResize() {},
-      buffer: { active: { viewportY: 0, length: 30, getLine: (i) => (i < screen.length ? { translateToString: () => screen[i] } : undefined) } },
+      buffer: { active: { viewportY: 0, length: 30, getLine: (i) => (i < screen.length ? {
+        translateToString: () => screen[i],
+        length: screen[i].length,
+        getCell: (x) => ({ extended: { urlId: i === hidden.row && x >= hidden.from && x < hidden.to ? hidden.id : 0 } }),
+      } : undefined) } },
+      _core: { _oscLinkService: { getLinkData: (id) => (id === hidden.id ? { uri: hidden.uri } : undefined) } },
       element: { querySelector: () => ({ getBoundingClientRect: () => ({ top: 0, bottom: 300, height: 300, left: 0, width: 800 }) }) },
       registerLinkProvider() {}, attachCustomKeyEventHandler() {}, hasSelection: () => false, clearSelection() {},
       parser: { registerOscHandler() {} },
@@ -697,6 +707,9 @@ console.log('terminal page, on a phone');
   await sleep(600);
   check('a finger held still opens the screen as selectable text',
     !sheet.classList.contains('hidden') && /Steps:/.test(w.document.querySelector('#term-copy-text').value));
+  const sheetLinks = [...w.document.querySelectorAll('#term-copy-links a')].map((a) => a.href);
+  check('…with the links on it, a hidden OSC 8 one too, by its real URL',
+    sheetLinks.includes(hidden.uri) && sheetLinks.some((u) => u.endsWith('/end')), JSON.stringify(sheetLinks));
   touch('touchend', 20, 45);
   check('…and lifting it is not also a tap on the menu line under it', inputs().length === before);
   w.document.querySelector('#term-copy-close').click();
