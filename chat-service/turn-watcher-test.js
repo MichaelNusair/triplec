@@ -681,7 +681,9 @@ section('The loop runs on its own:');
     log: () => {},
   });
   watcher.start();
-  await sleep(60);
+  // Write only once the first scan has taken its baseline: a fixed sleep let a busy
+  // box run that scan late, count the message as already there, and send nothing.
+  for (let i = 0; i < 200 && !watcher.stats().seeded; i += 1) await sleep(10);
   await write(DEMO, S2, assistant('Said this while the timer was running.'));
   for (let i = 0; i < 40 && !sent.length; i += 1) await sleep(25);
   await watcher.stop();
