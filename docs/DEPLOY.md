@@ -52,6 +52,13 @@ authentication tests, packages the VS Code extensions, deploys the CDK stack,
 waits for first boot, ships the application payload over SSM, then verifies that
 the live URL requires a login. It prints the URL and password at the end.
 
+Open the URL and sign in, and you land on the **Mux** (`/chat/mux`): your projects
+down the side, each with its worktree slots, and panes beside each other. A new pane
+opens a terminal running the Claude Code CLI in that slot's tmux session, so closing
+the tab, the laptop or the phone stops nothing. Install it from the browser's menu to
+get it as an app on a phone or a desktop. The editor is at `/editor/`, and the box
+page — what is running, settings, updates — is at `/chat/admin`.
+
 It is safe to re-run. Application changes ship without replacing the instance, so
 a redeploy takes a couple of minutes and keeps your projects and history.
 
@@ -328,8 +335,10 @@ No redeploy needed; a credential helper reads it per git invocation.
 
 ### Add a project
 
-From the app: **New chat → Add a project**, which creates the directory, an empty
-git repository, and optionally a GitHub remote.
+From the app: the **+** beside the Mux's project filter opens **Add a project**,
+which clones one of your GitHub repositories (type `owner/repo`, or browse the ones
+the token can see) or creates the directory, an empty git repository, and
+optionally a GitHub remote. Either way the project arrives with its slots made.
 
 By hand:
 
@@ -652,8 +661,9 @@ the secret without a restart.
 
 ## Operating it
 
-Most of what you would open a shell for is on the **Box** tab of the chat
-(`https://<your-domain>/chat/admin`): every conversation running on every surface,
+Most of what you would open a shell for is on the box page, the **Box** link at the
+top of the Mux's sidebar (`https://<your-domain>/chat/admin`): every conversation
+running on every surface, and which terminal sessions are working or waiting on you,
 the state of each service, memory and disk, and a plain-language list of what is
 wrong — a forked editor panel, processes the editor started and never used, a tmux
 server a deploy is about to kill. It can stop one conversation at a time, and asks
@@ -661,11 +671,11 @@ first if that conversation might be mid-turn. It cannot restart a service; that 
 below.
 
 It also names the build the box is running — the version, the commit and when it
-shipped — and so does **Settings** in the chat, which additionally tells you when the
-tab you are looking at was served by an older build than the server has now and
-offers a reload. Worth checking before you debug a change you thought you deployed.
-From a shell on the box the same answer is in `/opt/claude-web/chat-service/build.json`,
-written when the payload was packed.
+shipped — and so does **Settings** in the deprecated chat, which additionally tells
+you when the tab you are looking at was served by an older build than the server has
+now and offers a reload. Worth checking before you debug a change you thought you
+deployed. From a shell on the box the same answer is in
+`/opt/claude-web/chat-service/build.json`, written when the payload was packed.
 
 ```bash
 # Shell in (no SSH port is open)
@@ -686,10 +696,11 @@ sudo systemctl restart claude-chat
 
 Restarting `claude-chat` ends every conversation open in the chat — they are child
 processes of that service. The transcripts are kept and every session can be resumed
-from the list, but a turn in flight is lost, so check the Box tab first. The editor
-panel's conversations and tmux sessions are owned by their own services and are
-unaffected; never restart `claude-broker` or `claude-tmux` to pick up a change unless
-you mean to end the work inside them.
+from the list, but a turn in flight is lost, so check the box page first. The Mux's
+terminal and shell panes are tmux sessions: they reconnect, and the work in them
+never stopped. The editor panel's conversations and tmux sessions are owned by their
+own services and are unaffected; never restart `claude-broker` or `claude-tmux` to
+pick up a change unless you mean to end the work inside them.
 
 ### Stop it when idle
 
@@ -751,12 +762,12 @@ still running. `sudo tail -f /var/log/bootstrap.log`.
 **Editor at `/editor/` misbehaves** — code-server has no officially supported
 nginx sub-path configuration, so this path is the least battle-tested part of the
 routing. It is served by stripping the `/editor/` prefix while code-server's own
-absolute asset URLs are served from the catch-all. If it breaks, the chat is
-unaffected; open an issue with what you see.
+absolute asset URLs are served from the catch-all. If it breaks, the Mux and the
+chat are unaffected; open an issue with what you see.
 
-**Chat loads but stays on "Loading…"** — `app.js` failed to parse or fetch. Open
-the browser console, and check `sudo journalctl -u claude-chat` for the client
-error the app reports back.
+**The Mux or the chat loads but stays on "Loading…"** — its script (`mux.js`, or
+`app.js` for the chat) failed to parse or fetch. Open the browser console; the chat
+also reports its client error back, to `sudo journalctl -u claude-chat`.
 
 **Stuck on "reconnecting…"** — the session expired but the socket close looks
 identical to a dropped network. The client probes `/api/auth-check` and redirects

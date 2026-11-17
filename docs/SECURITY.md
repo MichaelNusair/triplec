@@ -12,9 +12,10 @@ That is the product, not a side effect. Claude Code is given a working directory
 and permission to act, and the whole point is that you can send it a message
 from your phone and it edits code, runs tests and pushes commits without asking
 permission for each step. Every security property below follows from that one
-fact: **anyone who can reach the chat and pass its login has a shell on the
-box.** There is no meaningful sandbox between "authenticated user of this app"
-and "arbitrary code execution".
+fact: **anyone who can reach the app and pass its login has a shell on the
+box** — in the Mux, literally: a terminal pane is the Claude Code CLI in tmux, and a
+shell pane is `bash`. There is no meaningful sandbox between "authenticated user of
+this app" and "arbitrary code execution".
 
 Deploy it accordingly. It is a personal workspace, not a multi-tenant service.
 
@@ -187,14 +188,23 @@ unless someone deliberately opens it. The reverse — a denylist — is how the
 original bug happened.
 
 Four WebSockets exist, and all are authenticated in the same `upgrade` handler,
-before the handshake completes: `/ws`, the chat, which can start a `claude`; and
-`/ws/term`, the mux's terminal panes, which is a pseudo-terminal running `cc` —
-a shell, in plain terms, for whoever holds one. Any other path under `/ws` is
-dropped. The terminal takes a project name and a slot number and nothing else: the
-name goes through the same validation as every project route, the slot is an
-integer, and both reach `cc` as argv, never through a shell string.
-`auth-test.js` asserts the unauthenticated upgrade is a 401, and `term-test.js` that a
-path-shaped name or an out-of-range slot is refused before anything is spawned.
+before the handshake completes: `/ws`, the deprecated chat, which can start a
+`claude`; and `/ws/term`, the Mux's terminal panes, which is a pseudo-terminal
+attached to a tmux session running `cc` or, for a shell pane (`kind=shell`), a bare
+`bash -l` — a shell, in plain terms, for whoever holds one. Any other path under
+`/ws` is dropped. The terminal takes a project name, a slot number and a kind and
+nothing else: the name goes through the same validation as every project route, the
+slot is an integer, the kind is `claude` or `shell`, and they reach `cc` and tmux as
+argv, never through a shell string. Two routes beside it act on a pane's session and
+are gated like every other: `POST /api/term/paste` saves an uploaded file under the
+temp directory for a day and returns its path for the page to type in, and
+`POST /api/term/run` replaces the session's program with a command line of the
+caller's — split into words with nothing expanded, refusing pipes, `$` and globs,
+and handed to tmux as argv. It is no more than the terminal already gives the same
+caller. `auth-test.js` asserts the unauthenticated upgrade is
+a 401, and `term-test.js` that a path-shaped name, an out-of-range slot or an unknown
+kind is refused before anything is spawned, and that `/api/term/run` without a
+session is a 401.
 
 A third, `/ws/browser`, is the mux's Browser pane: a keyboard, a mouse and a screen
 on the real Chrome that `triplec-browser.service` runs on this box (on by default:
@@ -249,7 +259,7 @@ to the chat service's `/api/auth-check`; `auth.js` verifies the signed
 chat, and answers 204 or 401. nginx forwards the answer, it does not form one.
 code-server's password still applies behind it, so this adds a door rather than
 replacing one. The gate is empty in `password` mode, where a second door would
-only lock out someone who uses the editor and never opens the chat.
+only lock out someone who uses the editor and never signs in to the Mux.
 
 The lesson is narrower than "check the editor": **the question is never whether
 `auth.js` is correct, it is which routes reach `auth.js`.** The correctness of
@@ -461,11 +471,12 @@ creates no credentials and changes no IAM, but it does not take any away either.
 What host mode does about it, by default:
 
 - **Asks before acting.** The host profile defaults to `manual` (or
-  `acceptEdits`), not `bypassPermissions`. Every tool call the CLI wants approval
-  for is relayed to the chat as an approve/deny card, shown on every device
-  attached, and the decision is audited. Hooks still run in every mode, so a
-  repository's own write gates keep working in TripleC sessions exactly as they
-  do over SSH.
+  `acceptEdits`), not `bypassPermissions`. In a chat, every tool call the CLI wants
+  approval for is relayed as an approve/deny card, shown on every device attached,
+  and the decision is audited. A Mux terminal is the interactive CLI on the
+  developer's own settings, so it asks in the terminal. Hooks still run in every
+  mode, so a repository's own write gates keep working in TripleC sessions exactly
+  as they do over SSH.
 - **Loopback only.** The service refuses to bind anything else unless
   `allowPublicBind` is set. TLS is the VM proxy's or Tailscale's.
 - **One owner.** `singleOwner` requires exactly one identity in

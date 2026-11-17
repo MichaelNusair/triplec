@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking. This is a small, opinionated project — one instance, one
+Thanks for looking. This is a small, opinionated project — one machine, one
 person's workspace — so the useful contributions tend to be sharp and specific
 rather than large.
 
@@ -37,7 +37,7 @@ bash -n deploy.sh migrate.sh scripts/cc-session.sh infra/userdata/bootstrap.sh
 ```
 
 `npm run test:auth` boots the real server and speaks HTTP and WebSocket to it. It
-should report 112/112 or better — never fewer checks than it did before your change.
+should report 122/122 or better — never fewer checks than it did before your change.
 The suites need `git`, `bash` and `python3`, and nothing else from the machine: the
 terminal tests fake `tmux` and `cc`, and the auth tests start their servers from an
 environment scrubbed of the deployment's own credentials, so running them from
@@ -53,7 +53,10 @@ you deployed it and watched it work.
 Match the surrounding code. A few conventions that are load-bearing here:
 
 - Plain JavaScript, ES modules, no build step and no TypeScript — including in the
-  CDK app. The client is dependency-free because it has to boot fast on a phone.
+  CDK app. The page scripts (the Mux, the terminal page, the box page, the chat)
+  have no dependencies because they have to boot fast on a phone. The two
+  browser libraries in use — xterm.js for the terminal, noVNC for the Browser
+  pane — are served from `node_modules` as published, not bundled.
 - Comments explain **why**, especially when the code looks wrong. Much of this
   codebase is shaped by non-obvious constraints — code-server's layout engine, iOS
   suspending WebSockets, EC2's userdata size cap, CloudFormation's volume
@@ -76,7 +79,8 @@ Match the surrounding code. A few conventions that are load-bearing here:
 
 - New surfaces or major features.
 - Anything that changes the routing or the authentication model.
-- Dependencies. The chat client has none deliberately.
+- Dependencies. The page scripts have none, deliberately, beyond xterm.js and
+  noVNC.
 
 ## Reporting a vulnerability
 
