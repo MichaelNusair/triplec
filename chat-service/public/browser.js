@@ -73,8 +73,10 @@ async function api(url, options) {
   return res;
 }
 
-function showDown(html) {
+function showDown(html, { canRestart = true } = {}) {
   $('#br-down-text').innerHTML = html;
+  $('#br-restart').classList.toggle('hidden', !canRestart);
+  $('#br-down-note').classList.toggle('hidden', !canRestart);
   $('#br-down').classList.remove('hidden');
 }
 
@@ -119,7 +121,7 @@ async function start() {
   try {
     const res = await api('/api/browser/status');
     if (res.status === 404) {
-      showDown('The browser is not part of this install. Turn on <code>features.browser</code> in its config and run the installer again.');
+      showDown('The browser is not part of this install. Turn on <code>features.browser</code> in its config and run the installer again.', { canRestart: false });
       status('off', true);
       return;
     }
@@ -129,7 +131,7 @@ async function start() {
     state = { running: false };
   }
   if (!state.running) {
-    showDown('The browser isn\'t running on this box. It starts with <code>sudo systemctl start triplec-browser</code>.');
+    showDown('The browser isn\'t running on this box. Restart it here, or with <code>sudo systemctl start triplec-browser</code>.');
     status('not running', true);
     return;
   }
@@ -169,7 +171,7 @@ function connect() {
     // each time, and say so once it has clearly gone.
     retries += 1;
     if (retries > 6) {
-      showDown('Lost the browser. It may have stopped on the box: <code>systemctl status triplec-browser</code>.');
+      showDown('Lost the browser. Restart it here, or look on the box: <code>systemctl status triplec-browser</code>.');
       return;
     }
     retryTimer = setTimeout(start, Math.min(8000, 500 * 2 ** retries));
@@ -420,6 +422,28 @@ new ResizeObserver(() => applyCursor()).observe(screenEl);
 $('#br-retry').addEventListener('click', () => {
   retries = 0;
   start();
+});
+
+// The fix when Try again keeps finding it gone: restart the service, Xvnc and Chrome
+// both, then connect as if new. The server answers once the socket is back up.
+$('#br-restart').addEventListener('click', async () => {
+  const btn = $('#br-restart');
+  btn.disabled = true;
+  btn.textContent = 'Restarting…';
+  status('restarting…', true);
+  try {
+    const res = await api('/api/browser/restart', { method: 'POST' });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `server returned ${res.status}`);
+    retries = 0;
+    await start();
+  } catch (err) {
+    if (err.message !== 'signed out') {
+      showDown(`Could not restart the browser: ${err.message.replace(/[&<>]/g, (c) => `&#${c.charCodeAt(0)};`)}`);
+    }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Restart the browser';
+  }
 });
 
 // --- keys -------------------------------------------------------------------

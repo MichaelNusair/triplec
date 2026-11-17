@@ -29,7 +29,12 @@
 
 <div id="br-down" class="br-down hidden" role="alert">
   <p id="br-down-text">The browser isn't running on this box.</p>
-  <button type="button" id="br-retry" class="wide">Try again</button>
+  <div class="br-down-actions">
+    <button type="button" id="br-restart" class="wide">Restart the browser</button>
+    <button type="button" id="br-retry" class="wide secondary">Try again</button>
+  </div>
+  <p id="br-down-note" class="br-down-note">Restarting starts Chrome and its screen over;
+    open tabs come back.</p>
 </div>
 
 <!-- A phone's keyboard needs a text field to open over. What is typed here goes to

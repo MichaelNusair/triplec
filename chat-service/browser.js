@@ -82,6 +82,31 @@ export function browserStatus() {
 }
 
 /**
+ * Restart triplec-browser.service: Xvnc and Chrome both, from nothing. For when the
+ * pane has lost it and "Try again" keeps finding it gone. Host installs only — the
+ * AWS deployment has no such unit — and it needs the passwordless sudo a host
+ * install's account has; where sudo asks for a password, the error says so. The
+ * open tabs come back from Chrome's profile, which lives outside the run directory.
+ */
+export async function restartBrowser({ run = execFileAsync } = {}) {
+  if (!HOST_MODE) throw Object.assign(new Error('this install has no browser service to restart'), { status: 404 });
+  try {
+    await run('sudo', ['-n', 'systemctl', 'restart', 'triplec-browser.service'], { timeout: 30_000 });
+  } catch (err) {
+    const why = String(err.stderr || err.message || '').trim().split('\n').pop();
+    throw Object.assign(new Error(/password/.test(why)
+      ? 'restarting it needs sudo, and sudo here asks for a password: run sudo systemctl restart triplec-browser'
+      : `could not restart it: ${why || 'no answer'}`), { status: 500 });
+  }
+  // Up once its socket answers, which takes Xvnc a second or two.
+  for (let i = 0; i < 50; i += 1) {
+    if ((await browserStatus()).running) return { restarted: true };
+    await new Promise((r) => setTimeout(r, 200));
+  }
+  throw Object.assign(new Error('it restarted but has not come up: systemctl status triplec-browser'), { status: 500 });
+}
+
+/**
  * Serve one /ws/browser socket: noVNC on one side, Xvnc on the other.
  *
  * Bytes only, in both directions — RFB is Xvnc's to speak and noVNC's to read, and

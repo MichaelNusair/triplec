@@ -52,7 +52,7 @@ import { createAdmin } from './admin.js';
 import { PASTE_LIMIT, RUN_LIMIT, runInTerminal, savePaste, serveTerminal, vendorFile, withTerminals } from './terminal.js';
 import { ensureSlot, slotOf } from './slots.js';
 import { applyLimits } from './limits.js';
-import { browserStatus, novncFile, openInBrowser, resizeBrowser, serveBrowser } from './browser.js';
+import { browserStatus, novncFile, openInBrowser, resizeBrowser, restartBrowser, serveBrowser } from './browser.js';
 import { serveVideo, videoAvailable } from './browser-video.js';
 import {
   AUTH_MODE,
@@ -553,6 +553,14 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/browser/status' && req.method === 'GET') {
       // `video`: whether the picture can come as H.264 (browser-video.js) rather than VNC.
       json(res, 200, { ...(await browserStatus()), video: await videoAvailable() });
+      return;
+    }
+    if (pathname === '/api/browser/restart' && req.method === 'POST') {
+      try {
+        json(res, 200, await restartBrowser());
+      } catch (err) {
+        json(res, err.status || 500, { error: err.message });
+      }
       return;
     }
     if ((pathname === '/api/browser/size' || pathname === '/api/browser/open') && req.method === 'POST') {

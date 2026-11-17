@@ -42,6 +42,11 @@ body.br-page {
   text-align: center; line-height: 1.45;
 }
 .br-down code { font-size: 12px; }
+.br-down-actions { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.br-down-actions .secondary {
+  background: transparent; border: 1px solid var(--border); color: var(--text);
+}
+.br-down-note { margin: 10px 0 0; font-size: 12px; color: var(--text-dim, #999); }
 
 /* Off to the side but focusable: iOS will not open a keyboard over a field that is
    display:none or zero-sized. */

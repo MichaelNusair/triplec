@@ -163,6 +163,10 @@ console.log('the socket');
   check('no browser running: the socket closes with 4404, which the page explains', code === 4404, `${code} ${reason}`);
   const status = await browser.browserStatus();
   check('…and the status says it is not running', status.running === false);
+  const ran = [];
+  const refused = await browser.restartBrowser({ run: async (...a) => { ran.push(a); } }).catch((e) => e);
+  check('outside host mode, a restart is refused (404) and runs nothing', refused?.status === 404 && ran.length === 0,
+    `${refused?.status} ${ran.length}`);
 
   const vnc = await startVnc();
   check('outside host mode, a browser that is not running is not one this install has', status.installed === false);
