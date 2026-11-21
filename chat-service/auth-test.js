@@ -13,17 +13,18 @@ import { spawn } from 'child_process';
 import { once } from 'events';
 import { WebSocket } from 'ws';
 import { oidcIdentityAllowed } from './auth.js';
+import { freePort } from './test-port.js';
 
 const PASSWORD = 'test-password-32-chars-long-enough';
 const SECRET = 'a-long-enough-session-secret-value';
 
-// Each server instance gets a fresh port. Reusing one port across instances lets
-// a leftover process from an earlier run answer these tests instead — which
+// Each server instance gets a fresh port, which the kernel picks (see test-port.js).
+// Fresh, because reusing one port across instances lets a leftover process from an
+// earlier run answer these tests instead — which
 // showed a green "unauthenticated access denied" while the server under test had
 // never started. A test that passes against the wrong process is worse than no
 // test at all here.
-let nextPort = 19970;
-let PORT = nextPort;
+let PORT = 0;
 let BASE = `http://127.0.0.1:${PORT}`;
 
 let failures = 0;
@@ -55,8 +56,7 @@ const ambient = Object.fromEntries(Object.entries(process.env).filter(([name]) =
 
 /** Boot the real server as a child process, with auth configured. */
 async function startServer(env) {
-  nextPort += 1;
-  PORT = nextPort;
+  PORT = await freePort();
   BASE = `http://127.0.0.1:${PORT}`;
 
   const child = spawn(process.execPath, ['server.js'], {

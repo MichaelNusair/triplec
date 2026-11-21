@@ -29,6 +29,7 @@ import { fileURLToPath } from 'url';
 import { promisify } from 'util';
 import { JSDOM } from 'jsdom';
 import WebSocket from 'ws';
+import { freePort } from './test-port.js';
 
 const execFileAsync = promisify(execFile);
 const here = dirname(fileURLToPath(import.meta.url));
@@ -204,7 +205,7 @@ console.log('the socket, through the server');
   await git('add', '-A');
   await git('commit', '-q', '-m', 'first');
 
-  const PORT = 19950 + Math.floor(Math.random() * 40);
+  const PORT = await freePort();
   const PASSWORD = 'term-test-password-long-enough-ok';
   const child = spawn(process.execPath, ['server.js'], {
     cwd: here,

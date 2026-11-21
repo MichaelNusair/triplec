@@ -230,7 +230,15 @@ npm run test:boxconfig   # 51/51; settings saved on the box page
 cd infra && npx cdk synth --quiet
 ```
 
-`npm test` runs all of them in that order, except `cdk synth`.
+`npm test` runs every `test:*` script, except `cdk synth`, eight at a time and
+slowest first (`scripts/run-tests.mjs`). That is about 35 seconds, against two and a
+half minutes one after another, because almost all of it is waiting on real timers.
+It prints one line per file that passed and the whole output of any that failed.
+`npm test -- overlay broker` runs only those, and `TEST_JOBS=1` runs them serially.
+Two things follow from running side by side. A test that boots a server takes its
+port from `freePort()` in `chat-service/test-port.js`, never a fixed number. And a
+test that writes files makes its own `mkdtemp` directory. `deploy.sh` runs the same
+runner, after its own auth gate.
 
 If you add a route to `server.js`, add it to the `guarded` list in
 `auth-test.js`. A route with no test is a route nobody is checking.
@@ -381,6 +389,8 @@ chat-service/            The chat backend + PWA client. The security boundary.
   host-test.js           Host mode end to end against a fake CLI, check names
                          keyed to the host-mode requirement IDs.
   auth-test.js           End-to-end auth tests. Run these.
+  test-port.js           freePort(), for a test that boots a server: the kernel
+                         picks, so test files can run side by side.
   server.js              HTTP routes, static files, WebSocket upgrade gate.
   session-manager.js     One `claude` process per conversation; transcripts;
                          the project lifecycle (create, clone, remove).
@@ -574,6 +584,7 @@ scripts/                 What runs on the box, shipped in the payload.
                          it as root. deploy.sh and the updater both run them.
   triplec-update.mjs     The on-box updater (docs/UPDATES.md): follow a branch,
                          test, install, verify, roll back. update-test.mjs.
+  run-tests.mjs          `npm test`: every `test:*` script, several at once.
   box-config.mjs         Settings saved on the box page, layered over the config
                          file. box-config-test.mjs.
   triplec-browser.sh     Starts Chrome on Xvnc for the Browser pane.

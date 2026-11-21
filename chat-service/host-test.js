@@ -24,6 +24,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { promisify } from 'util';
 import { WebSocket } from 'ws';
+import { freePort } from './test-port.js';
 
 const execFileAsync = promisify(execFile);
 const here = import.meta.dirname;
@@ -171,10 +172,8 @@ await chmod(secretsFile, 0o600);
 const STRIP = /^(AUTH_PASSWORD|SESSION_SECRET|CW_.*|AWS_.*|CLAUDE_CODE_.*|ANTHROPIC_.*|GITHUB_SECRET_ARN|GH_TOKEN|GITHUB_TOKEN|TRIPLEC_.*|PROJECTS_ROOT|CLAUDE_HOME|CODER_HOME|WORKSPACE_USER|PWA_NAME|DEFAULT_.*|MAX_LIVE_SESSIONS|BIND_ADDRESS|ALLOW_PUBLIC_BIND|CLAUDECODE)$/;
 const ambient = Object.fromEntries(Object.entries(process.env).filter(([k]) => !STRIP.test(k)));
 
-let nextPort = 21970;
 async function startServer(env = {}, { expectExit = false } = {}) {
-  nextPort += 1;
-  const port = nextPort;
+  const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['server.js'], {
     cwd: here,

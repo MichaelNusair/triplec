@@ -26,7 +26,18 @@ import { JSDOM, VirtualConsole } from 'jsdom';
 const here = dirname(fileURLToPath(import.meta.url));
 const root = join(here, '..');
 
-const overlayJs = readFileSync(join(root, 'pwa', 'mobile-overlay.js'), 'utf8');
+const overlaySource = readFileSync(join(root, 'pwa', 'mobile-overlay.js'), 'utf8');
+/*
+ * The overlay as this file runs it: the shipped source with one number changed. The
+ * status sheet redraws every five seconds while it is open, and proving a redraw
+ * happened, or that one was held back, meant sitting through it four times, about
+ * twenty of this file's fifty seconds. So the sheet's cadence runs at a second here.
+ * The five seconds is still checked, against `overlaySource`, which is what ships;
+ * everything else in the file is evaluated exactly as written.
+ */
+const POLL_MS = 1000;
+const overlayJs = overlaySource.replace(/const SHEET_POLL_MS = \d+;/, `const SHEET_POLL_MS = ${POLL_MS};`);
+if (overlayJs === overlaySource) throw new Error('overlay-test: SHEET_POLL_MS is no longer a plain constant in mobile-overlay.js');
 const manifest = JSON.parse(readFileSync(join(root, 'mobile-extension', 'package.json'), 'utf8'));
 
 const failures = [];
@@ -1549,9 +1560,10 @@ ok(
 Object.defineProperty(doc, 'visibilityState', { configurable: true, get: () => 'visible' });
 
 // Read out of the overlay rather than restated, because the number is the
-// requirement: five seconds is what was asked for, and the waits below are timed
-// against whatever the file actually says.
-const numberOf = (name) => Number(new RegExp(`const ${name} = (\\d+)`).exec(overlayJs)?.[1]);
+// requirement: five seconds is what was asked for. It is read from what ships, not
+// from the copy this file runs, whose cadence is `POLL_MS` and which the waits
+// below are timed against.
+const numberOf = (name) => Number(new RegExp(`const ${name} = (\\d+)`).exec(overlaySource)?.[1]);
 const SHEET_POLL_MS = numberOf('SHEET_POLL_MS');
 const HEARTBEAT_MS = numberOf('STATUS_HEARTBEAT_MS');
 ok('the open sheet no longer refreshes every five seconds, which is what was asked for', SHEET_POLL_MS === 5000);
@@ -1644,7 +1656,7 @@ ok(
  */
 const loadedAt = loads()[0].t;
 const untilHeartbeat = () => HEARTBEAT_MS - ((Date.now() - loadedAt) % HEARTBEAT_MS);
-if (untilHeartbeat() < SHEET_POLL_MS + 900) {
+if (untilHeartbeat() < POLL_MS + 900) {
   await new Promise((resolve) => setTimeout(resolve, untilHeartbeat() + 300));
 }
 
@@ -1652,7 +1664,7 @@ const thirdAnswer = 'Third answer. Deployed, and the box is green.';
 statusReply = answer(thirdAnswer);
 utterances.length = 0;
 const asksBefore = statusCalls.length;
-await new Promise((resolve) => setTimeout(resolve, SHEET_POLL_MS + 800));
+await new Promise((resolve) => setTimeout(resolve, POLL_MS + 800));
 ok(
   'the open sheet never asked again on its own, so it goes on showing the answer ' +
     'from the tap that opened it',
@@ -3681,7 +3693,7 @@ ok(
 // The redraw the sheet does on its own, every few seconds while it follows a turn.
 // Re-asking here would re-send a paragraph that cannot have changed, over and over.
 statusReply = { ...answer('Shipped it, and started the deploy.'), sessionId: 'abc123' };
-await settle(6000);
+await settle(POLL_MS + 1000);
 ok(
   `the opening prompt was asked for again on a redraw: ${firstPromptCalls.length} asks`,
   firstPromptCalls.length === 1,
@@ -3844,13 +3856,13 @@ Object.defineProperty(w.navigator, 'clipboard', {
 const held = 'A second answer, which must wait its turn.';
 selectMessage();
 statusReply = answer(held);
-await settle(6000);
+await settle(POLL_MS + 1000);
 ok(
   'a redraw while the message was selected threw the selection away',
   /git push origin main/.test(saidEl()?.textContent ?? ''),
 );
 w.getSelection()?.removeAllRanges();
-await settle(6000);
+await settle(POLL_MS + 1000);
 ok(
   `the change never arrived once the selection was let go: ${JSON.stringify(saidEl()?.textContent)}`,
   (saidEl()?.textContent ?? '').includes(held),
