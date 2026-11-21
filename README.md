@@ -324,8 +324,9 @@ them. LIVE, pressed while lit, pauses right where it is. Closing the sheet ends 
 pause.
 
 Voices come from Azure AI Speech (its free tier by default, which refuses rather
-than charges when its monthly allowance runs out) or Amazon Polly. Hebrew is spoken
-in a native Hebrew voice, and a Hebrew word in an English sentence is still said.
+than charges when its monthly allowance runs out), Amazon Polly or OpenAI. Hebrew is
+spoken in a native Hebrew voice on Azure, or in OpenAI's multilingual voices without
+it, and a Hebrew word in an English sentence is still said.
 Code blocks are offered one by one rather than read as noise.
 
 **Talk it over.** Beside Read aloud, **Talk it over** opens a spoken conversation
@@ -340,9 +341,10 @@ transcript is the last place a command should be issued from.
 mic, talk, tap to stop, and the transcript is inserted at your cursor. English is
 transcribed **on the instance** with `whisper.cpp` (`base.en`): no API key, nothing
 per request, and audio never leaves the box (about 4s for 11s of audio on 2 vCPUs).
-Hebrew goes to Azure Speech's free tier. When you stop talking, the finished text
-gets one pass through Claude Haiku on Bedrock for punctuation, capitals and plainly
-misheard names. It never answers, acts on or rewrites what you said, and the raw
+Hebrew goes to Azure Speech's free tier, or to OpenAI's `gpt-transcribe` without it
+(Bedrock's speech models answer what they hear instead of writing it down). When you
+stop talking, the finished text gets one pass through Claude Haiku on Bedrock for
+punctuation, capitals and plainly misheard names. It never answers, acts on or rewrites what you said, and the raw
 transcript stays if the pass fails. The switch for it is in Settings. In a Mux
 terminal on a phone, the compose line takes the phone's own dictation.
 

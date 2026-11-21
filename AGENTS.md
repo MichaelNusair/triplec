@@ -804,7 +804,7 @@ an app-only deploy and nothing else. Its fields, all optional:
 | Field | What it turns on | Bills |
 |---|---|---|
 | `speechKey`, `speechRegion` | Azure AI Speech: the default read-aloud voice (`Ava`), the Hebrew voices (`Hila`, `Avri`), and Hebrew dictation | Nothing — `F0` answers 429 when the month's 0.5M characters are gone |
-| `openaiApiKey` | The multilingual read-aloud voices (`marin` and friends) and, without the three fields below, the spoken conversation | A card, unless the account is on prepaid credits |
+| `openaiApiKey` | The multilingual read-aloud voices (`marin` and friends), which also read Hebrew when there is no `speechKey`; Hebrew dictation (`gpt-transcribe`) without one; and, without the three fields below, the spoken conversation | A card, unless the account is on prepaid credits |
 | `azureRealtimeEndpoint`, `azureRealtimeKey`, `azureRealtimeDeployment` | The spoken conversation, on Azure OpenAI instead — preferred over `openaiApiKey` when both are present | Sponsorship credit, which stops rather than overdrawing |
 | `endpoint`, `key` | Azure Whisper for dictation, overriding the local `ggml-base.en.bin` | Per minute |
 

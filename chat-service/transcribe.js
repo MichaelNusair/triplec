@@ -66,11 +66,22 @@ const LOCAL_TIMEOUT_MS = Number(process.env.WHISPER_TIMEOUT_MS || 120_000);
 
 const OPENAI_URL = 'https://api.openai.com/v1/audio/transcriptions';
 /**
- * `gpt-4o-transcribe` rather than `whisper-1`: it is more accurate on the thing this
- * is actually used for, which is a sentence with `auth.js`, `SPEAK_DAILY_CHARS` and
- * a version number in it, spoken into a phone microphone on a street.
+ * `gpt-transcribe` rather than `gpt-4o-transcribe` or `whisper-1`. Measured on
+ * 2026-11-21 against Hebrew Spoken Wikipedia clips and a spoken Hebrew request with
+ * `speak.js` and "deploy" in it: it kept the Latin identifiers Latin, read a
+ * one-word clip as Hebrew where `gpt-4o-transcribe` answered in Greek, and returned
+ * nothing for three seconds of silence where `gpt-4o-transcribe` returned a
+ * Portuguese word. That last one is the failure this file is organised around.
+ *
+ * Not Bedrock, though it was tried first and the instance role could call it. The
+ * two speech-in models there (Mistral's Voxtral, Mini and Small) are chat models that
+ * listen, not transcribers: asked to transcribe "What is the capital of France?" they
+ * answered "Paris", in their own transcription mode they wrote the poem a recording
+ * asked for, Mini translated a Hebrew clip into English, and Small paraphrased a
+ * Hebrew request into different words. Each of those comes back looking like a
+ * successful dictation. Nova Sonic does not list Hebrew.
  */
-const OPENAI_MODEL = process.env.TRANSCRIBE_OPENAI_MODEL || 'gpt-4o-transcribe';
+const OPENAI_MODEL = process.env.TRANSCRIBE_OPENAI_MODEL || 'gpt-transcribe';
 const OPENAI_TIMEOUT_MS = Number(process.env.TRANSCRIBE_TIMEOUT_MS || 60_000);
 
 /**
@@ -255,6 +266,32 @@ function uploadBudget(bytes = 0) {
 }
 
 /**
+ * The filename and type an upload goes out under, read from the audio's own bytes.
+ *
+ * Every upload used to be called `audio.webm`, which was right for the clients that
+ * cannot convert and wrong for the editor overlay, which sends WAV — and OpenAI
+ * believes the name: a WAV called `audio.webm` is a 400, "Audio file might be
+ * corrupted or unsupported". Nobody saw it while Azure Speech took every WAV first;
+ * it was the whole of Hebrew dictation the day the Speech key stopped working and
+ * OpenAI became the only ear. The bytes decide, not the client's multipart filename,
+ * for the reason the tests give: a client can call a webm `recording.wav`.
+ */
+export function audioFile(audio) {
+  const head = audio.subarray(0, 12);
+  const ascii = (from, to) => head.subarray(from, to).toString('latin1');
+  if (ascii(0, 4) === 'RIFF' && ascii(8, 12) === 'WAVE') return { name: 'audio.wav', type: 'audio/wav' };
+  if (ascii(0, 4) === 'OggS') return { name: 'audio.ogg', type: 'audio/ogg' };
+  // Safari records MP4/AAC: an ISO box whose type is `ftyp`, four bytes in.
+  if (ascii(4, 8) === 'ftyp') return { name: 'audio.m4a', type: 'audio/mp4' };
+  if (ascii(0, 3) === 'ID3' || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0)) {
+    return { name: 'audio.mp3', type: 'audio/mpeg' };
+  }
+  // EBML (1A 45 DF A3), and anything unrecognised: what a browser's MediaRecorder
+  // produces when nothing converted it, so it is the honest guess.
+  return { name: 'audio.webm', type: 'audio/webm' };
+}
+
+/**
  * OpenAI's transcription, which is the only backend here that hears Hebrew.
  *
  * `language` is sent rather than left to detection. It is a hint the model is
@@ -268,7 +305,8 @@ async function transcribeOpenAi(audio, code) {
   uploadBudget(audio.length);
 
   const form = new FormData();
-  form.append('file', new Blob([audio], { type: 'audio/webm' }), 'audio.webm');
+  const { name, type } = audioFile(audio);
+  form.append('file', new Blob([audio], { type }), name);
   form.append('model', OPENAI_MODEL);
   form.append('response_format', 'text');
   if (code && code !== 'auto') form.append('language', code);
@@ -300,7 +338,8 @@ async function transcribeOpenAi(audio, code) {
 
 async function transcribeAzure(audio, config, code = '') {
   const form = new FormData();
-  form.append('file', new Blob([audio], { type: 'audio/webm' }), 'audio.webm');
+  const { name, type } = audioFile(audio);
+  form.append('file', new Blob([audio], { type }), name);
   form.append('response_format', 'text');
   // Only when it is not English: the deployment's own default is right for English,
   // and Whisper's language hint is what keeps a Hebrew sentence with English

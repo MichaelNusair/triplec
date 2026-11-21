@@ -122,7 +122,7 @@ if (HAS_SPEECH) {
   delete process.env.AZURE_SPEECH_REGION;
 }
 
-const { transcribe, spokenLanguage, voiceStatus } = await import('./transcribe.js');
+const { transcribe, spokenLanguage, voiceStatus, audioFile } = await import('./transcribe.js');
 
 /** A multipart body shaped like the one the mic button sends. */
 const upload = (audio = Buffer.from('not really audio')) => {
@@ -273,9 +273,35 @@ if (MODE === 'hosted') {
       'and told which language to expect, rather than left to detect it',
       String(call.form.get('language')),
     );
-    ok(call.form.get('model') === 'gpt-4o-transcribe', 'on a model that hears Hebrew', String(call.form.get('model')));
+    ok(call.form.get('model') === 'gpt-transcribe', 'on a model that hears Hebrew', String(call.form.get('model')));
     ok(call.form.get('response_format') === 'text', 'asking for plain text, since that is all this is for');
     ok(call.form.get('file')?.size === bytes, 'with the audio attached whole', `${call.form.get('file')?.size} of ${bytes}`);
+  }
+
+  /*
+   * OpenAI believes the filename: a WAV uploaded as `audio.webm` is a 400, "Audio file
+   * might be corrupted or unsupported". That was every Hebrew dictation from the editor
+   * overlay, which converts to WAV, once Azure Speech was not there to take it first.
+   */
+  section('Each upload goes out under the name its bytes call for:');
+  {
+    for (const [label, audio, name, type] of [
+      ['a WAV, which is what the editor overlay sends', wav(2), 'audio.wav', 'audio/wav'],
+      ['a webm, which is what an unconverted recording is', webm, 'audio.webm', 'audio/webm'],
+    ]) {
+      const { body, type: contentType } = upload(audio);
+      await transcribe(body, contentType, { lang: 'he' });
+      const file = lastCall().form.get('file');
+      ok(file?.name === name && file?.type === type, label, `${file?.name} ${file?.type}`);
+    }
+    // Read from the bytes, not from the multipart filename, which says `a.wav` for both.
+    ok(audioFile(Buffer.from('OggS\0\0\0\0\0\0\0\0')).name === 'audio.ogg', 'an Ogg recording is called one');
+    ok(
+      audioFile(Buffer.concat([Buffer.from([0, 0, 0, 0x20]), Buffer.from('ftypM4A ')])).type === 'audio/mp4',
+      "and Safari's MP4 is sent as MP4",
+    );
+    ok(audioFile(Buffer.from('ID3\x04\0\0\0\0\0\0\0\0', 'latin1')).name === 'audio.mp3', 'and an MP3 as an MP3');
+    ok(audioFile(Buffer.from('not really audio')).name === 'audio.webm', 'and anything unrecognised as webm, as before');
   }
 
   /*
