@@ -375,6 +375,10 @@ function renderHost(host) {
  * every core is busy; past that, work is waiting for a CPU. Green while there is
  * room, amber from 70% of the cores, red from all of them.
  *
+ * The note never says more than 100%: a load of 23 on 8 cores is not "292% busy",
+ * it is every core in use and about 15 tasks queued behind them, so that is what
+ * it says.
+ *
  * An older server sends no `cpus`; then it is the bare number, as it always was.
  */
 function loadLevel(perCore) {
@@ -395,12 +399,16 @@ function loadCard(load, cpus) {
   }
   const pct = Math.round((now / cpus) * 100);
   const level = loadLevel(now / cpus);
+  const waiting = Math.round(now - cpus);
+  const share = pct < 100 ? `${pct}% of the cores`
+    : waiting >= 1 ? `all cores busy, ~${waiting} waiting`
+    : 'all cores busy';
   return `
     <div class="card load ${level}">
       <div class="card-label">Load</div>
       <div class="card-value">${now}<span class="card-of"> / ${cpus} cores</span></div>
       <div class="meter"><span style="width:${Math.min(pct, 100)}%" class="${level}"></span></div>
-      <div class="card-note">${pct}% busy · ${later}</div>
+      <div class="card-note">${share} · ${later}</div>
     </div>`;
 }
 

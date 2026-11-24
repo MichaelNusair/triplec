@@ -789,7 +789,7 @@ const $ = (sel) => w.document.querySelector(sel);
   // A bare load average says nothing until you know how many cores share it.
   const loadCard = $('#host .card.load');
   check('the load is measured against the cores', loadCard?.textContent.includes('/ 2 cores'), loadCard?.textContent);
-  check('as a share of them', loadCard?.textContent.includes('21% busy'), loadCard?.textContent);
+  check('as a share of them', loadCard?.textContent.includes('21% of the cores'), loadCard?.textContent);
   check('and a light load is green', loadCard?.classList.contains('calm'));
 
   const updates = $('#updates');
@@ -1054,7 +1054,7 @@ console.log('\nThe page asks before forcing anything:');
   payload.host.load = [3.6, 2, 1];
   await w.__adminForTest.refresh();
   check('past every core it is red', $('#host .card.load')?.classList.contains('over')
-    && $('#host .card.load').textContent.includes('180% busy'), $('#host .card.load')?.textContent);
+    && $('#host .card.load').textContent.includes('all cores busy, ~2 waiting'), $('#host .card.load')?.textContent);
   check('and the meter stops at full', $('#host .card.load .meter span')?.style.width === '100%');
   delete payload.host.cpus;
   await w.__adminForTest.refresh();
