@@ -408,8 +408,69 @@ async function registeredSessions(sessions) {
     }
     if (!argv.includes('claude')) return; // the pid was reused
     if (sessions.has(id)) return; // found twice in this sweep: the first one stands
-    sessions.set(id, offBrokerSession(id, pid, printMode(argv.split('\0'))));
+    const found = offBrokerSession(id, pid, printMode(argv.split('\0')));
+    // Where the CLI says the conversation is, and where the process was started.
+    // The two differ when a conversation is resumed in another directory: the
+    // CLI goes back to the conversation's own cwd. See `launchedHere`.
+    found.recordedCwd = typeof entry.cwd === 'string' ? entry.cwd : null;
+    found.launchedIn = await launchDir(pid);
+    sessions.set(id, found);
   }));
+}
+
+/**
+ * The directory a process was started in: the `PWD` it inherited, or null.
+ *
+ * Not `/proc/<pid>/cwd`. That is where the process is *now*, and this exists for
+ * the case where the two differ. A mux pane starts `claude` in its slot, and a
+ * conversation resumed there puts the process back in the conversation's own
+ * directory. Its transcript stays there too. The `PWD` the shell handed it
+ * still names the slot.
+ */
+async function launchDir(pid) {
+  try {
+    const env = await readFile(`/proc/${pid}/environ`, 'utf8');
+    const pwd = env.split('\0').find((v) => v.startsWith('PWD='));
+    return pwd ? pwd.slice(4) || null : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The conversations running in a terminal started in one of these places, but
+ * recorded somewhere else.
+ *
+ * Measured 2026-11-24: a conversation begun in `mono/master` was resumed in the
+ * slot-10 tmux terminal. Claude Code put the process back in `master` and kept
+ * writing master's transcript. The phone, open on slot 10, listed only slot 10's
+ * week-old conversations. The one running in that terminal was missing. The
+ * CLI's registry names the conversation and the process's `PWD` names the slot,
+ * so the conversation is looked up from those two.
+ *
+ * Each row keeps the cwd the conversation is recorded under, because that is the
+ * directory a client has to resume it in.
+ */
+async function launchedHere(here, known) {
+  const found = [];
+  for (const s of (await resumingSessions()).values()) {
+    if (!s.launchedIn || !s.recordedCwd || known.has(s.sessionId)) continue;
+    if (!here.has(s.launchedIn) && !here.has(await resolveDir(s.launchedIn))) continue;
+    if (!isUnderProjects(s.recordedCwd)) continue;
+    const path = await transcriptOf(await projectPlaces(s.recordedCwd), s.sessionId);
+    const info = await stat(path).catch(() => null);
+    if (!info) continue;
+    known.add(s.sessionId);
+    found.push({
+      sessionId: s.sessionId,
+      mtimeMs: info.mtimeMs,
+      size: info.size,
+      path,
+      cwd: s.recordedCwd,
+      worktree: null,
+    });
+  }
+  return found;
 }
 
 /**
@@ -1196,6 +1257,13 @@ export async function claudeStatus(cwd, { sessionId: asked = null } = {}) {
   const brokered = (id) => candidates.find((s) => s.sessionId === id) || null;
 
   const files = await transcripts(places);
+  // And the ones running in a terminal here whose transcript is elsewhere. See
+  // launchedHere.
+  const elsewhere = await launchedHere(here, new Set(files.map((f) => f.sessionId)));
+  if (elsewhere.length) {
+    files.push(...elsewhere);
+    files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  }
   const sessionId = asked || guessConversation(candidates)?.sessionId || files[0]?.sessionId || null;
 
   /*

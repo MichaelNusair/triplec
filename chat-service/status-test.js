@@ -847,6 +847,41 @@ status = await settle((s) => s.live === false, 6000, MUXED);
 ok(status.state === 'idle', 'agents with no process left to report to are not waited on');
 fs.rmSync(REGISTRY, { recursive: true, force: true });
 
+section('A conversation resumed in a slot’s terminal is listed under that slot:');
+/*
+ * Measured 2026-11-24. A conversation begun in the project root was resumed in the
+ * slot-10 terminal, and Claude Code went back to the root: its registry entry and its
+ * transcript both say the root. Only the PWD the pane's shell gave the process still
+ * says the slot. The phone, open on that slot, listed week-old conversations and not
+ * the one running in front of it.
+ */
+const SLOT = path.join(PROJECTS, 'slotted');
+const MOVED = 'e5f6a7b8-4444-4000-8000-000000000000';
+fs.mkdirSync(SLOT, { recursive: true });
+fs.mkdirSync(REGISTRY, { recursive: true });
+const moved = spawn(FAKE_CLAUDE, [SLEEPER], { stdio: 'ignore', cwd: CWD, env: { ...process.env, PWD: SLOT } });
+moved.unref();
+fs.writeFileSync(path.join(REGISTRY, `${moved.pid}.json`),
+  JSON.stringify({ pid: moved.pid, sessionId: MOVED, cwd: CWD, status: 'busy' }));
+writeConvo(path.join(PROJECT_DIR, `${MOVED}.jsonl`), title('Resumed in the slot', MOVED), assistant('done'));
+brokerReply = { ok: true, v: 1, sessions: [] };
+// Past RESUME_SCAN_TTL_MS, so the sweep is a fresh one that sees this process.
+await new Promise((resolve) => setTimeout(resolve, 2100));
+status = await claudeStatus(SLOT);
+const movedRow = status.conversations.find((c) => c.sessionId === MOVED);
+ok(Boolean(movedRow), 'the conversation running in the slot’s terminal is in the slot’s list');
+ok(movedRow?.cwd === CWD && movedRow?.live === true,
+  'with the directory it is recorded under, which is where it has to be resumed');
+ok(status.sessionId === MOVED && status.title === 'Resumed in the slot',
+  'and, being the newest there, it is the one the answer is about');
+const UNRELATED = path.join(PROJECTS, 'unrelated');
+fs.mkdirSync(UNRELATED, { recursive: true });
+status = await claudeStatus(UNRELATED);
+ok(!status.conversations.some((c) => c.sessionId === MOVED), 'and it is not listed in an unrelated folder');
+moved.kill();
+fs.rmSync(path.join(PROJECT_DIR, `${MOVED}.jsonl`), { force: true });
+fs.rmSync(REGISTRY, { recursive: true, force: true });
+
 section('One project is never answered with another project’s conversation:');
 /*
  * The case the user had not tried yet. Sessions are matched on cwd, and this is
