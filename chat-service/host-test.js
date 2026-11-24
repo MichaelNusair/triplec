@@ -169,7 +169,7 @@ await chmod(secretsFile, 0o600);
  * and a shell that exports GH_TOKEN or GITHUB_TOKEN (any TripleC workspace terminal
  * does, from /etc/profile.d) handed one to the server, which passed it to the fake gh.
  */
-const STRIP = /^(AUTH_PASSWORD|SESSION_SECRET|CW_.*|AWS_.*|CLAUDE_CODE_.*|ANTHROPIC_.*|GITHUB_SECRET_ARN|GH_TOKEN|GITHUB_TOKEN|TRIPLEC_.*|PROJECTS_ROOT|CLAUDE_HOME|CODER_HOME|WORKSPACE_USER|PWA_NAME|DEFAULT_.*|MAX_LIVE_SESSIONS|BIND_ADDRESS|ALLOW_PUBLIC_BIND|CLAUDECODE)$/;
+const STRIP = /^(AUTH_PASSWORD|SESSION_SECRET|CW_.*|AWS_.*|CLAUDE_CODE_.*|ANTHROPIC_.*|GITHUB_SECRET_ARN|GH_TOKEN|GITHUB_TOKEN|TRIPLEC_.*|PROJECTS_ROOT|CLAUDE_HOME|CODER_HOME|WORKSPACE_USER|PWA_NAME|DEFAULT_.*|MAX_LIVE_SESSIONS|BIND_ADDRESS|ALLOW_PUBLIC_BIND|CLAUDECODE|GIT_(AUTHOR|COMMITTER)_(NAME|EMAIL))$/;
 const ambient = Object.fromEntries(Object.entries(process.env).filter(([k]) => !STRIP.test(k)));
 
 async function startServer(env = {}, { expectExit = false } = {}) {
@@ -181,6 +181,9 @@ async function startServer(env = {}, { expectExit = false } = {}) {
       ...ambient,
       PATH: `${bin}:${process.env.PATH}`,
       HOME: home,
+      // The machine's /etc/gitconfig is not this home's: a box that sets an identity
+      // there (or in GIT_AUTHOR_* above) would otherwise hide the fresh-VM case E5 tests.
+      GIT_CONFIG_NOSYSTEM: '1',
       USER: 'developer',
       TRIPLEC_MODE: 'host',
       PORT: String(port),
