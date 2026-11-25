@@ -640,39 +640,40 @@ sed -i -e "s|__REGION__|$REGION|" -e "s|__DEFAULT_MODEL__|$DEFAULT_MODEL|" \
 # ---------------------------------------------------------------------------
 # Claude Code CLI + the official VS Code extension
 # ---------------------------------------------------------------------------
-npm install -g @anthropic-ai/claude-code
+# The native build, installed as $USER_NAME into ~/.local (the CLI's own home for
+# it: ~/.local/share/claude, linked from ~/.local/bin/claude), so the CLI's
+# auto-updater can replace it. It runs as $USER_NAME and needs to own what it
+# updates.
+#
+# This used to be a root `npm install -g`, kept current by a root timer. Its
+# updater could not write to /usr/lib/node_modules, so every interactive session
+# showed an "auto-update failed" warning and `claude doctor` reported
+# no_permissions. A hand-run `claude install` fixed that, but only until the next
+# instance replacement: ~/.local is on the root volume. So the install happens here,
+# and this script runs again on a replacement.
+#
+# Only when it is missing. This runs on every payload install, and the binary
+# updates itself between them. `-x` follows the symlink, so a dangling link
+# (a half-finished install) gets a fresh install too. On failure this aborts the
+# script, the same as the npm install did: a box without a CLI is not provisioned.
+CLAUDE_BIN="/home/$USER_NAME/.local/bin/claude"
+if [ ! -x "$CLAUDE_BIN" ]; then
+  sudo -u "$USER_NAME" -H bash -c 'set -euo pipefail; curl -fsSL https://claude.ai/install.sh | bash'
+fi
+[ -x "$CLAUDE_BIN" ]
 
-# Keep the CLI current between deploys. Its own auto-updater cannot: it runs as
-# $USER_NAME, and the global install above is root's, so every attempt fails
-# quietly and the box sits on whatever version the last deploy happened to pull.
-# A root timer does the same install daily. Running sessions are unaffected —
-# npm replaces the files, a live process keeps the binary it already mapped — and
-# the next `claude` started picks up the new version.
-cat > /etc/systemd/system/claude-code-update.service <<'SVC'
-[Unit]
-Description=Update the Claude Code CLI to the latest release
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/npm install -g @anthropic-ai/claude-code@latest
-SVC
-cat > /etc/systemd/system/claude-code-update.timer <<'TIMER'
-[Unit]
-Description=Update the Claude Code CLI daily
-
-[Timer]
-OnCalendar=daily
-RandomizedDelaySec=1h
-# Catch up on a run missed while the instance was stopped or being replaced.
-Persistent=true
-
-[Install]
-WantedBy=timers.target
-TIMER
+# Retire the npm install on boxes that already have it. Two copies make
+# `claude doctor` report "Multiple installations found", and /usr/bin/claude
+# would still win for anything whose PATH lacks ~/.local/bin. Only after the
+# check above confirms the native build is there, so a failed download never
+# leaves the box with no CLI. A live process keeps the binary it already mapped.
+systemctl disable --now claude-code-update.timer 2>/dev/null || true
+systemctl stop claude-code-update.service 2>/dev/null || true
+rm -f /etc/systemd/system/claude-code-update.service /etc/systemd/system/claude-code-update.timer
 systemctl daemon-reload
-systemctl enable --now claude-code-update.timer
+if [ -e /usr/lib/node_modules/@anthropic-ai/claude-code ]; then
+  npm uninstall -g @anthropic-ai/claude-code
+fi
 
 # TripleC's own updates: scripts/triplec-update.mjs, from the payload, on a timer.
 # Installed on every box and harmless on most: with autoUpdate.mode "off" (the
@@ -1604,6 +1605,10 @@ Environment=CODER_HOME=/home/$USER_NAME
 Environment=PORT=9997
 Environment=PROJECTS_ROOT=$DATA_MNT/projects
 Environment=CLAUDE_HOME=$DATA_MNT/claude
+# systemd's default PATH plus ~/.local/bin, where the CLI is installed (see the
+# Claude Code section above). Every chat runs `spawn('claude', ...)`, and without
+# this the unit's PATH finds no claude at all.
+Environment=PATH=/home/$USER_NAME/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin
 # What the app calls itself. The chat service puts it in front of every title it
 # serves — the manifests, so a home screen icon says which deployment it opens, and
 # the HTML shells, so a browser tab does too. Quoted because a name may contain a

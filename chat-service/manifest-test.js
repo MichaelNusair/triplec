@@ -510,6 +510,31 @@ ok(
     'over an account that still cannot install anything',
 );
 /*
+ * Claude Code is the native build in $USER_NAME's ~/.local, so its own updater can
+ * replace it. A root `npm install -g` gave every session an "auto-update failed"
+ * warning, which is what this replaced on 2026-11-25. That only holds if the chat
+ * service, which spawns a bare `claude`, has ~/.local/bin on its PATH. Without it
+ * every chat fails to start once the npm copy in /usr/bin is gone.
+ */
+ok(
+  !/^\s*npm install -g @anthropic-ai\/claude-code/m.test(bootstrapSrc),
+  'bootstrap.sh installs Claude Code with a root npm install again, which its updater ' +
+    'cannot write to: every session warns that auto-update failed',
+);
+ok(
+  /sudo -u "\$USER_NAME" -H bash -c '[^']*claude\.ai\/install\.sh/.test(bootstrapSrc),
+  'bootstrap.sh no longer installs the native Claude Code build as the workspace user',
+);
+{
+  const chatUnit = /cat > \/etc\/systemd\/system\/claude-chat\.service <<SVC\n([\s\S]*?)\nSVC\n/
+    .exec(bootstrapSrc)?.[1] ?? '';
+  ok(
+    /^Environment=PATH=\/home\/\$USER_NAME\/\.local\/bin:/m.test(chatUnit),
+    'claude-chat.service has no ~/.local/bin on its PATH, so spawn("claude") in ' +
+      'session-manager.js cannot find the native install',
+  );
+}
+/*
  * Sudo was necessary and not sufficient for the case that prompted it. Playwright's
  * `install-deps` only knows apt and exits 127 on AL2023, and `chromium` is not in the
  * repos, so the RPM names had to be recovered from `ldd` one NOT_FOUND at a time —
