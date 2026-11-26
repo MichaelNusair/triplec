@@ -320,6 +320,39 @@ console.log('mux page');
   check('…and the tab title counts it', /^\(1\) /.test(doc.title), doc.title);
   check('the pane takes the title the chat named itself', pane0.el.querySelector('.mux-pane-title').textContent === 'fix the build');
 
+  // Full screen: the pane fills the window in place, and ‹ Back (or the browser's
+  // Back) returns to the grid without either frame reloading.
+  const full = pane0.el.querySelector('[data-act="full"]');
+  const back = pane0.el.querySelector('[data-act="back"]');
+  check('a pane with something in it has a full-screen button, and no Back yet', !full.hidden && back.hidden);
+  const frameBefore = pane0.frame;
+  const historyBefore = w.history.length;
+  full.click();
+  check('full screen fills the window with that pane and shows Back',
+    pane0.el.classList.contains('full') && doc.body.classList.contains('pane-full') && !back.hidden && full.hidden);
+  check('…without reloading its frame', pane0.frame === frameBefore && pane0.el.contains(frameBefore));
+  check('…and leaves a history entry, so the browser\'s Back closes it', w.history.length === historyBefore + 1
+    && w.history.state?.muxFull === true);
+  mux.focusPane(1);
+  check('focusing another pane hands it the screen', mux.state.full === mux.state.panes[1]
+    && mux.state.panes[1].el.classList.contains('full') && !pane0.el.classList.contains('full'));
+  mux.focusPane(0);
+  back.click();
+  await new Promise((r) => setTimeout(r, 20));
+  check('Back returns to the grid', !pane0.el.classList.contains('full') && !doc.body.classList.contains('pane-full')
+    && mux.state.full === null && full.hidden === false && back.hidden);
+  check('…and takes back its history entry', w.history.state?.muxFull !== true);
+  full.click();
+  w.history.back();
+  await new Promise((r) => setTimeout(r, 20));
+  check("the browser's Back closes full screen too", mux.state.full === null && !doc.body.classList.contains('pane-full'));
+  mux.state.panes[1].el.querySelector('[data-act="full"]').click();
+  mux.closePane(1);
+  check('closing the full-screen pane ends full screen', mux.state.full === null && !doc.body.classList.contains('pane-full'));
+  await new Promise((r) => setTimeout(r, 20));
+  mux.openIn(1, { project: 'demo', slot: 2, cwd: slotCwd(2), sessionId: 'old-2', title: 'slot two chat' });
+  mux.focusPane(1, { input: false });
+
   // The voice button: the editor overlay's sheet, aimed at this pane's slot and chat.
   check('the mux declares itself to the overlay before it loads', w.cmoHost?.name === 'mux');
   check('mux.html loads the overlay from /chat/, after mux.js',

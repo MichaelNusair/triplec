@@ -89,6 +89,7 @@
     projects: [],              // /api/projects
     loaded: false,             // whether /api/projects has answered once
     slots: new Map(),          // project name -> /api/slots answer
+    full: null,                // the pane filling the window, or null; see enterFull
     live: new Map(),           // `${cwd}|${sessionId}` -> { busy }
     busyCwds: new Set(),       // directories with a chat turn in flight, from /api/live
     attention: new Set(),      // directories whose turn ended while nobody watched
@@ -922,9 +923,52 @@
   // --- the grid -------------------------------------------------------------
   const visiblePanes = () => state.panes.slice(state.first, state.first + paneCount());
 
+  /*
+   * Full screen: one pane fills the window, in this page.
+   *
+   * The pane's element is restyled, never moved or rebuilt, so its frame does not
+   * reload: the terminal keeps its connection and a half-typed message stays. The
+   * other panes keep running behind it. A history entry is pushed on the way in,
+   * so the browser's Back (or a phone's back gesture) closes it like ‹ Back does,
+   * rather than leaving the mux. Esc is deliberately not a way out: in a terminal
+   * it belongs to Claude, which uses it to interrupt.
+   */
+  function enterFull(pane) {
+    if (!pane?.cwd || state.full === pane) return;
+    const previous = state.full;
+    state.full = pane;
+    document.body.classList.add('pane-full');
+    if (previous) paintPane(previous);
+    else if (history.state?.muxFull !== true) history.pushState({ muxFull: true }, '');
+    focusPane(state.panes.indexOf(pane));
+  }
+
+  function leaveFull({ fromHistory = false } = {}) {
+    const pane = state.full;
+    if (!pane) return;
+    state.full = null;
+    document.body.classList.remove('pane-full');
+    paintPane(pane);
+    // Take back the entry enterFull pushed, so Back afterwards leaves the page.
+    if (!fromHistory && history.state?.muxFull === true) history.back();
+  }
+
+  window.addEventListener('popstate', () => {
+    if (state.full && history.state?.muxFull !== true) leaveFull({ fromHistory: true });
+  });
+
   function focusPane(index, { input = true } = {}) {
     state.focus = Math.max(state.first, Math.min(index, state.first + paneCount() - 1));
     const pane = state.panes[state.focus];
+    // Alt+number, or a tab on the phone, while one pane is full screen: that pane
+    // takes the screen instead, or full screen ends if there is nothing in it.
+    if (state.full && state.full !== pane) {
+      if (pane.cwd) {
+        enterFull(pane);
+        return;
+      }
+      leaveFull();
+    }
     if (pane.cwd) unflag(pane.cwd);
     pane.attention = false;
     for (const p of visiblePanes()) paintPane(p);
@@ -943,6 +987,7 @@
     el.className = 'mux-pane';
     el.innerHTML = `
       <header class="mux-pane-head">
+        <button type="button" class="mux-pane-btn mux-pane-back" data-act="back" title="Back to all the panes (the browser's Back does the same)">‹ Back</button>
         <span class="mux-dot"></span>
         <span class="mux-pane-label"></span>
         <span class="mux-pane-title"></span>
@@ -954,6 +999,7 @@
         <button type="button" class="mux-pane-btn" data-act="attach" title="Attach a file — an image, a PDF — to what you type here">📎</button>
         <button type="button" class="mux-pane-btn" data-act="run" title="Run your own command line in this slot's terminal — an environment variable, claude --resume <id>">❯…</button>
         <button type="button" class="mux-pane-btn" data-act="font" title="The terminal's font and size, in this browser">Aa</button>
+        <button type="button" class="mux-pane-btn" data-act="full" title="Full screen: this pane fills the window, nothing reloads; ‹ Back returns">⛶</button>
         <button type="button" class="mux-pane-btn" data-act="phone" title="Copy a link that opens this on the phone">⇱</button>
         <button type="button" class="mux-pane-btn" data-act="swap" title="Swap with another pane, one for one — here or in your other window (Alt+Shift+number)">⇄</button>
         <button type="button" class="mux-pane-btn" data-act="close" title="Close the pane — what is in it keeps running">✕</button>
@@ -991,6 +1037,8 @@
       startIn(state.panes.indexOf(pane), pane.project, place, 'shell');
     });
     el.querySelector('[data-act="phone"]').addEventListener('click', () => copyPhoneLink(pane));
+    el.querySelector('[data-act="full"]').addEventListener('click', () => enterFull(pane));
+    el.querySelector('[data-act="back"]').addEventListener('click', leaveFull);
     el.querySelector('[data-act="run"]').addEventListener('click', () => {
       if (pane.project) runCommand(pane);
     });
@@ -1086,6 +1134,7 @@
       paintPane(pane);
     });
     for (const el of [...grid.children]) if (!keep.has(el)) el.remove();
+    if (state.full && !(keep.has(state.full.el) && state.full.cwd)) leaveFull();
     renderTabs();
   }
 
@@ -1155,8 +1204,12 @@
     // The browser has no slot to switch, start in or run a command in: it keeps the
     // link for another device and the close.
     if (isBrowser(pane)) {
-      for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !['phone', 'swap', 'close'].includes(b.dataset.act);
+      for (const b of el.querySelectorAll('.mux-pane-btn')) b.hidden = !['phone', 'full', 'swap', 'close'].includes(b.dataset.act);
     }
+    const full = state.full === pane;
+    el.classList.toggle('full', full);
+    $('[data-act="back"]', el).hidden = !full;
+    $('[data-act="full"]', el).hidden = !pane.cwd || full;
     const kind = $('[data-act="kind"]', el);
     kind.textContent = { terminal: 'Chat', shell: 'Claude', chat: 'Terminal' }[pane.kind];
     kind.title = {

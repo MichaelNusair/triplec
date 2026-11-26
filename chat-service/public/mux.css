@@ -132,6 +132,14 @@ body.mux {
   color: var(--text-dim); font: inherit; cursor: pointer; white-space: nowrap;
 }
 .mux-pane-btn:hover { background: var(--bg-input); color: var(--text); }
+
+/* Full screen (enterFull in mux.js): the pane is restyled in place, never moved, so
+   its frame does not reload. Below the drawer (40), sheets (50) and toasts (60). */
+.mux-pane.full {
+  position: fixed; inset: 0; z-index: 30;
+  border: 0; border-radius: 0;
+}
+.mux-pane-btn.mux-pane-back { width: auto; padding: 0 8px; color: var(--text); background: var(--bg-input); }
 .mux-pane-note {
   margin: 0; padding: 4px 10px; font-size: 12px; color: var(--mux-elsewhere);
   border-bottom: 1px solid var(--border);
