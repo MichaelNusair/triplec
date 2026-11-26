@@ -295,9 +295,41 @@ export async function ensureSlots(projectPath, { count = slotConfigFor(projectPa
 }
 
 /**
+ * slotState for the slot list, shared between callers for a few seconds.
+ *
+ * Every open mux tab, on every device, polls every expanded project's slots, and
+ * slotState is a full `git status` plus a walk of every commit no remote has. On a
+ * big repository that is seconds per slot, so polls from several tabs overlapped,
+ * piled up behind each other and kept the box's cores busy with git, while every
+ * other request — the page's own scripts included — waited behind them. A poll
+ * now joins a scan already running for that slot, or reuses one from the last
+ * few seconds. Anything that changes a slot (prepare, reset) calls slotState
+ * directly and forgets the shared answer, so an action never reads a stale one.
+ */
+const SLOT_STATE_TTL_MS = 10_000;
+const sharedSlotState = new Map(); // slot path -> { at, promise }
+
+function listedSlotState(path) {
+  const hit = sharedSlotState.get(path);
+  if (hit && (hit.at === null || Date.now() - hit.at < SLOT_STATE_TTL_MS)) return hit.promise;
+  const entry = { at: null, promise: null };
+  entry.promise = slotState(path).finally(() => {
+    entry.at = Date.now();
+  });
+  sharedSlotState.set(path, entry);
+  return entry.promise;
+}
+
+/** For tests. */
+export function forgetSharedSlotStates() {
+  sharedSlotState.clear();
+}
+
+/**
  * What one slot holds that would make refreshing it, or deleting it, lose work.
  */
 async function slotState(path) {
+  sharedSlotState.delete(path);
   const branch = await git(path, ['rev-parse', '--abbrev-ref', 'HEAD']);
   const porcelain = await git(path, ['status', '--porcelain']);
   const dirty = porcelain.out ? porcelain.out.split('\n').length : 0;
@@ -360,7 +392,7 @@ export async function listSlots(projectPath, { live = [], others = [] } = {}) {
       name: slotName(n),
       cwd: path,
       created,
-      ...(created ? await slotState(path) : { branch: null, dirty: 0, unpushed: 0 }),
+      ...(created ? await listedSlotState(path) : { branch: null, dirty: 0, unpushed: 0 }),
       sessions: mine.map((s) => ({ sessionId: s.sessionId, busy: Boolean(s.busy) })),
       busy: mine.some((s) => s.busy),
       held: mine.length > 0 || theirs.length > 0,

@@ -165,6 +165,22 @@ console.log('slots.js');
   check('a free slot is neither', !at(6).held && !at(6).busy);
   check('a dirty slot says how much is in it', at(3).dirty === 1);
 
+  // Polls share one git scan per slot for a few seconds, so tabs on several devices
+  // do not each run `git status` over a big repository. Anything that changes a
+  // slot goes through slotState directly and drops the shared answer.
+  await writeFile(join(slots.slotPath(p, 3), 'second.txt'), 'more\n');
+  const [pollA, pollB] = await Promise.all([slots.listSlots(p), slots.listSlots(p)]);
+  check('polls a moment apart share one answer for a slot',
+    pollA.slots.find((s) => s.n === 3).dirty === 1 && pollB.slots.find((s) => s.n === 3).dirty === 1);
+  slots.forgetSharedSlotStates();
+  check('a forgotten answer is scanned again', (await slots.listSlots(p)).slots.find((s) => s.n === 3).dirty === 2);
+  await writeFile(join(slots.slotPath(p, 8), 'scratch.txt'), 'x\n');
+  await slots.prepareSlot(p, 8, { fetch: false });
+  check('preparing a slot drops its shared answer', (await slots.listSlots(p)).slots.find((s) => s.n === 8).dirty === 1);
+  await rm(join(slots.slotPath(p, 3), 'second.txt'));
+  await rm(join(slots.slotPath(p, 8), 'scratch.txt'));
+  slots.forgetSharedSlotStates();
+
   // `/exit` in a slot's terminal resets it: refreshed as prepareSlot would, and
   // marked with the time, outside the checkout.
   const reset = await slots.resetSlot(p, 7, { fetch: false });

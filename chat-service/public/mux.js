@@ -280,15 +280,27 @@
     await Promise.all([...state.expanded].map(loadSlots));
   }
 
-  async function loadSlots(name) {
-    try {
-      const res = await api(`/api/slots?project=${encodeURIComponent(name)}`);
-      if (!res.ok) return;
-      state.slots.set(name, await res.json());
-      renderSidebar();
-    } catch {
-      /* a stale slot list is a few seconds old; the next poll repairs it */
-    }
+  // One request per project at a time. On a big repository an answer can take
+  // longer than SLOTS_POLL_MS, and a poll fired anyway only queued another scan
+  // behind the first, until the box was busy with nothing else. Callers share the
+  // request already out.
+  const slotsInFlight = new Map(); // project name -> promise
+  function loadSlots(name) {
+    if (slotsInFlight.has(name)) return slotsInFlight.get(name);
+    const promise = (async () => {
+      try {
+        const res = await api(`/api/slots?project=${encodeURIComponent(name)}`);
+        if (!res.ok) return;
+        state.slots.set(name, await res.json());
+        renderSidebar();
+      } catch {
+        /* a stale slot list is a few seconds old; the next poll repairs it */
+      } finally {
+        slotsInFlight.delete(name);
+      }
+    })();
+    slotsInFlight.set(name, promise);
+    return promise;
   }
 
   async function pollLive() {
